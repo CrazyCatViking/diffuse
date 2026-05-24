@@ -1,0 +1,8 @@
+allowBuilds:
+  '@parcel/watcher': true
+  electron: true
+  esbuild: true
+onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - electron
+  - esbuild
