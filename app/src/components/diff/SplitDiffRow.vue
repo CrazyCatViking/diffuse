@@ -1,11 +1,3 @@
-<script setup lang="ts">
-import type { DiffRow } from '../../lib/protocol'
-
-defineProps<{
-  row: DiffRow
-}>()
-</script>
-
 <template>
   <div v-if="row.kind === 'hunk'" class="diff-row hunk">
     <div class="hunk-text">{{ row.hunkHeader ?? row.text }}</div>
@@ -18,12 +10,21 @@ defineProps<{
   </div>
 </template>
 
+<script setup lang="ts">
+import type { DiffRow } from '../../lib/protocol'
+
+defineProps<{
+  row: DiffRow
+}>()
+</script>
+
 <style scoped lang="scss">
 .diff-row {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) 64px minmax(0, 1fr);
-  min-height: 24px;
+  height: 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.025);
+  box-sizing: border-box;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   line-height: 24px;
@@ -68,7 +69,7 @@ defineProps<{
 
 .hunk {
   display: block;
-  min-height: 28px;
+  height: 28px;
   color: #9fb4ff;
   background: #1b2233;
   border-top: 1px solid #27324a;

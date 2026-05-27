@@ -1,3 +1,24 @@
+<template>
+  <div class="app-shell">
+    <TopBar
+      :repo-path="repo.repository?.root ?? null"
+      :version="repo.version?.version ?? null"
+      :loading="repo.loading"
+      :error="repo.error"
+      @open-repository="repo.pickAndOpenRepository()"
+    />
+
+    <main class="workspace">
+      <ChangedFilesPane
+        :files="repo.changedFiles"
+        :active-file-id="repo.activeFileId"
+        @select-file="repo.selectFile($event)"
+      />
+      <DiffViewer :model="diff.current" :loading="diff.loading" :error="diff.error" />
+    </main>
+  </div>
+</template>
+
 <script setup lang="ts">
 import { onMounted, watch } from 'vue'
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue'
@@ -26,33 +47,13 @@ watch(
 )
 </script>
 
-<template>
-  <div class="app-shell">
-    <TopBar
-      :repo-path="repo.repository?.root ?? null"
-      :version="repo.version?.version ?? null"
-      :loading="repo.loading"
-      :error="repo.error"
-      @open-repository="repo.pickAndOpenRepository()"
-    />
-
-    <main class="workspace">
-      <ChangedFilesPane
-        :files="repo.changedFiles"
-        :active-file-id="repo.activeFileId"
-        @select-file="repo.selectFile($event)"
-      />
-      <DiffViewer :model="diff.current" :loading="diff.loading" :error="diff.error" />
-    </main>
-  </div>
-</template>
-
 <style scoped lang="scss">
 .app-shell {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 .workspace {

@@ -1,3 +1,11 @@
+<template>
+  <button class="file-row" :class="{ active }" @click="$emit('select', file.id)">
+    <span class="status">{{ file.status[0].toUpperCase() }}</span>
+    <span class="path">{{ file.newPath ?? file.oldPath ?? file.id }}</span>
+    <span class="counts">+{{ file.additions }} -{{ file.deletions }}</span>
+  </button>
+</template>
+
 <script setup lang="ts">
 import type { ChangedFile } from '../../lib/protocol'
 
@@ -10,14 +18,6 @@ defineEmits<{
   select: [fileId: string]
 }>()
 </script>
-
-<template>
-  <button class="file-row" :class="{ active }" @click="$emit('select', file.id)">
-    <span class="status">{{ file.status[0].toUpperCase() }}</span>
-    <span class="path">{{ file.newPath ?? file.oldPath ?? file.id }}</span>
-    <span class="counts">+{{ file.additions }} -{{ file.deletions }}</span>
-  </button>
-</template>
 
 <style scoped lang="scss">
 .file-row {

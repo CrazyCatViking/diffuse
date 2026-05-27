@@ -1,17 +1,3 @@
-<script setup lang="ts">
-import type { ChangedFile } from '../../lib/protocol'
-import ChangedFileRow from './ChangedFileRow.vue'
-
-defineProps<{
-  files: ChangedFile[]
-  activeFileId: string | null
-}>()
-
-defineEmits<{
-  selectFile: [fileId: string]
-}>()
-</script>
-
 <template>
   <aside class="changed-files">
     <div class="pane-title">Changed Files</div>
@@ -25,6 +11,20 @@ defineEmits<{
     />
   </aside>
 </template>
+
+<script setup lang="ts">
+import type { ChangedFile } from '../../lib/protocol'
+import ChangedFileRow from './ChangedFileRow.vue'
+
+defineProps<{
+  files: ChangedFile[]
+  activeFileId: string | null
+}>()
+
+defineEmits<{
+  selectFile: [fileId: string]
+}>()
+</script>
 
 <style scoped lang="scss">
 .changed-files {

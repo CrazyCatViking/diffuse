@@ -1,10 +1,32 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'node:path'
 import { startCoreProcess } from './coreProcess'
-import type { CoreRpcClient } from './coreRpcClient'
+import { CoreRequestTimeoutError, type CoreRpcClient } from './coreRpcClient'
 
 let mainWindow: BrowserWindow | null = null
 let core: CoreRpcClient | null = null
+
+function getCore(): CoreRpcClient {
+  if (core?.isRunning) return core
+
+  core = startCoreProcess()
+  core.once('exit', () => {
+    core = null
+  })
+  return core
+}
+
+async function coreRequest<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  try {
+    return await getCore().request<T>(method, params)
+  } catch (error) {
+    if (!(error instanceof CoreRequestTimeoutError)) throw error
+
+    core?.dispose()
+    core = null
+    return getCore().request<T>(method, params)
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -15,10 +37,15 @@ function createWindow(): void {
     title: 'Diffuse',
     backgroundColor: '#111318',
     webPreferences: {
-      preload: join(__dirname, '../preload/preload.js'),
+      preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false
     }
+  })
+
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error(`Failed to load preload script ${preloadPath}:`, error)
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -29,7 +56,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  core = startCoreProcess()
+  getCore()
   createWindow()
 
   app.on('activate', () => {
@@ -58,6 +85,5 @@ ipcMain.handle('repo:pickDirectory', async () => {
 })
 
 ipcMain.handle('core:request', async (_event, request: { method: string; params?: Record<string, unknown> }) => {
-  if (!core) throw new Error('Diffuse core is not running')
-  return core.request(request.method, request.params ?? {})
+  return coreRequest(request.method, request.params ?? {})
 })

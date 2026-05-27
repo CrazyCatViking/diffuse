@@ -9,19 +9,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     var session = session_mod.Session.init(allocator, io);
     defer session.deinit();
 
-    var stdin_buffer: [64 * 1024]u8 = undefined;
-    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-    const stdin = &stdin_reader.interface;
-
     var stdout_buffer: [64 * 1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     while (true) {
-        const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
+        const line = try readStdinLine(allocator) orelse break;
+        defer allocator.free(line);
 
         const trimmed = std.mem.trim(u8, line, "\r\n \t");
         if (trimmed.len == 0) continue;
@@ -37,6 +31,23 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
             try json_rpc.writeError(stdout, request.id, -32000, @errorName(err));
         };
         try stdout.flush();
+    }
+}
+
+fn readStdinLine(allocator: std.mem.Allocator) !?[]u8 {
+    var line: std.ArrayList(u8) = .empty;
+    errdefer line.deinit(allocator);
+
+    var byte: [1]u8 = undefined;
+    while (true) {
+        const count = try std.posix.read(std.posix.STDIN_FILENO, &byte);
+        if (count == 0) {
+            if (line.items.len == 0) return null;
+            return try line.toOwnedSlice(allocator);
+        }
+
+        if (byte[0] == '\n') return try line.toOwnedSlice(allocator);
+        try line.append(allocator, byte[0]);
     }
 }
 

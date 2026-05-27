@@ -1,16 +1,3 @@
-<script setup lang="ts">
-defineProps<{
-  repoPath: string | null
-  version: string | null
-  loading: boolean
-  error: string | null
-}>()
-
-defineEmits<{
-  openRepository: []
-}>()
-</script>
-
 <template>
   <header class="top-bar">
     <div class="brand">Diffuse</div>
@@ -23,6 +10,19 @@ defineEmits<{
     </div>
   </header>
 </template>
+
+<script setup lang="ts">
+defineProps<{
+  repoPath: string | null
+  version: string | null
+  loading: boolean
+  error: string | null
+}>()
+
+defineEmits<{
+  openRepository: []
+}>()
+</script>
 
 <style scoped lang="scss">
 .top-bar {

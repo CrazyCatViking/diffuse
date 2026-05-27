@@ -8,9 +8,17 @@ type PendingRequest = {
   timer: NodeJS.Timeout
 }
 
+export class CoreRequestTimeoutError extends Error {
+  constructor(method: string) {
+    super(`Core request timed out: ${method}`)
+    this.name = 'CoreRequestTimeoutError'
+  }
+}
+
 export class CoreRpcClient extends EventEmitter {
   private nextId = 1
   private pending = new Map<number, PendingRequest>()
+  private exited = false
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     super()
@@ -23,15 +31,26 @@ export class CoreRpcClient extends EventEmitter {
       if (text) console.error(`[diffuse-core] ${text}`)
     })
 
+    child.on('error', (error) => {
+      this.rejectAll(error)
+    })
+
     child.on('exit', (code, signal) => {
+      this.exited = true
       const error = new Error(`Diffuse core exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`)
-      for (const [id, pending] of this.pending) {
-        clearTimeout(pending.timer)
-        pending.reject(error)
-        this.pending.delete(id)
-      }
+      this.rejectAll(error)
       this.emit('exit', { code, signal })
     })
+  }
+
+  get isRunning(): boolean {
+    return (
+      !this.exited &&
+      !this.child.killed &&
+      this.child.exitCode === null &&
+      this.child.signalCode === null &&
+      !this.child.stdin.destroyed
+    )
   }
 
   request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -41,7 +60,9 @@ export class CoreRpcClient extends EventEmitter {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new Error(`Core request timed out: ${method}`))
+        this.exited = true
+        this.child.kill()
+        reject(new CoreRequestTimeoutError(method))
       }, 30_000)
 
       this.pending.set(id, {
@@ -50,12 +71,33 @@ export class CoreRpcClient extends EventEmitter {
         timer
       })
 
-      this.child.stdin.write(`${payload}\n`)
+      if (!this.isRunning) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(new Error('Diffuse core is not running'))
+        return
+      }
+
+      this.child.stdin.write(`${payload}\n`, (error) => {
+        if (!error) return
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(error)
+      })
     })
   }
 
   dispose(): void {
+    this.exited = true
     this.child.kill()
+  }
+
+  private rejectAll(error: Error): void {
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+      this.pending.delete(id)
+    }
   }
 
   private handleLine(line: string): void {

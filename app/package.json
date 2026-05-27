@@ -5,7 +5,7 @@
   "type": "module",
   "main": "out/main/main.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "electron-vite dev -- --ozone-platform=wayland",
     "build": "vue-tsc --noEmit && electron-vite build",
     "preview": "electron-vite preview"
   },

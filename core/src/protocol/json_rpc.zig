@@ -49,7 +49,7 @@ pub fn writeError(writer: anytype, id: i64, code: i64, message: []const u8) !voi
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{},\"error\":{{\"code\":{},\"message\":", .{ id, code });
     const types = @import("types.zig");
     try types.writeJsonString(writer, message);
-    try writer.writeAll("}}}\n");
+    try writer.writeAll("}}\n");
 }
 
 pub fn getStringParam(request: Request, name: []const u8) ![]const u8 {

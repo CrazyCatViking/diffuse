@@ -26,7 +26,12 @@ export const useRepoStore = defineStore('repo', {
     async pickAndOpenRepository() {
       const path = await coreClient.pickRepository()
       if (!path) return
+
+      console.log('Selected repository path:', path);
+
       await this.openRepository(path)
+
+      console.log('Repository opened successfully:', this.repository);
     },
 
     async openRepository(path: string) {

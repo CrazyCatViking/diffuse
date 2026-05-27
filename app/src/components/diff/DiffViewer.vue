@@ -1,31 +1,3 @@
-<script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useVirtualizer } from '@tanstack/vue-virtual'
-import type { DiffRenderModel } from '../../lib/protocol'
-import SplitDiffRow from './SplitDiffRow.vue'
-
-const props = defineProps<{
-  model: DiffRenderModel | null
-  loading: boolean
-  error: string | null
-}>()
-
-const parentRef = ref<HTMLElement | null>(null)
-const rows = computed(() => props.model?.rows ?? [])
-
-const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: rows.value.length,
-    getScrollElement: () => parentRef.value,
-    estimateSize: () => 24,
-    overscan: 12
-  }))
-)
-
-const virtualRows = computed(() => virtualizer.value.getVirtualItems())
-const totalSize = computed(() => virtualizer.value.getTotalSize())
-</script>
-
 <template>
   <section class="diff-viewer">
     <div class="diff-header">
@@ -52,6 +24,34 @@ const totalSize = computed(() => virtualizer.value.getTotalSize())
   </section>
 </template>
 
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
+import type { DiffRenderModel } from '../../lib/protocol'
+import SplitDiffRow from './SplitDiffRow.vue'
+
+const props = defineProps<{
+  model: DiffRenderModel | null
+  loading: boolean
+  error: string | null
+}>()
+
+const parentRef = ref<HTMLElement | null>(null)
+const rows = computed(() => props.model?.rows ?? [])
+
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: rows.value.length,
+    getScrollElement: () => parentRef.value,
+    estimateSize: (index) => (rows.value[index]?.kind === 'hunk' ? 28 : 24),
+    overscan: 12
+  }))
+)
+
+const virtualRows = computed(() => virtualizer.value.getVirtualItems())
+const totalSize = computed(() => virtualizer.value.getTotalSize())
+</script>
+
 <style scoped lang="scss">
 .diff-viewer {
   display: grid;
@@ -59,6 +59,8 @@ const totalSize = computed(() => virtualizer.value.getTotalSize())
   min-width: 0;
   height: 100%;
   background: #111318;
+
+  overflow: auto;
 }
 
 .diff-header {
@@ -99,5 +101,7 @@ const totalSize = computed(() => virtualizer.value.getTotalSize())
   top: 0;
   right: 0;
   left: 0;
+
+  z-index: 1;
 }
 </style>
