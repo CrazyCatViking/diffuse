@@ -11,7 +11,7 @@ pub const Request = struct {
 };
 
 pub fn parseRequest(allocator: std.mem.Allocator, line: []const u8) !Request {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
     errdefer parsed.deinit();
 
     const object = parsed.value.object;

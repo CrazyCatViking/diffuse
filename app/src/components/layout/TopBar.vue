@@ -5,6 +5,7 @@
       {{ loading ? 'Opening...' : 'Open Repository' }}
     </button>
     <div class="repo-path" :title="repoPath ?? ''">{{ repoPath ?? 'No repository selected' }}</div>
+
     <div class="status" :class="{ error }">
       {{ error ?? (version ? `core ${version}` : 'connecting') }}
     </div>
