@@ -43,8 +43,20 @@ pub const DiffRenderModel = struct {
     }
 };
 
-pub fn getDiffRenderModel(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, file_id: []const u8, path: []const u8) !DiffRenderModel {
-    const output = try repository.git(allocator, io, repo_root, &.{ "diff", "--", path });
+pub const DiffContextMode = enum {
+    diff,
+    full,
+};
+
+pub const DiffOptions = struct {
+    context: DiffContextMode = .diff,
+};
+
+pub fn getDiffRenderModel(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, file_id: []const u8, path: []const u8, options: DiffOptions) !DiffRenderModel {
+    const output = switch (options.context) {
+        .diff => try repository.git(allocator, io, repo_root, &.{ "diff", "--", path }),
+        .full => try repository.git(allocator, io, repo_root, &.{ "diff", "-U999999", "--", path }),
+    };
     defer allocator.free(output);
 
     var model = DiffRenderModel{

@@ -29,6 +29,7 @@ pub const ChangedFile = struct {
 pub const DiffRenderModel = struct {
     fileId: []const u8,
     mode: []const u8,
+    context: []const u8,
     rows: []const DiffRow,
 };
 

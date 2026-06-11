@@ -1,4 +1,4 @@
-import { ChangedFile, DiffRenderModel, OpenRepositoryResult, VersionInfo } from "./protocol";
+import { ChangedFile, DiffRenderModel, DiffRenderOptions, OpenRepositoryResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const pickRepository = async (): Promise<string | null> => {
@@ -17,7 +17,7 @@ export const useClient = () => {
     return window.diffuse.coreRequest('listChangedFiles');
   };
 
-  const getDiffRenderModel = async (fileId: string, options: { mode: 'split' }): Promise<DiffRenderModel> => {
+  const getDiffRenderModel = async (fileId: string, options: DiffRenderOptions): Promise<DiffRenderModel> => {
     return window.diffuse.coreRequest('getDiffRenderModel', { fileId, options });
   };
     

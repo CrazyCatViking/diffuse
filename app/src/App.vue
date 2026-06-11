@@ -14,7 +14,17 @@
         :active-file-id="repo.activeFileId"
         @select-file="repo.selectFile($event)"
       />
-      <DiffViewer :model="diff.current" :loading="diff.loading" :error="diff.error" />
+      <DiffViewer
+        :model="diff.current"
+        :loading="diff.loading"
+        :error="diff.error"
+        :view-mode="diff.viewMode"
+        :context-mode="diff.contextMode"
+        :sync-scroll="diff.syncScroll"
+        @update:view-mode="diff.setViewMode($event)"
+        @update:context-mode="diff.setContextMode($event)"
+        @update:sync-scroll="diff.setSyncScroll($event)"
+      />
     </main>
   </div>
 </template>

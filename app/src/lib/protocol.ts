@@ -17,9 +17,19 @@ export type ChangedFile = {
   deletions: number
 }
 
+export type DiffViewMode = 'split' | 'inline'
+
+export type DiffContextMode = 'diff' | 'full'
+
+export type DiffRenderOptions = {
+  mode: DiffViewMode
+  context: DiffContextMode
+}
+
 export type DiffRenderModel = {
   fileId: string
-  mode: 'split'
+  mode: DiffViewMode
+  context: DiffContextMode
   rows: DiffRow[]
 }
 

@@ -45,11 +45,15 @@ fn listChangedFiles(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Reque
 
 fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
+    const mode = getDiffOption(request, "mode") orelse "split";
+    const context = getDiffOption(request, "context") orelse "diff";
+    const diff_context: diff.DiffContextMode = if (std.mem.eql(u8, context, "full")) .full else .diff;
+
     try runtime.session_lock.lockShared(runtime.io);
     defer runtime.session_lock.unlockShared(runtime.io);
 
     const repo = try runtime.session.requireRepo();
-    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id);
+    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context });
     defer model.deinit(runtime.allocator);
 
     var rows: std.ArrayList(types.DiffRow) = .empty;
@@ -58,7 +62,26 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
 
     try types.writeJson(writer, types.DiffRenderModel{
         .fileId = model.file_id,
-        .mode = "split",
+        .mode = mode,
+        .context = context,
         .rows = rows.items,
     });
+}
+
+fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
+    const params = request.value.value.object.get("params") orelse return null;
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return null,
+    };
+    const options = params_object.get("options") orelse return null;
+    const options_object = switch (options) {
+        .object => |object| object,
+        else => return null,
+    };
+    const value = options_object.get(name) orelse return null;
+    return switch (value) {
+        .string => |text| text,
+        else => null,
+    };
 }

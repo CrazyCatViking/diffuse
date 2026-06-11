@@ -50,7 +50,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         const file_path = try readOption(args, "--file");
         var repo = try repository.open(allocator, io, repo_path);
         defer repo.deinit();
-        var model = try diff.getDiffRenderModel(allocator, io, repo.root, file_path, file_path);
+        var model = try diff.getDiffRenderModel(allocator, io, repo.root, file_path, file_path, .{});
         defer model.deinit(allocator);
         var stdout_buffer: [4096]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -63,6 +63,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         try types.writeJson(stdout, types.DiffRenderModel{
             .fileId = model.file_id,
             .mode = "split",
+            .context = "diff",
             .rows = rows.items,
         });
         try stdout.writeByte('\n');
