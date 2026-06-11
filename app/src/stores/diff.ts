@@ -14,7 +14,7 @@ export const useDiffStore = defineStore('diff', () => {
     error.value = undefined;
 
     try {
-      current.value = await client.getDiffRenderModel({ fileId, options: { mode: 'split' } })
+      current.value = await client.getDiffRenderModel(fileId, { mode: 'split' })
     } catch (err) {
       if (err instanceof Error) {
         error.value = err.message;

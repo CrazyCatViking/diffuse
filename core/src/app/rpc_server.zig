@@ -1,11 +1,17 @@
 const std = @import("std");
 
-const diff = @import("../core/diff.zig");
 const json_rpc = @import("../protocol/json_rpc.zig");
-const session_mod = @import("../core/session.zig");
-const types = @import("../protocol/types.zig");
+const rpc_handlers = @import("rpc_handlers.zig");
+const rpc_runtime = @import("rpc_runtime.zig");
+
+const Runtime = rpc_runtime.Runtime;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+    var server = RpcServer.init(allocator);
+    defer server.deinit();
+
+    try rpc_handlers.register(&server);
+
     var runtime: Runtime = undefined;
     runtime.init(allocator, io);
     defer runtime.deinit();
@@ -39,9 +45,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
             continue;
         };
 
-        request_group.concurrent(io, requestTask, .{ &runtime, request }) catch |err| switch (err) {
+        request_group.concurrent(io, requestTask, .{ &server, &runtime, request }) catch |err| switch (err) {
             error.ConcurrencyUnavailable => {
-                requestTask(&runtime, request) catch {};
+                requestTask(&server, &runtime, request) catch {};
             },
         };
     }
@@ -51,35 +57,37 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     try writer_group.await(io);
 }
 
-const Runtime = struct {
+const RpcServer = struct {
+    const Handler = *const fn (*Runtime, *std.Io.Writer, json_rpc.Request) anyerror!void;
+
+    const Route = struct {
+        method: []const u8,
+        handler: Handler,
+    };
+
     allocator: std.mem.Allocator,
-    io: std.Io,
-    session: session_mod.Session,
-    session_lock: std.Io.RwLock = .init,
-    outbound_buffer: [128][]u8 = undefined,
-    outbound: std.Io.Queue([]u8),
+    routes: std.ArrayList(Route),
 
-    fn init(runtime: *Runtime, allocator: std.mem.Allocator, io: std.Io) void {
-        runtime.allocator = allocator;
-        runtime.io = io;
-        runtime.session = session_mod.Session.init(allocator, io);
-        runtime.session_lock = .init;
-        runtime.outbound_buffer = undefined;
-        runtime.outbound = .init(&runtime.outbound_buffer);
+    fn init(allocator: std.mem.Allocator) RpcServer {
+        return .{ .allocator = allocator, .routes = .empty };
     }
 
-    fn deinit(runtime: *Runtime) void {
-        runtime.session.deinit();
+    fn deinit(server: *RpcServer) void {
+        server.routes.deinit(server.allocator);
     }
 
-    fn enqueue(runtime: *Runtime, message: []u8) (std.Io.QueueClosedError || std.Io.Cancelable)!void {
-        errdefer runtime.allocator.free(message);
-        try runtime.outbound.putOne(runtime.io, message);
+    pub fn handle(server: *RpcServer, method: []const u8, handler: Handler) !void {
+        try server.routes.append(server.allocator, .{ .method = method, .handler = handler });
     }
 
-    fn enqueueError(runtime: *Runtime, id: i64, code: i64, message: []const u8) !void {
-        const response = try buildError(runtime.allocator, id, code, message);
-        try runtime.enqueue(response);
+    fn dispatch(server: *const RpcServer, runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+        for (server.routes.items) |route| {
+            if (std.mem.eql(u8, request.method, route.method)) {
+                return route.handler(runtime, writer, request);
+            }
+        }
+
+        return error.MethodNotFound;
     }
 };
 
@@ -100,78 +108,22 @@ fn writerTask(runtime: *Runtime) std.Io.Cancelable!void {
     }
 }
 
-fn requestTask(runtime: *Runtime, request: json_rpc.Request) std.Io.Cancelable!void {
+fn requestTask(server: *const RpcServer, runtime: *Runtime, request: json_rpc.Request) std.Io.Cancelable!void {
     defer request.deinit();
 
-    const response = buildResponse(runtime, request) catch |err| buildError(runtime.allocator, request.id, -32000, @errorName(err)) catch return;
+    const response = buildResponse(server, runtime, request) catch |err| rpc_runtime.buildError(runtime.allocator, request.id, -32000, @errorName(err)) catch return;
     runtime.enqueue(response) catch |err| switch (err) {
         error.Closed => runtime.allocator.free(response),
         error.Canceled => return error.Canceled,
     };
 }
 
-fn buildResponse(runtime: *Runtime, request: json_rpc.Request) ![]u8 {
+fn buildResponse(server: *const RpcServer, runtime: *Runtime, request: json_rpc.Request) ![]u8 {
     var response = std.Io.Writer.Allocating.init(runtime.allocator);
     errdefer response.deinit();
 
-    try handleRequest(runtime, &response.writer, request);
+    try json_rpc.writeRawResultPrefix(&response.writer, request.id);
+    try server.dispatch(runtime, &response.writer, request);
+    try json_rpc.writeRawResultSuffix(&response.writer);
     return try response.toOwnedSlice();
-}
-
-fn buildError(allocator: std.mem.Allocator, id: i64, code: i64, message: []const u8) ![]u8 {
-    var response = std.Io.Writer.Allocating.init(allocator);
-    errdefer response.deinit();
-
-    try json_rpc.writeError(&response.writer, id, code, message);
-    return try response.toOwnedSlice();
-}
-
-fn handleRequest(runtime: *Runtime, writer: anytype, request: json_rpc.Request) !void {
-    if (std.mem.eql(u8, request.method, "getVersion")) {
-        try json_rpc.writeRawResultPrefix(writer, request.id);
-        try types.writeVersionJson(writer);
-        try json_rpc.writeRawResultSuffix(writer);
-        return;
-    }
-
-    if (std.mem.eql(u8, request.method, "openRepository")) {
-        const path = try json_rpc.getStringParam(request, "path");
-        try runtime.session_lock.lock(runtime.io);
-        defer runtime.session_lock.unlock(runtime.io);
-
-        const repo = try runtime.session.openRepository(path);
-        try json_rpc.writeRawResultPrefix(writer, request.id);
-        try types.writeOpenRepositoryJson(writer, repo);
-        try json_rpc.writeRawResultSuffix(writer);
-        return;
-    }
-
-    if (std.mem.eql(u8, request.method, "listChangedFiles")) {
-        try runtime.session_lock.lockShared(runtime.io);
-        defer runtime.session_lock.unlockShared(runtime.io);
-
-        const repo = try runtime.session.requireRepo();
-        const files = try repo.listChangedFiles();
-        defer @import("../core/repository.zig").freeChangedFiles(runtime.allocator, files);
-        try json_rpc.writeRawResultPrefix(writer, request.id);
-        try types.writeChangedFilesJson(writer, files);
-        try json_rpc.writeRawResultSuffix(writer);
-        return;
-    }
-
-    if (std.mem.eql(u8, request.method, "getDiffRenderModel")) {
-        const file_id = try json_rpc.getStringParam(request, "fileId");
-        try runtime.session_lock.lockShared(runtime.io);
-        defer runtime.session_lock.unlockShared(runtime.io);
-
-        const repo = try runtime.session.requireRepo();
-        var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id);
-        defer model.deinit(runtime.allocator);
-        try json_rpc.writeRawResultPrefix(writer, request.id);
-        try types.writeDiffRenderModelJson(writer, model);
-        try json_rpc.writeRawResultSuffix(writer);
-        return;
-    }
-
-    return error.MethodNotFound;
 }

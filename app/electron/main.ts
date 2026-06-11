@@ -1,11 +1,17 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'node:path'
-import { isCoreMethod, type CoreRequest } from '../src/lib/coreApi'
 import { startCoreProcess } from './coreProcess'
 import { CoreRequestTimeoutError, type CoreRpcClient } from './coreRpcClient'
 
 let mainWindow: BrowserWindow | null = null
 let core: CoreRpcClient | null = null
+
+const allowedCoreMethods = new Set([
+  'getVersion',
+  'openRepository',
+  'listChangedFiles',
+  'getDiffRenderModel'
+])
 
 function getCore(): CoreRpcClient {
   if (core?.isRunning) return core
@@ -85,8 +91,8 @@ ipcMain.handle('repo:pickDirectory', async () => {
   return result.filePaths[0]
 })
 
-ipcMain.handle('core:request', async (_event, request: CoreRequest) => {
-  if (!isCoreMethod(request.method)) {
+ipcMain.handle('core:request', async (_event, request: { method: string; params?: Record<string, unknown> }) => {
+  if (!allowedCoreMethods.has(request.method)) {
     throw new Error(`Unknown core method: ${request.method}`)
   }
 

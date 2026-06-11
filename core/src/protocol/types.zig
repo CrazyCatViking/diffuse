@@ -5,95 +5,84 @@ const diff = @import("../core/diff.zig");
 pub const app_name = "diffuse";
 pub const version = "0.1.0";
 
-pub fn writeVersionJson(writer: anytype) !void {
-    try writer.print("{{\"name\":\"{s}\",\"version\":\"{s}\"}}", .{ app_name, version });
+const json_options: std.json.Stringify.Options = .{ .emit_null_optional_fields = false };
+
+pub const VersionInfo = struct {
+    name: []const u8,
+    version: []const u8,
+};
+
+pub const OpenRepositoryResult = struct {
+    root: []const u8,
+    head: []const u8,
+};
+
+pub const ChangedFile = struct {
+    id: []const u8,
+    oldPath: ?[]const u8,
+    newPath: ?[]const u8,
+    status: []const u8,
+    additions: u32,
+    deletions: u32,
+};
+
+pub const DiffRenderModel = struct {
+    fileId: []const u8,
+    mode: []const u8,
+    rows: []const DiffRow,
+};
+
+pub const DiffRow = struct {
+    kind: []const u8,
+    oldLine: ?u32 = null,
+    newLine: ?u32 = null,
+    oldText: ?[]const u8 = null,
+    newText: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+    hunkHeader: ?[]const u8 = null,
+};
+
+pub fn versionInfo() VersionInfo {
+    return .{
+        .name = app_name,
+        .version = version,
+    };
 }
 
-pub fn writeOpenRepositoryJson(writer: anytype, repo: repository.Repository) !void {
-    try writer.writeAll("{");
-    try writeJsonStringField(writer, "root", repo.root, false);
-    try writer.writeAll(",");
-    try writeJsonStringField(writer, "head", repo.head, false);
-    try writer.writeAll("}");
+pub fn openRepositoryResult(repo: repository.Repository) OpenRepositoryResult {
+    return .{
+        .root = repo.root,
+        .head = repo.head,
+    };
 }
 
-pub fn writeChangedFilesJson(writer: anytype, files: []const repository.ChangedFile) !void {
-    try writer.writeByte('[');
-    for (files, 0..) |file, index| {
-        if (index > 0) try writer.writeByte(',');
-        try writer.writeByte('{');
-        try writeJsonStringField(writer, "id", file.id, false);
-        try writer.writeByte(',');
-        try writeOptionalJsonStringField(writer, "oldPath", file.old_path, false);
-        try writer.writeByte(',');
-        try writeOptionalJsonStringField(writer, "newPath", file.new_path, false);
-        try writer.writeByte(',');
-        try writeJsonStringField(writer, "status", file.statusString(), false);
-        try writer.print(",\"additions\":{},\"deletions\":{}", .{ file.additions, file.deletions });
-        try writer.writeByte('}');
-    }
-    try writer.writeByte(']');
+pub fn changedFile(file: repository.ChangedFile) ChangedFile {
+    return .{
+        .id = file.id,
+        .oldPath = file.old_path,
+        .newPath = file.new_path,
+        .status = file.statusString(),
+        .additions = file.additions,
+        .deletions = file.deletions,
+    };
 }
 
-pub fn writeDiffRenderModelJson(writer: anytype, model: diff.DiffRenderModel) !void {
-    try writer.writeByte('{');
-    try writeJsonStringField(writer, "fileId", model.file_id, false);
-    try writer.writeAll(",\"mode\":\"split\",\"rows\":[");
-    for (model.rows.items, 0..) |row, index| {
-        if (index > 0) try writer.writeByte(',');
-        try writer.writeByte('{');
-        try writeJsonStringField(writer, "kind", row.kindString(), false);
-        if (row.old_line) |line| try writer.print(",\"oldLine\":{}", .{line});
-        if (row.new_line) |line| try writer.print(",\"newLine\":{}", .{line});
-        if (row.old_text) |text| {
-            try writer.writeByte(',');
-            try writeJsonStringField(writer, "oldText", text, false);
-        }
-        if (row.new_text) |text| {
-            try writer.writeByte(',');
-            try writeJsonStringField(writer, "newText", text, false);
-        }
-        if (row.text) |text| {
-            try writer.writeByte(',');
-            try writeJsonStringField(writer, "text", text, false);
-        }
-        if (row.hunk_header) |text| {
-            try writer.writeByte(',');
-            try writeJsonStringField(writer, "hunkHeader", text, false);
-        }
-        try writer.writeByte('}');
-    }
-    try writer.writeAll("]}");
+pub fn diffRow(row: diff.DiffRow) DiffRow {
+    return .{
+        .kind = row.kindString(),
+        .oldLine = row.old_line,
+        .newLine = row.new_line,
+        .oldText = row.old_text,
+        .newText = row.new_text,
+        .text = row.text,
+        .hunkHeader = row.hunk_header,
+    };
 }
 
-pub fn writeJsonStringField(writer: anytype, name: []const u8, value: []const u8, comma_before: bool) !void {
-    if (comma_before) try writer.writeByte(',');
-    try writer.print("\"{s}\":", .{name});
-    try writeJsonString(writer, value);
+pub fn writeJsonString(writer: *std.Io.Writer, value: []const u8) !void {
+    try writeJson(writer, value);
 }
 
-pub fn writeOptionalJsonStringField(writer: anytype, name: []const u8, value: ?[]const u8, comma_before: bool) !void {
-    if (comma_before) try writer.writeByte(',');
-    try writer.print("\"{s}\":", .{name});
-    if (value) |text| {
-        try writeJsonString(writer, text);
-    } else {
-        try writer.writeAll("null");
-    }
-}
-
-pub fn writeJsonString(writer: anytype, value: []const u8) !void {
-    try writer.writeByte('"');
-    for (value) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            0...8, 11...12, 14...0x1f => try writer.print("\\u{x:0>4}", .{c}),
-            else => try writer.writeByte(c),
-        }
-    }
-    try writer.writeByte('"');
+pub fn writeJson(writer: *std.Io.Writer, value: anytype) !void {
+    try std.json.Stringify.value(value, json_options, writer);
 }

@@ -37,7 +37,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         var stdout_buffer: [4096]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
         const stdout = &stdout_writer.interface;
-        try types.writeChangedFilesJson(stdout, files);
+
+        var result: std.ArrayList(types.ChangedFile) = .empty;
+        defer result.deinit(allocator);
+        for (files) |file| try result.append(allocator, types.changedFile(file));
+
+        try types.writeJson(stdout, result.items);
         try stdout.writeByte('\n');
         try stdout.flush();
     } else if (std.mem.eql(u8, command, "diff")) {
@@ -50,7 +55,16 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         var stdout_buffer: [4096]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
         const stdout = &stdout_writer.interface;
-        try types.writeDiffRenderModelJson(stdout, model);
+
+        var rows: std.ArrayList(types.DiffRow) = .empty;
+        defer rows.deinit(allocator);
+        for (model.rows.items) |row| try rows.append(allocator, types.diffRow(row));
+
+        try types.writeJson(stdout, types.DiffRenderModel{
+            .fileId = model.file_id,
+            .mode = "split",
+            .rows = rows.items,
+        });
         try stdout.writeByte('\n');
         try stdout.flush();
     } else {
