@@ -31,9 +31,9 @@ import type { DiffRenderModel } from '../../lib/protocol'
 import SplitDiffRow from './SplitDiffRow.vue'
 
 const props = defineProps<{
-  model: DiffRenderModel | null
+  model?: DiffRenderModel 
   loading: boolean
-  error: string | null
+  error?: string 
 }>()
 
 const parentRef = ref<HTMLElement | null>(null)

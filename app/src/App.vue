@@ -1,8 +1,8 @@
 <template>
   <div class="app-shell">
     <TopBar
-      :repo-path="repo.repository?.root ?? null"
-      :version="repo.version?.version ?? null"
+      :repo-path="repo.repository?.root"
+      :version="repo.version?.version"
       :loading="repo.loading"
       :error="repo.error"
       @open-repository="repo.pickAndOpenRepository()"

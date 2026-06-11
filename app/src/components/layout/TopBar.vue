@@ -1,23 +1,41 @@
 <template>
   <header class="top-bar">
-    <div class="brand">Diffuse</div>
-    <button class="open-button" :disabled="loading" @click="$emit('openRepository')">
-      {{ loading ? 'Opening...' : 'Open Repository' }}
-    </button>
-    <div class="repo-path" :title="repoPath ?? ''">{{ repoPath ?? 'No repository selected' }}</div>
+    <Row justify="between">
+      <Row justify="start">
+        <div class="brand">Diffuse</div>
 
-    <div class="status" :class="{ error }">
-      {{ error ?? (version ? `core ${version}` : 'connecting') }}
-    </div>
+        <Button 
+          :disabled="loading" 
+          @click="$emit('openRepository')"
+        >
+          {{ loading ? 'Opening...' : 'Open Repository' }}
+        </Button>
+
+        <div class="repo-path" :title="repoPath ?? ''">{{ repoPath ?? 'No repository selected' }}</div>
+      </Row>
+
+      <Row justify="end">
+        <Button @click="$emit('openRepository')">
+          {{ 'refresh' }}
+        </Button>
+
+        <div class="status" :class="{ error }">
+          {{ error ?? (version ? `core ${version}` : 'connecting') }}
+        </div>
+      </Row>
+    </Row>
   </header>
 </template>
 
 <script setup lang="ts">
+import Button from '../Button.vue';
+import Row from '../Row.vue';
+
 defineProps<{
-  repoPath: string | null
-  version: string | null
+  repoPath?: string 
+  version?: string 
   loading: boolean
-  error: string | null
+  error?: string
 }>()
 
 defineEmits<{
@@ -27,12 +45,8 @@ defineEmits<{
 
 <style scoped lang="scss">
 .top-bar {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  height: 52px;
-  padding: 0 16px;
+  height: auto;
+  padding: 1rem;
   border-bottom: 1px solid #252a35;
   background: #151821;
 }
@@ -41,20 +55,6 @@ defineEmits<{
   color: #f5f7fb;
   font-weight: 700;
   letter-spacing: 0.02em;
-}
-
-.open-button {
-  color: #f5f7fb;
-  background: #2d63d8;
-  border: 0;
-  border-radius: 8px;
-  padding: 7px 12px;
-  cursor: pointer;
-
-  &:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
 }
 
 .repo-path {

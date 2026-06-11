@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'node:path'
+import { isCoreMethod, type CoreRequest } from '../src/lib/coreApi'
 import { startCoreProcess } from './coreProcess'
 import { CoreRequestTimeoutError, type CoreRpcClient } from './coreRpcClient'
 
@@ -84,6 +85,10 @@ ipcMain.handle('repo:pickDirectory', async () => {
   return result.filePaths[0]
 })
 
-ipcMain.handle('core:request', async (_event, request: { method: string; params?: Record<string, unknown> }) => {
+ipcMain.handle('core:request', async (_event, request: CoreRequest) => {
+  if (!isCoreMethod(request.method)) {
+    throw new Error(`Unknown core method: ${request.method}`)
+  }
+
   return coreRequest(request.method, request.params ?? {})
 })

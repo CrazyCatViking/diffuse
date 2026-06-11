@@ -1,55 +1,69 @@
-import { defineStore } from 'pinia'
-import { coreClient } from '../lib/coreClient'
+import { defineStore } from 'pinia';
 import type { ChangedFile, OpenRepositoryResult, VersionInfo } from '../lib/protocol'
+import { computed, ref } from 'vue';
+import { useClient } from '../lib/useClient';
 
-export const useRepoStore = defineStore('repo', {
-  state: () => ({
-    version: null as VersionInfo | null,
-    repository: null as OpenRepositoryResult | null,
-    changedFiles: [] as ChangedFile[],
-    activeFileId: null as string | null,
-    loading: false,
-    error: null as string | null
-  }),
+export const useRepoStore = defineStore('repo', () => {
+  const client = useClient();
+  const version = ref<VersionInfo>();
+  const repository = ref<OpenRepositoryResult>();
+  const changedFiles = ref<ChangedFile[]>([]);
+  const activeFileId = ref<string>();
+  const loading = ref(false);
+  const error = ref<string>();
 
-  getters: {
-    activeFile(state): ChangedFile | null {
-      return state.changedFiles.find((file) => file.id === state.activeFileId) ?? null
-    }
-  },
+  const activeFile = computed(() => changedFiles.value.find((file) => file.id === activeFileId.value) ?? null);
 
-  actions: {
-    async loadVersion() {
-      this.version = await coreClient.getVersion()
-    },
+  const loadVersion = async () => {
+    version.value = await client.getVersion();
+  };
 
-    async pickAndOpenRepository() {
-      const path = await coreClient.pickRepository()
-      if (!path) return
+  const pickAndOpenRepository = async () => {
+    const path = await client.pickRepository();
+    if (!path) return;
 
-      console.log('Selected repository path:', path);
+    console.log('Selected repository path:', path);
 
-      await this.openRepository(path)
+    await openRepository(path);
 
-      console.log('Repository opened successfully:', this.repository);
-    },
+    console.log('Repository opened successfully:', repository.value);
+  };
 
-    async openRepository(path: string) {
-      this.loading = true
-      this.error = null
-      try {
-        this.repository = await coreClient.openRepository(path)
-        this.changedFiles = await coreClient.listChangedFiles()
-        this.activeFileId = this.changedFiles[0]?.id ?? null
-      } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error)
-      } finally {
-        this.loading = false
+  const openRepository = async (path: string) => {
+    loading.value = true;
+    error.value = undefined;
+    try {
+      repository.value = await client.openRepository(path);
+      changedFiles.value = await client.listChangedFiles();
+      activeFileId.value = changedFiles.value[0]?.id ?? null;
+    } catch (err) {
+      if (err instanceof Error) {
+        error.value = err.message;
+      } else {
+        error.value = JSON.stringify(err);
       }
-    },
-
-    selectFile(fileId: string) {
-      this.activeFileId = fileId
+    } finally {
+      loading.value = false;
     }
-  }
-})
+  };
+
+  const selectFile = (fileId: string) => {
+    activeFileId.value = fileId
+  };
+
+  return {
+    version,
+    repository,
+    changedFiles,
+    activeFileId,
+    loading,
+    error,
+
+    activeFile,
+
+    loadVersion,
+    pickAndOpenRepository,
+    openRepository,
+    selectFile,
+  };
+});

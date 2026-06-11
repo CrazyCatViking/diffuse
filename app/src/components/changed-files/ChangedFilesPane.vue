@@ -18,7 +18,7 @@ import ChangedFileRow from './ChangedFileRow.vue'
 
 defineProps<{
   files: ChangedFile[]
-  activeFileId: string | null
+  activeFileId?: string 
 }>()
 
 defineEmits<{
