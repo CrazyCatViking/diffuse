@@ -23,10 +23,12 @@
         :sync-scroll="diff.syncScroll"
         :installing-grammar="diff.installingGrammar"
         :grammar-install-step="diff.grammarInstallStep"
+        :has-new-changes="diff.hasNewChanges"
         @update:view-mode="diff.setViewMode($event)"
         @update:context-mode="diff.setContextMode($event)"
         @update:sync-scroll="diff.setSyncScroll($event)"
         @install-grammar="diff.installMissingGrammar()"
+        @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
       />
     </main>
   </div>
@@ -54,8 +56,22 @@ onMounted(async () => {
 watch(
   () => repo.activeFileId,
   (fileId) => {
-    if (fileId) void diff.loadDiff(fileId);
+    if (fileId) void diff.loadDiff(fileId, { silent: diff.current?.fileId === fileId });
     else diff.clear();
+  }
+);
+
+watch(
+  () => repo.changeRevision,
+  () => {
+    if (!repo.activeFileId) {
+      diff.clear();
+      return;
+    }
+
+    if (diff.current?.fileId === repo.activeFileId && repo.changedFileIds.includes(repo.activeFileId)) {
+      diff.markNewChanges();
+    }
   }
 );
 </script>

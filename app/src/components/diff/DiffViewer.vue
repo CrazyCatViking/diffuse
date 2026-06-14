@@ -4,6 +4,12 @@
       <div class="file-meta">
         <span>{{ model?.fileId ?? 'No file selected' }}</span>
         <span v-if="model" class="row-count">{{ rows.length }} rows</span>
+        <span v-if="hasNewChanges" class="update-status">
+          New changes available
+          <button class="load-latest" type="button" :disabled="loading" @click="emit('loadLatest')">
+            Load latest
+          </button>
+        </span>
         <span v-if="syntaxMessage" class="syntax-status">
           {{ syntaxMessage }}
           <button class="install-grammar" type="button" :disabled="installingGrammar" @click="emit('installGrammar')">
@@ -112,6 +118,7 @@ const props = defineProps<{
   syncScroll: boolean
   installingGrammar: boolean
   grammarInstallStep?: string
+  hasNewChanges: boolean
 }>();
 
 const emit = defineEmits<{
@@ -119,6 +126,7 @@ const emit = defineEmits<{
   'update:contextMode': [mode: DiffContextMode]
   'update:syncScroll': [enabled: boolean]
   installGrammar: []
+  loadLatest: []
 }>();
 
 const leftRef = ref<HTMLElement | null>(null);
@@ -494,11 +502,21 @@ watch(
   border-radius: 999px;
 }
 
-.install-grammar {
+.update-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  color: #8fd6ff;
+  background: rgba(77, 166, 255, 0.12);
+  border: 1px solid rgba(77, 166, 255, 0.24);
+  border-radius: 999px;
+}
+
+.install-grammar,
+.load-latest {
   padding: 0 6px;
-  color: #f3c98b;
-  background: rgba(211, 164, 95, 0.16);
-  border: 1px solid rgba(211, 164, 95, 0.28);
   border-radius: 999px;
   cursor: pointer;
   font: inherit;
@@ -507,6 +525,18 @@ watch(
     cursor: default;
     opacity: 0.65;
   }
+}
+
+.install-grammar {
+  color: #f3c98b;
+  background: rgba(211, 164, 95, 0.16);
+  border: 1px solid rgba(211, 164, 95, 0.28);
+}
+
+.load-latest {
+  color: #d7f1ff;
+  background: rgba(77, 166, 255, 0.16);
+  border: 1px solid rgba(77, 166, 255, 0.32);
 }
 
 .install-step {

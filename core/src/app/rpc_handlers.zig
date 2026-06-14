@@ -27,6 +27,7 @@ fn openRepository(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.R
     defer runtime.session_lock.unlock(runtime.io);
 
     const repo = try runtime.session.openRepository(path);
+    try runtime.repo_watcher.start(repo.root);
     try types.writeJson(writer, types.openRepositoryResult(repo));
 }
 

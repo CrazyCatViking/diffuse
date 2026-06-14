@@ -65,52 +65,52 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: false
     }
-  })
+  });
 
   mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
-    console.error(`Failed to load preload script ${preloadPath}:`, error)
-  })
+    console.error(`Failed to load preload script ${preloadPath}:`, error);
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
   }
 }
 
 app.whenReady().then(() => {
-  getCore()
-  createWindow()
+  getCore();
+  createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+  if (process.platform !== 'darwin') app.quit();
+});
 
 app.on('before-quit', () => {
-  core?.dispose()
-})
+  core?.dispose();
+});
 
 ipcMain.handle('repo:pickDirectory', async () => {
-  if (!mainWindow) return null
+  if (!mainWindow) return null;
 
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Repository',
     properties: ['openDirectory']
-  })
+  });
 
-  if (result.canceled || result.filePaths.length === 0) return null
-  return result.filePaths[0]
-})
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
 
 ipcMain.handle('core:request', async (_event, request: { method: string; params?: Record<string, unknown> }) => {
   if (!allowedCoreMethods.has(request.method)) {
-    throw new Error(`Unknown core method: ${request.method}`)
+    throw new Error(`Unknown core method: ${request.method}`);
   }
 
-  return coreRequest(request.method, request.params ?? {})
-})
+  return coreRequest(request.method, request.params ?? {});
+});

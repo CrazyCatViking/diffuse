@@ -57,6 +57,8 @@ The main process also limits renderer access with `allowedCoreMethods`:
 - `getSyntaxSpans`
 - `installTreeSitterGrammar`
 
+After `openRepository` succeeds, the Zig core starts a debounced filesystem watcher for the repository root. When the watcher sees a relevant file change, the core sends a `repository/changed` JSON-RPC notification. Electron forwards that notification through the existing `core:event` channel. The renderer handles it by refreshing the changed-file list and marking the currently displayed diff as stale.
+
 ## Renderer State
 
 The Vue app starts in `app/src/main.ts`, installs Pinia, and renders `App.vue`.
@@ -75,6 +77,8 @@ The main user flow is:
 5. `App.vue` watches `activeFileId` and calls `diff.loadDiff(fileId)`.
 6. `diff.loadDiff()` sends `getDiffRenderModel` with the current view/context options.
 7. `DiffViewer.vue` renders the returned rows.
+
+Once a repository is open, filesystem changes under the repository root trigger the same changed-file refresh path without reopening the repository. The repo store preserves the active file when it is still present, selects the first changed file when it is not, and increments `changeRevision`. If the same file is already displayed, `App.vue` marks the diff as having new changes rather than reloading it. The user can then click `Load latest` in the diff header to replace the displayed model.
 
 ## Core Entry Points
 
@@ -99,6 +103,7 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 - `session_lock` protects repository session access.
 - `syntax_cache` stores dynamically loaded Tree-sitter parser libraries and queries.
 - `syntax_cache_lock` protects the syntax cache.
+- `repo_watcher` watches the opened repository and emits `repository/changed` notifications.
 - `outbound` queues JSON response and event messages for the writer task.
 
 Requests can run concurrently. Responses and notifications are serialized through the outbound queue so only the writer task writes to `stdout`.

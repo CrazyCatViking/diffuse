@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const json_rpc = @import("../protocol/json_rpc.zig");
+const repository_watcher = @import("repository_watcher.zig");
 const session_mod = @import("../core/session.zig");
 const syntax = @import("../core/syntax.zig");
 
@@ -10,6 +11,7 @@ pub const Runtime = struct {
     environ_map: *const std.process.Environ.Map,
     session: session_mod.Session,
     syntax_cache: syntax.Cache,
+    repo_watcher: repository_watcher.RepositoryWatcher,
     syntax_cache_lock: std.Io.Mutex = .init,
     session_lock: std.Io.RwLock = .init,
     outbound_buffer: [128][]u8 = undefined,
@@ -25,9 +27,11 @@ pub const Runtime = struct {
         runtime.session_lock = .init;
         runtime.outbound_buffer = undefined;
         runtime.outbound = .init(&runtime.outbound_buffer);
+        runtime.repo_watcher = repository_watcher.RepositoryWatcher.init(allocator, io, &runtime.outbound);
     }
 
     pub fn deinit(runtime: *Runtime) void {
+        runtime.repo_watcher.deinit();
         runtime.syntax_cache.deinit();
         runtime.session.deinit();
     }
