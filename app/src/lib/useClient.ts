@@ -1,4 +1,4 @@
-import { ChangedFile, DiffRenderModel, DiffRenderOptions, InstallTreeSitterGrammarResult, OpenRepositoryResult, SyntaxLineSpans, SyntaxSide, VersionInfo } from "./protocol";
+import { ChangedFile, DiffRenderModel, DiffRenderOptions, InstallTreeSitterGrammarResult, OpenRepositoryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const pickRepository = async (): Promise<string | null> => {
@@ -28,6 +28,14 @@ export const useClient = () => {
   const installTreeSitterGrammar = async (language: string): Promise<InstallTreeSitterGrammarResult> => {
     return window.diffuse.coreRequest('installTreeSitterGrammar', { language });
   };
+
+  const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
+    return window.diffuse.coreRequest('listTreeSitterGrammars');
+  };
+
+  const uninstallTreeSitterGrammar = async (language: string): Promise<UninstallTreeSitterGrammarResult> => {
+    return window.diffuse.coreRequest('uninstallTreeSitterGrammar', { language });
+  };
      
   return {
     pickRepository,     
@@ -36,6 +44,8 @@ export const useClient = () => {
     listChangedFiles,
     getDiffRenderModel,
     getSyntaxSpans,
-    installTreeSitterGrammar
+    installTreeSitterGrammar,
+    listTreeSitterGrammars,
+    uninstallTreeSitterGrammar
   };
 };

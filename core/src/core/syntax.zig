@@ -83,6 +83,37 @@ pub const InstallResult = struct {
     }
 };
 
+pub const UninstallResult = struct {
+    language: []const u8,
+    uninstalled: bool,
+    message: ?[]const u8 = null,
+
+    pub fn deinit(self: *UninstallResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.language);
+        if (self.message) |value| allocator.free(value);
+    }
+};
+
+pub const GrammarInfo = struct {
+    id: []const u8,
+    url: ?[]const u8 = null,
+    revision: ?[]const u8 = null,
+    requires: []const []const u8 = &.{},
+    installed: bool,
+    grammarPath: ?[]const u8 = null,
+    highlightsQueryPath: ?[]const u8 = null,
+
+    pub fn deinit(self: *GrammarInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.url) |value| allocator.free(value);
+        if (self.revision) |value| allocator.free(value);
+        for (self.requires) |value| allocator.free(value);
+        allocator.free(self.requires);
+        if (self.grammarPath) |value| allocator.free(value);
+        if (self.highlightsQueryPath) |value| allocator.free(value);
+    }
+};
+
 pub const SyntaxStatus = struct {
     language: ?[]const u8 = null,
     grammarInstalled: bool = false,
@@ -162,6 +193,18 @@ pub const Cache = struct {
     pub fn deinit(self: *Cache) void {
         for (self.entries.items) |*entry| entry.deinit(self.allocator);
         self.entries.deinit(self.allocator);
+    }
+
+    pub fn removeLanguage(self: *Cache, language: []const u8) void {
+        var index: usize = 0;
+        while (index < self.entries.items.len) {
+            if (std.mem.eql(u8, self.entries.items[index].language, language)) {
+                self.entries.items[index].deinit(self.allocator);
+                _ = self.entries.orderedRemove(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 };
 
@@ -353,6 +396,96 @@ pub fn installGrammar(allocator: std.mem.Allocator, io: std.Io, language: []cons
         .highlightsQueryPath = query_path,
         .message = try allocator.dupe(u8, "installed"),
     };
+}
+
+pub fn uninstallGrammar(allocator: std.mem.Allocator, io: std.Io, language: []const u8, configured_grammar_root: ?[]const u8) !UninstallResult {
+    var entry = try registryEntry(allocator, language) orelse {
+        return .{
+            .language = try allocator.dupe(u8, language),
+            .uninstalled = false,
+            .message = try allocator.dupe(u8, "language-not-in-registry"),
+        };
+    };
+    defer entry.deinit(allocator);
+
+    if (entry.queryOnly) {
+        return .{
+            .language = try allocator.dupe(u8, language),
+            .uninstalled = false,
+            .message = try allocator.dupe(u8, "query-only-language"),
+        };
+    }
+
+    const root = try grammarRoot(allocator, configured_grammar_root);
+    defer allocator.free(root);
+    const install_dir = try std.fs.path.join(allocator, &.{ root, language });
+    defer allocator.free(install_dir);
+
+    if (!fileExists(io, install_dir)) {
+        return .{
+            .language = try allocator.dupe(u8, language),
+            .uninstalled = true,
+            .message = try allocator.dupe(u8, "not-installed"),
+        };
+    }
+
+    try std.Io.Dir.deleteTree(.cwd(), io, install_dir);
+    return .{
+        .language = try allocator.dupe(u8, language),
+        .uninstalled = true,
+        .message = try allocator.dupe(u8, "uninstalled"),
+    };
+}
+
+pub fn listGrammars(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8) ![]GrammarInfo {
+    var parsed = try std.json.parseFromSlice(Registry, allocator, registry_json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const root = try grammarRoot(allocator, configured_grammar_root);
+    defer allocator.free(root);
+
+    var result = std.ArrayList(GrammarInfo).empty;
+    errdefer {
+        for (result.items) |*grammar| grammar.deinit(allocator);
+        result.deinit(allocator);
+    }
+
+    for (parsed.value.languages) |entry| {
+        if (entry.queryOnly) continue;
+
+        var grammar = GrammarInfo{
+            .id = try allocator.dupe(u8, entry.id),
+            .url = if (entry.url) |value| try allocator.dupe(u8, value) else null,
+            .revision = if (entry.revision) |value| try allocator.dupe(u8, value) else null,
+            .requires = try dupeStringSlice(allocator, entry.requires orelse &.{}),
+            .installed = false,
+        };
+        errdefer grammar.deinit(allocator);
+
+        const language_dir = try std.fs.path.join(allocator, &.{ root, entry.id });
+        defer allocator.free(language_dir);
+        var parser_path: ?[]u8 = try std.fs.path.join(allocator, &.{ language_dir, parserFileName(entry.id) });
+        errdefer if (parser_path) |path| allocator.free(path);
+        var query_path: ?[]u8 = try std.fs.path.join(allocator, &.{ language_dir, "highlights.scm" });
+        errdefer if (query_path) |path| allocator.free(path);
+
+        if (fileExists(io, parser_path.?) and fileExists(io, query_path.?)) {
+            grammar.installed = true;
+            grammar.grammarPath = parser_path.?;
+            grammar.highlightsQueryPath = query_path.?;
+            parser_path = null;
+            query_path = null;
+        } else {
+            allocator.free(parser_path.?);
+            allocator.free(query_path.?);
+            parser_path = null;
+            query_path = null;
+        }
+
+        try result.append(allocator, grammar);
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 fn buildSourceMap(allocator: std.mem.Allocator, rows: anytype, side: Side) !SourceMap {

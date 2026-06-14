@@ -63,6 +63,22 @@ export type InstallTreeSitterGrammarResult = {
   message?: string;
 };
 
+export type UninstallTreeSitterGrammarResult = {
+  language: string;
+  uninstalled: boolean;
+  message?: string;
+};
+
+export type TreeSitterGrammar = {
+  id: string;
+  url?: string;
+  revision?: string;
+  requires: string[];
+  installed: boolean;
+  grammarPath?: string;
+  highlightsQueryPath?: string;
+};
+
 export type DiffRow = {
   kind: 'context' | 'added' | 'deleted' | 'hunk';
   oldLine?: number;

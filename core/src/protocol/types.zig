@@ -57,6 +57,22 @@ pub const InstallTreeSitterGrammarResult = struct {
     message: ?[]const u8 = null,
 };
 
+pub const UninstallTreeSitterGrammarResult = struct {
+    language: []const u8,
+    uninstalled: bool,
+    message: ?[]const u8 = null,
+};
+
+pub const TreeSitterGrammar = struct {
+    id: []const u8,
+    url: ?[]const u8 = null,
+    revision: ?[]const u8 = null,
+    requires: []const []const u8,
+    installed: bool,
+    grammarPath: ?[]const u8 = null,
+    highlightsQueryPath: ?[]const u8 = null,
+};
+
 pub const DiffRow = struct {
     kind: []const u8,
     oldLine: ?u32 = null,
@@ -125,6 +141,26 @@ pub fn installTreeSitterGrammarResult(result: diff.syntax.InstallResult) Install
         .grammarPath = result.grammarPath,
         .highlightsQueryPath = result.highlightsQueryPath,
         .message = result.message,
+    };
+}
+
+pub fn uninstallTreeSitterGrammarResult(result: diff.syntax.UninstallResult) UninstallTreeSitterGrammarResult {
+    return .{
+        .language = result.language,
+        .uninstalled = result.uninstalled,
+        .message = result.message,
+    };
+}
+
+pub fn treeSitterGrammar(grammar: diff.syntax.GrammarInfo) TreeSitterGrammar {
+    return .{
+        .id = grammar.id,
+        .url = grammar.url,
+        .revision = grammar.revision,
+        .requires = grammar.requires,
+        .installed = grammar.installed,
+        .grammarPath = grammar.grammarPath,
+        .highlightsQueryPath = grammar.highlightsQueryPath,
     };
 }
 

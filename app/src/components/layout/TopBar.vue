@@ -19,6 +19,10 @@
           {{ 'refresh' }}
         </Button>
 
+        <Button @click="$emit('openSettings')">
+          Settings
+        </Button>
+
         <div class="status" :class="{ error }">
           {{ error ?? (version ? `core ${version}` : 'connecting') }}
         </div>
@@ -41,6 +45,7 @@ defineProps<{
 defineEmits<{
   openRepository: [];
   refresh: [];
+  openSettings: [];
 }>();
 </script>
 

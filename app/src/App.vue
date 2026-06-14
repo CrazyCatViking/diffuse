@@ -7,6 +7,7 @@
       :error="repo.error"
       @open-repository="showRecentRepositories = true"
       @refresh="repo.refreshChangedFiles()"
+      @open-settings="showSettings = true"
     />
 
     <RecentRepositoriesDialog
@@ -18,7 +19,9 @@
       @open-recent="openRecentRepository"
     />
 
-    <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
+    <SettingsView v-if="showSettings" @close="showSettings = false" />
+
+    <main v-else class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
       <ChangedFilesPane
         :files="repo.changedFiles"
         :active-file-id="repo.activeFileId"
@@ -60,12 +63,14 @@ import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
+import SettingsView from './components/settings/SettingsView.vue';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 
 const repo = useRepoStore();
 const diff = useDiffStore();
 const showRecentRepositories = ref(false);
+const showSettings = ref(false);
 const fileTreeWidthStorageKey = 'diffuse.fileTreeWidth';
 const minFileTreeWidth = 220;
 const maxFileTreeWidth = 640;

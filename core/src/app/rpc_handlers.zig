@@ -14,7 +14,9 @@ pub fn register(server: anytype) !void {
     try server.handle("listChangedFiles", listChangedFiles);
     try server.handle("getDiffRenderModel", getDiffRenderModel);
     try server.handle("getSyntaxSpans", getSyntaxSpans);
+    try server.handle("listTreeSitterGrammars", listTreeSitterGrammars);
     try server.handle("installTreeSitterGrammar", installTreeSitterGrammar);
+    try server.handle("uninstallTreeSitterGrammar", uninstallTreeSitterGrammar);
 }
 
 fn getVersion(_: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
@@ -84,6 +86,38 @@ fn installTreeSitterGrammar(runtime: *Runtime, writer: *std.Io.Writer, request: 
     defer result.deinit(runtime.allocator);
 
     try types.writeJson(writer, types.installTreeSitterGrammarResult(result));
+}
+
+fn uninstallTreeSitterGrammar(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const language = try json_rpc.getStringParam(request, "language");
+    const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
+    defer if (grammar_root) |path| runtime.allocator.free(path);
+
+    try runtime.syntax_cache_lock.lock(runtime.io);
+    defer runtime.syntax_cache_lock.unlock(runtime.io);
+    runtime.syntax_cache.removeLanguage(language);
+
+    var result = try diff.syntax.uninstallGrammar(runtime.allocator, runtime.io, language, grammar_root);
+    defer result.deinit(runtime.allocator);
+
+    try types.writeJson(writer, types.uninstallTreeSitterGrammarResult(result));
+}
+
+fn listTreeSitterGrammars(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
+    const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
+    defer if (grammar_root) |path| runtime.allocator.free(path);
+
+    const grammars = try diff.syntax.listGrammars(runtime.allocator, runtime.io, grammar_root);
+    defer {
+        for (grammars) |*grammar| grammar.deinit(runtime.allocator);
+        runtime.allocator.free(grammars);
+    }
+
+    var result: std.ArrayList(types.TreeSitterGrammar) = .empty;
+    defer result.deinit(runtime.allocator);
+    for (grammars) |grammar| try result.append(runtime.allocator, types.treeSitterGrammar(grammar));
+
+    try types.writeJson(writer, result.items);
 }
 
 fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {

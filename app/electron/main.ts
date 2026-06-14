@@ -12,7 +12,9 @@ const allowedCoreMethods = new Set([
   'listChangedFiles',
   'getDiffRenderModel',
   'getSyntaxSpans',
-  'installTreeSitterGrammar'
+  'listTreeSitterGrammars',
+  'installTreeSitterGrammar',
+  'uninstallTreeSitterGrammar'
 ]);
 
 function getCore(): CoreRpcClient {
