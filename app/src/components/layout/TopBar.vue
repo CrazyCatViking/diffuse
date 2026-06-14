@@ -15,7 +15,7 @@
       </Row>
 
       <Row justify="end">
-        <Button @click="$emit('openRepository')">
+        <Button :disabled="loading || !repoPath" @click="$emit('refresh')">
           {{ 'refresh' }}
         </Button>
 
@@ -32,15 +32,16 @@ import Button from '../Button.vue';
 import Row from '../Row.vue';
 
 defineProps<{
-  repoPath?: string 
-  version?: string 
-  loading: boolean
-  error?: string
-}>()
+  repoPath?: string;
+  version?: string;
+  loading: boolean;
+  error?: string;
+}>();
 
 defineEmits<{
-  openRepository: []
-}>()
+  openRepository: [];
+  refresh: [];
+}>();
 </script>
 
 <style scoped lang="scss">

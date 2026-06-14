@@ -3,10 +3,54 @@ import type { ChangedFile, OpenRepositoryResult, VersionInfo } from '../lib/prot
 import { computed, ref } from 'vue';
 import { useClient } from '../lib/useClient';
 
+const recentRepositoriesStorageKey = 'diffuse.recentRepositories';
+const maxRecentRepositories = 10;
+
+export type RecentRepository = {
+  path: string;
+  name: string;
+  openedAt: number;
+};
+
+const loadRecentRepositories = (): RecentRepository[] => {
+  const raw = window.localStorage.getItem(recentRepositoriesStorageKey);
+  if (!raw) return [];
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((repository): repository is RecentRepository => {
+        return isRecentRepository(repository);
+      })
+      .slice(0, maxRecentRepositories);
+  } catch {
+    return [];
+  }
+};
+
+const saveRecentRepositories = (repositories: RecentRepository[]) => {
+  window.localStorage.setItem(recentRepositoriesStorageKey, JSON.stringify(repositories));
+};
+
+const isRecentRepository = (value: unknown): value is RecentRepository => {
+  if (typeof value !== 'object' || value === null) return false;
+
+  const repository = value as Partial<RecentRepository>;
+  return typeof repository.path === 'string' && typeof repository.name === 'string' && typeof repository.openedAt === 'number';
+};
+
+const repositoryName = (path: string): string => {
+  const normalized = path.replace(/[\\/]+$/, '');
+  return normalized.split(/[\\/]/).pop() || path;
+};
+
 export const useRepoStore = defineStore('repo', () => {
   const client = useClient();
   const version = ref<VersionInfo>();
   const repository = ref<OpenRepositoryResult>();
+  const recentRepositories = ref<RecentRepository[]>(loadRecentRepositories());
   const changedFiles = ref<ChangedFile[]>([]);
   const activeFileId = ref<string>();
   const loading = ref(false);
@@ -51,6 +95,7 @@ export const useRepoStore = defineStore('repo', () => {
     error.value = undefined;
     try {
       repository.value = await client.openRepository(path);
+      rememberRepository(repository.value.root);
       await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
     } catch (err) {
       if (err instanceof Error) {
@@ -139,9 +184,18 @@ export const useRepoStore = defineStore('repo', () => {
     activeFileId.value = fileId;
   };
 
+  function rememberRepository(path: string) {
+    recentRepositories.value = [
+      { path, name: repositoryName(path), openedAt: Date.now() },
+      ...recentRepositories.value.filter((repository) => repository.path !== path),
+    ].slice(0, maxRecentRepositories);
+    saveRecentRepositories(recentRepositories.value);
+  }
+
   return {
     version,
     repository,
+    recentRepositories,
     changedFiles,
     activeFileId,
     loading,

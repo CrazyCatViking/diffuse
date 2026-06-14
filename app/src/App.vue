@@ -5,7 +5,17 @@
       :version="repo.version?.version"
       :loading="repo.loading"
       :error="repo.error"
-      @open-repository="repo.pickAndOpenRepository()"
+      @open-repository="showRecentRepositories = true"
+      @refresh="repo.refreshChangedFiles()"
+    />
+
+    <RecentRepositoriesDialog
+      v-if="showRecentRepositories"
+      :repositories="repo.recentRepositories"
+      :loading="repo.loading"
+      @close="showRecentRepositories = false"
+      @open-new="openNewRepository"
+      @open-recent="openRecentRepository"
     />
 
     <main class="workspace">
@@ -35,15 +45,27 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, watch } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
+import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 
 const repo = useRepoStore();
 const diff = useDiffStore();
+const showRecentRepositories = ref(false);
+
+const openNewRepository = async () => {
+  await repo.pickAndOpenRepository();
+  if (repo.repository && !repo.error) showRecentRepositories.value = false;
+};
+
+const openRecentRepository = async (path: string) => {
+  await repo.openRepository(path);
+  if (!repo.error) showRecentRepositories.value = false;
+};
 
 onMounted(async () => {
   try {
