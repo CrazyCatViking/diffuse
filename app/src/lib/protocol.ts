@@ -72,6 +72,66 @@ export type SyntaxLineSpans = {
   spans: SyntaxSpan[];
 };
 
+export type ReviewSide = 'old' | 'new';
+
+export type ReviewParticipant = {
+  id: string;
+  kind: 'human' | 'ai';
+  displayName: string;
+  agent?: {
+    provider?: string;
+    model?: string;
+    harnessId?: string;
+    runId?: string;
+    transcriptPath?: string;
+  };
+};
+
+export type ReviewSession = {
+  id: string;
+  repositoryRoot: string;
+  target: DiffTarget;
+  headAtCreation: string;
+  createdAt: string;
+  updatedAt: string;
+  title?: string;
+  status: 'active' | 'closed';
+  participants: ReviewParticipant[];
+};
+
+export type ReviewAnchor = {
+  side: ReviewSide;
+  startLine: number;
+  endLine: number;
+  startColumn?: number;
+  endColumn?: number;
+  selectedText?: string;
+  hunkHeader?: string;
+  lineText?: string;
+  diffTargetFingerprint: string;
+};
+
+export type ReviewMessage = {
+  id: string;
+  authorId: string;
+  body: string;
+  createdAt: string;
+  updatedAt?: string;
+};
+
+export type ReviewThread = {
+  id: string;
+  sessionId: string;
+  fileId: string;
+  oldPath?: string;
+  newPath?: string;
+  anchor: ReviewAnchor;
+  status: 'open' | 'resolved';
+  createdAt: string;
+  updatedAt: string;
+  messages: ReviewMessage[];
+};
+
 export type InstallTreeSitterGrammarResult = {
   language: string;
   installed: boolean;

@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -7,6 +7,8 @@ export const useClient = () => {
     includeStaged: target.includeStaged,
     includeUnstaged: target.includeUnstaged,
   });
+
+  const plainJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
   const pickRepository = async (): Promise<string | null> => {
     return window.diffuse.pickRepository();
@@ -44,6 +46,22 @@ export const useClient = () => {
     return window.diffuse.coreRequest('installTreeSitterGrammar', { language });
   };
 
+  const getActiveReviewSession = async (): Promise<ReviewSession | null> => {
+    return window.diffuse.coreRequest('getActiveReviewSession');
+  };
+
+  const createReviewSession = async (session: ReviewSession): Promise<ReviewSession> => {
+    return window.diffuse.coreRequest('createReviewSession', { session: plainJson(session) });
+  };
+
+  const getReviewThreads = async (sessionId: string): Promise<ReviewThread[]> => {
+    return window.diffuse.coreRequest('getReviewThreads', { sessionId });
+  };
+
+  const saveReviewThread = async (sessionId: string, thread: ReviewThread): Promise<ReviewThread> => {
+    return window.diffuse.coreRequest('saveReviewThread', { sessionId, thread: plainJson(thread) });
+  };
+
   const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
     return window.diffuse.coreRequest('listTreeSitterGrammars');
   };
@@ -61,6 +79,10 @@ export const useClient = () => {
     listChangedFiles,
     getDiffRenderModel,
     getSyntaxSpans,
+    getActiveReviewSession,
+    createReviewSession,
+    getReviewThreads,
+    saveReviewThread,
     installTreeSitterGrammar,
     listTreeSitterGrammars,
     uninstallTreeSitterGrammar

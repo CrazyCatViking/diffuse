@@ -94,9 +94,11 @@ import SettingsView from './components/settings/SettingsView.vue';
 import type { ChangedFile, DiffTarget } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
+import { useReviewStore } from './stores/review';
 
 const repo = useRepoStore();
 const diff = useDiffStore();
+const review = useReviewStore();
 const showRecentRepositories = ref(false);
 const showSettings = ref(false);
 const selectedFolder = ref<{ path: string; files: ChangedFile[] }>();
@@ -199,6 +201,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', resizeFileTree);
   window.removeEventListener('pointerup', stopFileTreeResize);
 });
+
+watch(
+  () => repo.repository?.root,
+  (root) => {
+    if (root) void review.ensureSession();
+    else review.clear();
+  }
+);
 
 watch(
   () => repo.activeFileId,

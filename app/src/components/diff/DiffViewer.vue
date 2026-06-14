@@ -1,5 +1,5 @@
 <template>
-  <section class="diff-viewer">
+  <section ref="rootRef" class="diff-viewer">
     <div class="diff-header">
       <div class="file-meta">
         <span>{{ model?.fileId ?? 'No file selected' }}</span>
@@ -60,53 +60,153 @@
     <div v-else-if="!model" class="message">Select a changed file to view its diff.</div>
     <div v-else-if="rows.length === 0" class="message">No unstaged diff for this file.</div>
     <div v-else-if="initialSyntaxGateActive" class="syntax-gate" />
+    <div v-else-if="viewMode === 'split' && syncScroll" ref="syncedSplitRef" class="pane synced-split-view" @mouseup="captureSelectionComment">
+      <div class="spacer synced-split-spacer" :style="{ height: `${syncedSplitTotalSize}px` }">
+        <div
+          v-for="virtualRow in syncedSplitVirtualRows"
+          :key="String(virtualRow.key)"
+          class="virtual-row"
+          :data-index="virtualRow.index"
+          :ref="measureSyncedSplitElement"
+          :style="{ transform: `translateY(${virtualRow.start}px)` }"
+        >
+          <template v-if="displayDiffRow(syncedSplitDisplayRows[virtualRow.index])">
+            <SplitDiffRow
+              :row="displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!"
+              :old-syntax-spans="syntaxForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+              :new-syntax-spans="syntaxForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+              :old-comment-count="commentCountForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+              :new-comment-count="commentCountForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+              :old-comments-expanded="commentsExpandedForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+              :new-comments-expanded="commentsExpandedForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+              :old-review-highlights="reviewHighlightsForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+              :new-review-highlights="reviewHighlightsForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+              :comment-hover-disabled="commentHoverDisabled"
+              @comment="startLineComment"
+              @toggle-comments="toggleComments"
+            />
+          </template>
+          <div v-else class="inline-review-row synced-split" :class="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])?.anchor.side">
+            <div class="review-cell">
+              <InlineReviewBox v-if="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])" :entry="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div v-else-if="viewMode === 'split'" class="split-view">
-      <div ref="leftRef" class="pane old-pane" @scroll="onLeftScroll">
+      <div ref="leftRef" class="pane old-pane" @scroll="onLeftScroll" @mouseup="captureSelectionComment">
         <div class="spacer" :style="{ height: `${leftTotalSize}px` }">
           <div
             v-for="virtualRow in leftVirtualRows"
             :key="`old-${String(virtualRow.key)}`"
             class="virtual-row"
+            :data-index="virtualRow.index"
+            :ref="measureLeftElement"
             :style="{ transform: `translateY(${virtualRow.start}px)` }"
           >
-            <SplitDiffPaneRow :row="rows[virtualRow.index]" side="old" :syntax-spans="syntaxForRow(rows[virtualRow.index], 'old')" />
+            <template v-if="displayDiffRow(leftDisplayRows[virtualRow.index])">
+            <SplitDiffPaneRow
+              :row="displayDiffRow(leftDisplayRows[virtualRow.index])!"
+              side="old"
+              :syntax-spans="syntaxForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+              :comment-count="commentCountForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+              :comments-expanded="commentsExpandedForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+              :review-highlights="reviewHighlightsForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+              :comment-hover-disabled="commentHoverDisabled"
+              @comment="startLineComment"
+              @toggle-comments="toggleComments"
+            />
+            </template>
+            <div v-else class="inline-review-row old">
+              <InlineReviewBox v-if="displayReviewRow(leftDisplayRows[virtualRow.index])" :entry="displayReviewRow(leftDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+            </div>
           </div>
         </div>
       </div>
-      <div ref="rightRef" class="pane new-pane" @scroll="onRightScroll">
+      <div ref="rightRef" class="pane new-pane" @scroll="onRightScroll" @mouseup="captureSelectionComment">
         <div class="spacer" :style="{ height: `${rightTotalSize}px` }">
           <div
             v-for="virtualRow in rightVirtualRows"
             :key="`new-${String(virtualRow.key)}`"
             class="virtual-row"
+            :data-index="virtualRow.index"
+            :ref="measureRightElement"
             :style="{ transform: `translateY(${virtualRow.start}px)` }"
           >
-            <SplitDiffPaneRow :row="rows[virtualRow.index]" side="new" :syntax-spans="syntaxForRow(rows[virtualRow.index], 'new')" />
+            <template v-if="displayDiffRow(rightDisplayRows[virtualRow.index])">
+            <SplitDiffPaneRow
+              :row="displayDiffRow(rightDisplayRows[virtualRow.index])!"
+              side="new"
+              :syntax-spans="syntaxForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+              :comment-count="commentCountForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+              :comments-expanded="commentsExpandedForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+              :review-highlights="reviewHighlightsForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+              :comment-hover-disabled="commentHoverDisabled"
+              @comment="startLineComment"
+              @toggle-comments="toggleComments"
+            />
+            </template>
+            <div v-else class="inline-review-row new">
+              <InlineReviewBox v-if="displayReviewRow(rightDisplayRows[virtualRow.index])" :entry="displayReviewRow(rightDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+            </div>
           </div>
         </div>
       </div>
     </div>
-    <div v-else ref="inlineRef" class="pane inline-view">
+    <div v-else ref="inlineRef" class="pane inline-view" @mouseup="captureSelectionComment">
       <div class="spacer inline-spacer" :style="{ height: `${inlineTotalSize}px` }">
         <div
           v-for="virtualRow in inlineVirtualRows"
           :key="String(virtualRow.key)"
           class="virtual-row"
+          :data-index="virtualRow.index"
+          :ref="measureInlineElement"
           :style="{ transform: `translateY(${virtualRow.start}px)` }"
         >
-          <InlineDiffRow :row="rows[virtualRow.index]" :syntax-spans="syntaxForInlineRow(rows[virtualRow.index])" />
+          <template v-if="displayDiffRow(inlineDisplayRows[virtualRow.index])">
+            <InlineDiffRow
+              :row="displayDiffRow(inlineDisplayRows[virtualRow.index])!"
+              :syntax-spans="syntaxForInlineRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!)"
+              :old-comment-count="commentCountForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'old')"
+              :new-comment-count="commentCountForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'new')"
+              :old-comments-expanded="commentsExpandedForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'old')"
+              :new-comments-expanded="commentsExpandedForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'new')"
+              :review-highlights="reviewHighlightsForInlineRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!)"
+              :comment-hover-disabled="commentHoverDisabled"
+              @comment="startLineComment"
+              @toggle-comments="toggleComments"
+            />
+          </template>
+          <div v-else class="inline-review-row inline">
+            <InlineReviewBox v-if="displayReviewRow(inlineDisplayRows[virtualRow.index])" :entry="displayReviewRow(inlineDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+          </div>
         </div>
       </div>
+    </div>
+    <div
+      v-if="selectionDraft"
+      class="selection-toolbar"
+      :style="selectionBubbleStyle"
+    >
+      <button type="button" title="Comment on selection" aria-label="Comment on selection" @pointerdown.prevent.stop="startSelectionComment">
+        <span class="comment-icon" aria-hidden="true" />
+      </button>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useClient } from '../../lib/useClient';
-import type { DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import { useRepoStore } from '../../stores/repo';
+import { useReviewStore } from '../../stores/review';
+import type { ReviewTextHighlight } from './HighlightedCode.vue';
+import InlineReviewBox, { type InlineReviewEntry } from './InlineReviewBox.vue';
 import InlineDiffRow from './InlineDiffRow.vue';
+import SplitDiffRow from './SplitDiffRow.vue';
 import SplitDiffPaneRow from './SplitDiffPaneRow.vue';
 
 const props = defineProps<{
@@ -130,11 +230,21 @@ const emit = defineEmits<{
   loadLatest: []
 }>();
 
+const rootRef = ref<HTMLElement | null>(null);
+const syncedSplitRef = ref<HTMLElement | null>(null);
 const leftRef = ref<HTMLElement | null>(null);
 const rightRef = ref<HTMLElement | null>(null);
 const inlineRef = ref<HTMLElement | null>(null);
 const rows = computed(() => props.model?.rows ?? []);
 const client = useClient();
+const repo = useRepoStore();
+const review = useReviewStore();
+const draftBody = ref('');
+const selectionBubblePosition = ref({ left: 18, top: 52 });
+const selectionDraft = ref<{ file: ChangedFile; anchor: ReviewAnchor }>();
+const nativeSelectionRange = ref<Range>();
+const collapsedCommentStarts = ref(new Set<string>());
+const expandedResolvedCommentStarts = ref(new Set<string>());
 const syntaxCache = new Map<string, SyntaxSpan[]>();
 const syntaxPageStates = new Map<string, 'queued-high' | 'queued-low' | 'loading' | 'done'>();
 const highPrioritySyntaxQueue: SyntaxPageRequest[] = [];
@@ -143,6 +253,8 @@ const syntaxVersion = ref(0);
 const initialSyntaxGateActive = ref(false);
 let syntaxQueueRunning = false;
 let isSyncingScroll = false;
+let syncScrollFrame: number | undefined;
+let pendingScrollSync: { target: HTMLElement; top: number; left: number } | undefined;
 let syntaxPrefetchTimer: number | undefined;
 let initialSyntaxGateTimer: number | undefined;
 let initialSyntaxGeneration = 0;
@@ -162,6 +274,12 @@ type SyntaxPageRequest = {
   generation: number;
 };
 
+type DisplayRow = {
+  kind: 'diff';
+  key: string;
+  row: DiffRow;
+} | InlineReviewEntry;
+
 const syntaxMessage = computed(() => {
   const syntax = props.model?.syntax;
   if (!syntax?.language) return undefined;
@@ -170,41 +288,390 @@ const syntaxMessage = computed(() => {
   return `No ${syntax.language} grammar installed`;
 });
 
-const estimateSize = (index: number) => (rows.value[index]?.kind === 'hunk' ? 28 : 24);
+const activeFile = computed(() => repo.changedFiles.find((file) => file.id === props.model?.fileId));
+const fileThreads = computed(() => review.threads.filter((thread) => thread.fileId === props.model?.fileId));
+const leftDisplayRows = computed(() => buildDisplayRows('old'));
+const rightDisplayRows = computed(() => buildDisplayRows('new'));
+const syncedSplitDisplayRows = computed(() => buildDisplayRows());
+const inlineDisplayRows = computed(() => buildDisplayRows());
+const selectionBubbleStyle = computed(() => ({
+  left: `${selectionBubblePosition.value.left}px`,
+  top: `${selectionBubblePosition.value.top}px`,
+}));
+
+const commentCountForRow = (row: DiffRow, side: SyntaxSide) => {
+  const line = side === 'old' ? row.oldLine : row.newLine;
+  if (!props.model || !line) return 0;
+  return fileThreads.value.filter((thread) => thread.anchor.side === side && thread.anchor.startLine === line).length;
+};
+
+const commentsExpandedForRow = (row: DiffRow, side: SyntaxSide) => {
+  const line = side === 'old' ? row.oldLine : row.newLine;
+  return Boolean(line && commentsExpandedForStart(side, line));
+};
+
+const toggleComments = (payload: { side: 'old' | 'new'; line: number }) => {
+  const key = commentStartKey(payload.side, payload.line);
+  const collapsed = new Set(collapsedCommentStarts.value);
+  const expandedResolved = new Set(expandedResolvedCommentStarts.value);
+  if (commentsExpandedForStart(payload.side, payload.line)) {
+    collapsed.add(key);
+    expandedResolved.delete(key);
+  } else {
+    collapsed.delete(key);
+    expandedResolved.add(key);
+  }
+  collapsedCommentStarts.value = collapsed;
+  expandedResolvedCommentStarts.value = expandedResolved;
+};
+
+const commentStartKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
+
+const commentsExpandedForStart = (side: SyntaxSide, line: number) => {
+  const key = commentStartKey(side, line);
+  if (collapsedCommentStarts.value.has(key)) return false;
+  return fileThreads.value.some((thread) => {
+    if (thread.anchor.side !== side || thread.anchor.startLine !== line) return false;
+    return thread.status === 'open' || expandedResolvedCommentStarts.value.has(key);
+  });
+};
+
+const reviewHighlightsForInlineRow = (row: DiffRow) => {
+  const side = row.kind === 'deleted' ? 'old' : 'new';
+  return reviewHighlightsForRow(row, side);
+};
+
+const reviewHighlightsForRow = (row: DiffRow, side: SyntaxSide): ReviewTextHighlight[] => {
+  const line = side === 'old' ? row.oldLine : row.newLine;
+  const text = side === 'old' ? row.oldText ?? '' : row.newText ?? '';
+  if (!line || text.length === 0) return [];
+
+  return reviewHighlightAnchors(side)
+    .map((anchor) => reviewHighlightForLine(anchor, line, text.length))
+    .filter((highlight): highlight is ReviewTextHighlight => Boolean(highlight));
+};
+
+const reviewHighlightAnchors = (side: SyntaxSide) => {
+  const anchors = fileThreads.value
+    .filter((thread) => commentsExpandedForStart(thread.anchor.side, thread.anchor.startLine))
+    .map((thread) => thread.anchor);
+  if (review.draftAnchor && review.draftFile?.id === props.model?.fileId) anchors.push(review.draftAnchor);
+  const pendingSelection = selectionDraft.value;
+  if (pendingSelection && pendingSelection.file.id === props.model?.fileId) anchors.push(pendingSelection.anchor);
+  return anchors.filter((anchor) => anchor.side === side && anchor.startColumn !== undefined && anchor.endColumn !== undefined);
+};
+
+const reviewHighlightForLine = (anchor: ReviewAnchor, line: number, textLength: number): ReviewTextHighlight | undefined => {
+  if (line < anchor.startLine || line > anchor.endLine) return undefined;
+  const startColumn = line === anchor.startLine ? anchor.startColumn ?? 0 : 0;
+  const endColumn = line === anchor.endLine ? anchor.endColumn ?? textLength : textLength;
+  if (endColumn <= startColumn) return undefined;
+  return { startColumn, endColumn };
+};
+
+const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
+  const result: DisplayRow[] = [];
+  const reviewEntries = reviewEntriesByEndLine(side);
+  rows.value.forEach((row, index) => {
+    result.push({ kind: 'diff', key: `diff:${index}`, row });
+    const oldEntries = row.oldLine ? reviewEntries.get(`old:${row.oldLine}`) ?? [] : [];
+    const newEntries = row.newLine ? reviewEntries.get(`new:${row.newLine}`) ?? [] : [];
+    result.push(...oldEntries, ...newEntries);
+  });
+  return result;
+};
+
+const reviewEntriesByEndLine = (side?: SyntaxSide) => {
+  const entries = new Map<string, InlineReviewEntry[]>();
+  const addEntry = (entry: InlineReviewEntry) => {
+    if (side && entry.anchor.side !== side) return;
+    if (entry.kind === 'thread' && collapsedCommentStarts.value.has(commentStartKey(entry.anchor.side, entry.anchor.startLine))) return;
+    const key = `${entry.anchor.side}:${entry.anchor.endLine}`;
+    entries.set(key, [...entries.get(key) ?? [], entry]);
+  };
+
+  for (const thread of fileThreads.value) {
+    if (thread.status === 'resolved' && !resolvedThreadExpanded(thread)) continue;
+    addEntry({ kind: 'thread', key: `thread:${thread.id}`, anchor: thread.anchor, thread });
+  }
+
+  if (review.draftAnchor && review.draftFile?.id === props.model?.fileId) {
+    addEntry({ kind: 'draft', key: `draft:${review.draftAnchor.side}:${review.draftAnchor.startLine}:${review.draftAnchor.endLine}`, anchor: review.draftAnchor });
+  }
+
+  return entries;
+};
+
+const resolvedThreadExpanded = (thread: ReviewThread) => expandedResolvedCommentStarts.value.has(commentStartKey(thread.anchor.side, thread.anchor.startLine));
+
+const displayDiffRow = (item?: DisplayRow) => item?.kind === 'diff' ? item.row : undefined;
+
+const displayReviewRow = (item?: DisplayRow): InlineReviewEntry | undefined => item && item.kind !== 'diff' ? item : undefined;
+
+const startLineComment = (payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }) => {
+  if (!props.model || !activeFile.value) return;
+  selectionDraft.value = undefined;
+  nativeSelectionRange.value = undefined;
+  draftBody.value = '';
+  review.startDraft(activeFile.value, {
+    side: payload.side,
+    startLine: payload.line,
+    endLine: payload.line,
+    lineText: payload.text,
+    diffTargetFingerprint: diffTargetFingerprint(),
+  });
+};
+
+const captureSelectionComment = () => {
+  const selection = window.getSelection();
+  const selectedText = selection?.toString().trim();
+  if (!selection || !selectedText || selection.rangeCount === 0 || !props.model || !activeFile.value) {
+    selectionDraft.value = undefined;
+    return;
+  }
+
+  const range = selection.getRangeAt(0);
+  nativeSelectionRange.value = range.cloneRange();
+  const start = reviewElementForNode(range.startContainer);
+  const end = reviewElementForNode(range.endContainer);
+  if (!start || !end) {
+    selectionDraft.value = undefined;
+    return;
+  }
+  const side = start.dataset.reviewSide;
+  if ((side !== 'old' && side !== 'new') || end.dataset.reviewSide !== side) {
+    selectionDraft.value = undefined;
+    return;
+  }
+  const startLine = Number(start.dataset.reviewLine);
+  const endLine = Number(end.dataset.reviewLine);
+  if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) {
+    selectionDraft.value = undefined;
+    return;
+  }
+  const startColumn = textOffsetWithinElement(start, range.startContainer, range.startOffset);
+  const endColumn = textOffsetWithinElement(end, range.endContainer, range.endOffset);
+  const normalizedStartLine = Math.min(startLine, endLine);
+  const normalizedEndLine = Math.max(startLine, endLine);
+  const normalizedStartColumn = startLine <= endLine ? startColumn : endColumn;
+  const normalizedEndColumn = startLine <= endLine ? endColumn : startColumn;
+
+  const rect = selectionTextRect(range);
+  if (!rect) {
+    selectionDraft.value = undefined;
+    return;
+  }
+  positionSelectionToolbar(rect.right, rect.top);
+  selectionDraft.value = {
+    file: activeFile.value,
+    anchor: {
+      side,
+      startLine: normalizedStartLine,
+      endLine: normalizedEndLine,
+      startColumn: normalizedStartLine === normalizedEndLine ? Math.min(normalizedStartColumn, normalizedEndColumn) : normalizedStartColumn,
+      endColumn: normalizedStartLine === normalizedEndLine ? Math.max(normalizedStartColumn, normalizedEndColumn) : normalizedEndColumn,
+      selectedText,
+      lineText: start.dataset.reviewText,
+      diffTargetFingerprint: diffTargetFingerprint(),
+    },
+  };
+};
+
+const reviewElementForNode = (node: Node) => {
+  const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentNode instanceof Element ? node.parentNode : null;
+  return element?.closest<HTMLElement>('[data-review-side][data-review-line]');
+};
+
+const textOffsetWithinElement = (element: HTMLElement, node: Node, offset: number) => {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.setEnd(node, offset);
+  return range.toString().length;
+};
+
+const selectionTextRect = (range: Range) => {
+  const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+  if (rects.length === 0) return undefined;
+  return rects.sort((first, second) => first.top - second.top || second.right - first.right)[0];
+};
+
+const submitComment = async () => {
+  const saved = await review.createThread(draftBody.value);
+  if (!saved) return;
+  draftBody.value = '';
+  clearNativeSelection();
+};
+
+const cancelDraft = () => {
+  draftBody.value = '';
+  review.cancelDraft();
+  clearNativeSelection();
+};
+
+const addReply = async (payload: { thread: ReviewThread; body: string }) => {
+  await review.addMessage(payload.thread, payload.body);
+  const next = new Set(collapsedCommentStarts.value);
+  next.delete(commentStartKey(payload.thread.anchor.side, payload.thread.anchor.startLine));
+  collapsedCommentStarts.value = next;
+};
+
+const collapseThread = (anchor: ReviewAnchor) => {
+  const next = new Set(collapsedCommentStarts.value);
+  next.add(commentStartKey(anchor.side, anchor.startLine));
+  collapsedCommentStarts.value = next;
+  const expandedResolved = new Set(expandedResolvedCommentStarts.value);
+  expandedResolved.delete(commentStartKey(anchor.side, anchor.startLine));
+  expandedResolvedCommentStarts.value = expandedResolved;
+};
+
+const resolveThread = async (thread: ReviewThread) => {
+  await review.resolveThread(thread);
+  const next = new Set(collapsedCommentStarts.value);
+  next.add(commentStartKey(thread.anchor.side, thread.anchor.startLine));
+  collapsedCommentStarts.value = next;
+  const expandedResolved = new Set(expandedResolvedCommentStarts.value);
+  expandedResolved.delete(commentStartKey(thread.anchor.side, thread.anchor.startLine));
+  expandedResolvedCommentStarts.value = expandedResolved;
+};
+
+const reopenThread = async (thread: ReviewThread) => {
+  await review.reopenThread(thread);
+  const next = new Set(collapsedCommentStarts.value);
+  next.delete(commentStartKey(thread.anchor.side, thread.anchor.startLine));
+  collapsedCommentStarts.value = next;
+  const expandedResolved = new Set(expandedResolvedCommentStarts.value);
+  expandedResolved.delete(commentStartKey(thread.anchor.side, thread.anchor.startLine));
+  expandedResolvedCommentStarts.value = expandedResolved;
+};
+
+const startSelectionComment = (event: PointerEvent) => {
+  if (!selectionDraft.value) return;
+  draftBody.value = '';
+  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor);
+  selectionDraft.value = undefined;
+};
+
+const clearNativeSelection = () => {
+  nativeSelectionRange.value = undefined;
+  window.getSelection()?.removeAllRanges();
+};
+
+const positionSelectionToolbar = (clientX: number, clientY: number) => {
+  const root = rootRef.value;
+  if (!root) return;
+
+  const rect = root.getBoundingClientRect();
+  const toolbarWidth = 34;
+  const toolbarHeight = 30;
+  const gap = 6;
+  selectionBubblePosition.value = {
+    left: Math.max(12, Math.min(clientX - rect.left + gap, rect.width - toolbarWidth - 12)),
+    top: Math.max(48, Math.min(clientY - rect.top - toolbarHeight - gap, rect.height - toolbarHeight - 12)),
+  };
+};
+
+const clearSelectionDraftWhenSelectionEnds = () => {
+  if (!selectionDraft.value) return;
+  if (window.getSelection()?.toString().trim()) return;
+  selectionDraft.value = undefined;
+  nativeSelectionRange.value = undefined;
+};
+
+onMounted(() => {
+  document.addEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+});
+
+const diffTargetFingerprint = () => JSON.stringify({
+  base: props.target.base,
+  compare: props.target.compare,
+  includeStaged: props.target.includeStaged,
+  includeUnstaged: props.target.includeUnstaged,
+  head: repo.repository?.head,
+});
+
+const estimateDisplaySize = (items: DisplayRow[]) => (index: number) => {
+  const item = items[index];
+  if (!item) return 24;
+  if (item.kind === 'draft') return 220;
+  if (item.kind === 'thread') return 150;
+  return item.row.kind === 'hunk' ? 28 : 24;
+};
 
 const leftVirtualizer = useVirtualizer(
   computed(() => ({
-    count: rows.value.length,
+    count: leftDisplayRows.value.length,
     getScrollElement: () => leftRef.value,
-    estimateSize,
-    overscan: 12
+    getItemKey: (index) => leftDisplayRows.value[index]?.key ?? index,
+    estimateSize: estimateDisplaySize(leftDisplayRows.value),
+    overscan: 12,
+    useAnimationFrameWithResizeObserver: true,
   }))
 );
 
 const rightVirtualizer = useVirtualizer(
   computed(() => ({
-    count: rows.value.length,
+    count: rightDisplayRows.value.length,
     getScrollElement: () => rightRef.value,
-    estimateSize,
-    overscan: 12
+    getItemKey: (index) => rightDisplayRows.value[index]?.key ?? index,
+    estimateSize: estimateDisplaySize(rightDisplayRows.value),
+    overscan: 12,
+    useAnimationFrameWithResizeObserver: true,
+  }))
+);
+
+const syncedSplitVirtualizer = useVirtualizer(
+  computed(() => ({
+    count: syncedSplitDisplayRows.value.length,
+    getScrollElement: () => syncedSplitRef.value,
+    getItemKey: (index) => syncedSplitDisplayRows.value[index]?.key ?? index,
+    estimateSize: estimateDisplaySize(syncedSplitDisplayRows.value),
+    overscan: 12,
+    useAnimationFrameWithResizeObserver: true,
   }))
 );
 
 const inlineVirtualizer = useVirtualizer(
   computed(() => ({
-    count: rows.value.length,
+    count: inlineDisplayRows.value.length,
     getScrollElement: () => inlineRef.value,
-    estimateSize,
-    overscan: 12
+    getItemKey: (index) => inlineDisplayRows.value[index]?.key ?? index,
+    estimateSize: estimateDisplaySize(inlineDisplayRows.value),
+    overscan: 12,
+    useAnimationFrameWithResizeObserver: true,
   }))
 );
 
 const leftVirtualRows = computed(() => leftVirtualizer.value.getVirtualItems());
 const rightVirtualRows = computed(() => rightVirtualizer.value.getVirtualItems());
+const syncedSplitVirtualRows = computed(() => syncedSplitVirtualizer.value.getVirtualItems());
 const inlineVirtualRows = computed(() => inlineVirtualizer.value.getVirtualItems());
 const leftTotalSize = computed(() => leftVirtualizer.value.getTotalSize());
 const rightTotalSize = computed(() => rightVirtualizer.value.getTotalSize());
+const syncedSplitTotalSize = computed(() => syncedSplitVirtualizer.value.getTotalSize());
 const inlineTotalSize = computed(() => inlineVirtualizer.value.getTotalSize());
+const commentHoverDisabled = computed(() => {
+  return leftVirtualizer.value.isScrolling || rightVirtualizer.value.isScrolling || syncedSplitVirtualizer.value.isScrolling || inlineVirtualizer.value.isScrolling;
+});
+
+const measureLeftElement = (element: unknown) => {
+  leftVirtualizer.value.measureElement(element instanceof Element ? element : null);
+};
+
+const measureRightElement = (element: unknown) => {
+  rightVirtualizer.value.measureElement(element instanceof Element ? element : null);
+};
+
+const measureSyncedSplitElement = (element: unknown) => {
+  syncedSplitVirtualizer.value.measureElement(element instanceof Element ? element : null);
+};
+
+const measureInlineElement = (element: unknown) => {
+  inlineVirtualizer.value.measureElement(element instanceof Element ? element : null);
+};
 
 const syntaxKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
 
@@ -289,11 +756,13 @@ const requestSyntaxPages = (side: SyntaxSide, startLine: number, endLine: number
   for (let page = firstPage; page <= lastPage; page += 1) requestSyntaxPage(side, page, priority);
 };
 
-const requestSyntaxForVirtualRows = (virtualRows: { index: number }[], side: SyntaxSide) => {
+const requestSyntaxForVirtualRows = (virtualRows: { index: number }[], displayRows: DisplayRow[], side: SyntaxSide) => {
   let startLine = Number.POSITIVE_INFINITY;
   let endLine = 0;
   for (const virtualRow of virtualRows) {
-    const row = rows.value[virtualRow.index];
+    const item = displayRows[virtualRow.index];
+    if (!item || item.kind !== 'diff') continue;
+    const row = item.row;
     const line = side === 'old' ? row?.oldLine : row?.newLine;
     if (!line) continue;
     startLine = Math.min(startLine, line);
@@ -385,10 +854,18 @@ const scheduleSyntaxPrefetch = () => {
 
 const syncScrollPosition = (source: HTMLElement, target: HTMLElement | null) => {
   if (!props.syncScroll || !target) return;
-  isSyncingScroll = true;
-  target.scrollTop = source.scrollTop;
-  target.scrollLeft = source.scrollLeft;
-  requestAnimationFrame(() => {
+  pendingScrollSync = { target, top: source.scrollTop, left: source.scrollLeft };
+  if (syncScrollFrame !== undefined) return;
+
+  syncScrollFrame = requestAnimationFrame(() => {
+    syncScrollFrame = undefined;
+    const sync = pendingScrollSync;
+    pendingScrollSync = undefined;
+    if (!sync) return;
+
+    isSyncingScroll = true;
+    if (sync.target.scrollTop !== sync.top) sync.target.scrollTop = sync.top;
+    if (sync.target.scrollLeft !== sync.left) sync.target.scrollLeft = sync.left;
     isSyncingScroll = false;
   });
 };
@@ -405,8 +882,30 @@ const onRightScroll = (event: Event) => {
 
 watch(
   () => props.syncScroll,
-  (enabled) => {
-    if (enabled && leftRef.value && rightRef.value) syncScrollPosition(leftRef.value, rightRef.value);
+  (enabled, wasEnabled) => {
+    if (props.viewMode !== 'split' || enabled === wasEnabled) return;
+
+    const source = wasEnabled ? syncedSplitRef.value : leftRef.value ?? rightRef.value;
+    const scrollTop = source?.scrollTop ?? 0;
+    const scrollLeft = source?.scrollLeft ?? 0;
+
+    void nextTick(() => {
+      requestAnimationFrame(() => {
+        if (enabled) {
+          if (syncedSplitRef.value) {
+            syncedSplitRef.value.scrollTop = scrollTop;
+            syncedSplitRef.value.scrollLeft = scrollLeft;
+          }
+          return;
+        }
+
+        for (const pane of [leftRef.value, rightRef.value]) {
+          if (!pane) continue;
+          pane.scrollTop = scrollTop;
+          pane.scrollLeft = scrollLeft;
+        }
+      });
+    });
   }
 );
 
@@ -430,14 +929,17 @@ watch(
 );
 
 watch(
-  [leftVirtualRows, rightVirtualRows, inlineVirtualRows, () => props.model?.syntax.grammarInstalled, () => props.viewMode],
+  [leftVirtualRows, rightVirtualRows, syncedSplitVirtualRows, inlineVirtualRows, () => props.model?.syntax.grammarInstalled, () => props.viewMode, () => props.syncScroll],
   () => {
-    if (props.viewMode === 'split') {
-      requestSyntaxForVirtualRows(leftVirtualRows.value, 'old');
-      requestSyntaxForVirtualRows(rightVirtualRows.value, 'new');
+    if (props.viewMode === 'split' && props.syncScroll) {
+      requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'old');
+      requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'new');
+    } else if (props.viewMode === 'split') {
+      requestSyntaxForVirtualRows(leftVirtualRows.value, leftDisplayRows.value, 'old');
+      requestSyntaxForVirtualRows(rightVirtualRows.value, rightDisplayRows.value, 'new');
     } else {
-      requestSyntaxForVirtualRows(inlineVirtualRows.value, 'old');
-      requestSyntaxForVirtualRows(inlineVirtualRows.value, 'new');
+      requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'old');
+      requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'new');
     }
   },
   { immediate: true, flush: 'post' }
@@ -446,6 +948,7 @@ watch(
 
 <style scoped lang="scss">
 .diff-viewer {
+  position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
@@ -602,9 +1105,31 @@ watch(
   min-width: 0;
 }
 
+.synced-split-view {
+  min-width: 0;
+}
+
 .spacer {
   position: relative;
   min-width: 560px;
+}
+
+.synced-split-spacer {
+  min-width: 1120px;
+}
+
+.inline-review-row.synced-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-width: 1120px;
+}
+
+.inline-review-row.synced-split.old .review-cell {
+  grid-column: 1;
+}
+
+.inline-review-row.synced-split.new .review-cell {
+  grid-column: 2;
 }
 
 .inline-spacer {
@@ -618,5 +1143,139 @@ watch(
   left: 0;
 
   z-index: 1;
+}
+
+.selection-toolbar {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(19, 23, 32, 0.98);
+  border: 1px solid #3a4356;
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.selection-toolbar button {
+  position: relative;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+
+  &:hover {
+    background: rgba(240, 195, 106, 0.12);
+    border-radius: 5px;
+  }
+}
+
+.comment-icon {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  width: 11px;
+  height: 8px;
+  border: 2px solid #f0c36a;
+  border-radius: 5px;
+
+  &::after {
+    position: absolute;
+    right: -2px;
+    bottom: -5px;
+    width: 4px;
+    height: 4px;
+    border-right: 2px solid #f0c36a;
+    border-bottom: 2px solid #f0c36a;
+    content: "";
+  }
+}
+
+.review-panel {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  gap: 12px;
+  width: 340px;
+  max-height: calc(100% - 76px);
+  padding: 14px;
+  overflow: auto;
+  color: #d7deea;
+  background: rgba(19, 23, 32, 0.96);
+  border: 1px solid #30384a;
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.36);
+}
+
+.review-panel-header,
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-error {
+  color: #ff9d9d;
+  font-size: 11px;
+}
+
+.comment-composer,
+.thread-list {
+  display: grid;
+  gap: 10px;
+}
+
+.comment-anchor,
+.thread-anchor {
+  color: #98a2b3;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+textarea {
+  min-height: 96px;
+  padding: 10px;
+  resize: vertical;
+  color: #f4f7fb;
+  background: #0f131b;
+  border: 1px solid #30384a;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.composer-actions button,
+.thread button {
+  padding: 6px 10px;
+  color: #d7e6ff;
+  background: #1b2c4a;
+  border: 1px solid #38527d;
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+}
+
+.thread {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: #10151f;
+  border: 1px solid #252d3d;
+  border-radius: 9px;
+
+  p {
+    margin: 0;
+    color: #eef3fb;
+    white-space: pre-wrap;
+  }
 }
 </style>

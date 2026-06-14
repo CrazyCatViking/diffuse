@@ -10,7 +10,13 @@ import { useSettingsStore, type SyntaxStyle } from '../../stores/settings';
 const props = defineProps<{
   text: string;
   spans?: SyntaxSpan[];
+  reviewHighlights?: ReviewTextHighlight[];
 }>();
+
+export type ReviewTextHighlight = {
+  startColumn: number;
+  endColumn: number;
+};
 
 type Fragment = {
   text: string;
@@ -69,31 +75,50 @@ const syntaxTheme = computed<Record<string, SyntaxStyle>>(() => {
 });
 
 const fragments = computed<Fragment[]>(() => {
-  if (!props.spans?.length) return [{ text: props.text }];
-
   const result: Fragment[] = [];
   const spans = props.spans
+    ? props.spans
     .filter((span) => isVisualScope(span.scope))
     .map((span) => ({
       startColumn: Math.max(0, Math.min(props.text.length, span.startColumn)),
       endColumn: Math.max(0, Math.min(props.text.length, span.endColumn)),
       scope: span.scope
     }))
-    .filter((span) => span.endColumn > span.startColumn);
-  if (spans.length === 0) return [{ text: props.text }];
+    .filter((span) => span.endColumn > span.startColumn)
+    : [];
+  const highlights = props.reviewHighlights
+    ?.map((highlight) => ({
+      startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
+      endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
+    }))
+    .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
+  if (spans.length === 0 && highlights.length === 0) return [{ text: props.text }];
 
-  const boundaries = [...new Set([0, props.text.length, ...spans.flatMap((span) => [span.startColumn, span.endColumn])])].sort((a, b) => a - b);
+  const boundaries = [...new Set([
+    0,
+    props.text.length,
+    ...spans.flatMap((span) => [span.startColumn, span.endColumn]),
+    ...highlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
+  ])].sort((a, b) => a - b);
   for (let index = 0; index + 1 < boundaries.length; index += 1) {
     const start = boundaries[index];
     const end = boundaries[index + 1];
     if (end <= start) continue;
 
     const scope = bestScopeForRange(spans, start, end);
-    result.push({ text: props.text.slice(start, end), style: scope ? resolveStyle(scope) : undefined });
+    const style: CSSProperties = scope ? { ...resolveStyle(scope) } : {};
+    if (isReviewHighlighted(highlights, start, end)) {
+      style.background = 'rgba(240, 195, 106, 0.32)';
+    }
+    result.push({ text: props.text.slice(start, end), style: Object.keys(style).length > 0 ? style : undefined });
   }
 
   return result.length > 0 ? result : [{ text: props.text }];
 });
+
+const isReviewHighlighted = (highlights: ReviewTextHighlight[], start: number, end: number) => {
+  return highlights.some((highlight) => highlight.startColumn < end && highlight.endColumn > start);
+};
 
 const bestScopeForRange = (spans: SyntaxSpan[], start: number, end: number): string | undefined => {
   let best: string | undefined;

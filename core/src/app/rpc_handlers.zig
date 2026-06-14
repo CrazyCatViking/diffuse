@@ -3,6 +3,7 @@ const std = @import("std");
 const diff = @import("../core/diff.zig");
 const json_rpc = @import("../protocol/json_rpc.zig");
 const repository = @import("../core/repository.zig");
+const review = @import("../core/review.zig");
 const runtime_mod = @import("rpc_runtime.zig");
 const types = @import("../protocol/types.zig");
 
@@ -16,9 +17,67 @@ pub fn register(server: anytype) !void {
     try server.handle("listChangedFiles", listChangedFiles);
     try server.handle("getDiffRenderModel", getDiffRenderModel);
     try server.handle("getSyntaxSpans", getSyntaxSpans);
+    try server.handle("getActiveReviewSession", getActiveReviewSession);
+    try server.handle("createReviewSession", createReviewSession);
+    try server.handle("getReviewThreads", getReviewThreads);
+    try server.handle("saveReviewThread", saveReviewThread);
     try server.handle("listTreeSitterGrammars", listTreeSitterGrammars);
     try server.handle("installTreeSitterGrammar", installTreeSitterGrammar);
     try server.handle("uninstallTreeSitterGrammar", uninstallTreeSitterGrammar);
+}
+
+fn getActiveReviewSession(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const session_json = try review.getActiveSession(runtime.allocator, runtime.io, repo.root);
+    defer if (session_json) |json| runtime.allocator.free(json);
+
+    if (session_json) |json| try writer.writeAll(json) else try writer.writeAll("null");
+}
+
+fn createReviewSession(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session = try getObjectParam(request, "session");
+    const session_id = try getObjectRequiredString(session, "id");
+    const session_json = try stringifyJsonValue(runtime.allocator, session);
+    defer runtime.allocator.free(session_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.createSession(runtime.allocator, runtime.io, repo.root, session_id, session_json);
+    defer runtime.allocator.free(saved);
+    try writer.writeAll(saved);
+}
+
+fn getReviewThreads(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const threads_json = try review.listThreads(runtime.allocator, runtime.io, repo.root, session_id);
+    defer runtime.allocator.free(threads_json);
+    try writer.writeAll(threads_json);
+}
+
+fn saveReviewThread(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const thread = try getObjectParam(request, "thread");
+    const thread_id = try getObjectRequiredString(thread, "id");
+    const thread_json = try stringifyJsonValue(runtime.allocator, thread);
+    defer runtime.allocator.free(thread_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, thread_id, thread_json);
+    defer runtime.allocator.free(saved);
+    try writer.writeAll(saved);
 }
 
 fn getVersion(_: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
@@ -219,6 +278,38 @@ fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
         .string => |text| text,
         else => null,
     };
+}
+
+fn getObjectParam(request: json_rpc.Request, name: []const u8) !std.json.Value {
+    const params = request.value.value.object.get("params") orelse return error.MissingParams;
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    const value = params_object.get(name) orelse return error.MissingParam;
+    return switch (value) {
+        .object => value,
+        else => error.InvalidParam,
+    };
+}
+
+fn getObjectRequiredString(value: std.json.Value, name: []const u8) ![]const u8 {
+    const object = switch (value) {
+        .object => |object| object,
+        else => return error.InvalidParam,
+    };
+    const field = object.get(name) orelse return error.MissingParam;
+    return switch (field) {
+        .string => |text| text,
+        else => error.InvalidParam,
+    };
+}
+
+fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var buffer = std.Io.Writer.Allocating.init(allocator);
+    errdefer buffer.deinit();
+    try std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &buffer.writer);
+    return try buffer.toOwnedSlice();
 }
 
 fn getDiffTarget(request: json_rpc.Request) repository.DiffTarget {

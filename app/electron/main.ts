@@ -14,6 +14,10 @@ const allowedCoreMethods = new Set([
   'listChangedFiles',
   'getDiffRenderModel',
   'getSyntaxSpans',
+  'getActiveReviewSession',
+  'createReviewSession',
+  'getReviewThreads',
+  'saveReviewThread',
   'listTreeSitterGrammars',
   'installTreeSitterGrammar',
   'uninstallTreeSitterGrammar'
