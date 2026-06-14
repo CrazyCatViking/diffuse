@@ -13,6 +13,55 @@
     <section class="settings-panel">
       <div class="panel-header">
         <div>
+          <h2>Syntax Theme</h2>
+          <p>Choose a built-in syntax theme or define your own colors.</p>
+        </div>
+      </div>
+
+      <div class="theme-grid">
+        <button
+          v-for="theme in themeOptions"
+          :key="theme.id"
+          class="theme-card"
+          :class="{ active: settings.selectedSyntaxThemeId === theme.id }"
+          type="button"
+          @click="settings.setSyntaxTheme(theme.id)"
+        >
+          <span class="theme-name">{{ theme.name }}</span>
+          <span class="theme-swatches">
+            <span v-for="color in swatchColors(theme.colors)" :key="color" class="swatch" :style="{ background: color }" />
+          </span>
+        </button>
+      </div>
+
+      <div v-if="settings.selectedSyntaxThemeId === 'custom'" class="custom-theme">
+        <label v-for="field in customColorFields" :key="field.key" class="color-field">
+          <span>{{ field.label }}</span>
+          <span class="color-controls">
+            <input class="color-swatch-input" type="color" :value="settings.customSyntaxTheme[field.key]" @input="setCustomSyntaxColor(field.key, $event)" />
+            <input
+              class="hex-input"
+              type="text"
+              :value="settings.customSyntaxTheme[field.key]"
+              spellcheck="false"
+              @input="previewCustomSyntaxHexColor(field.key, $event)"
+              @change="setCustomSyntaxHexColor(field.key, $event)"
+              @blur="setCustomSyntaxHexColor(field.key, $event)"
+              @keyup.enter="setCustomSyntaxHexColor(field.key, $event)"
+            />
+          </span>
+        </label>
+      </div>
+
+      <div class="theme-preview" aria-label="Syntax theme preview">
+        <div class="preview-title">Preview</div>
+        <HighlightedCode v-for="line in previewLines" :key="line.text" :text="line.text" :spans="line.spans" />
+      </div>
+    </section>
+
+    <section class="settings-panel">
+      <div class="panel-header">
+        <div>
           <h2>Installed</h2>
           <p>{{ installedGrammars.length }} installed grammar{{ installedGrammars.length === 1 ? '' : 's' }}</p>
         </div>
@@ -78,13 +127,16 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { TreeSitterGrammar } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
+import { builtInSyntaxThemes, useSettingsStore, type SyntaxThemeColors } from '../../stores/settings';
 import Button from '../Button.vue';
+import HighlightedCode from '../diff/HighlightedCode.vue';
 
 defineEmits<{
   close: [];
 }>();
 
 const client = useClient();
+const settings = useSettingsStore();
 const grammars = ref<TreeSitterGrammar[]>([]);
 const loading = ref(false);
 const error = ref<string>();
@@ -93,6 +145,60 @@ const installingLanguage = ref<string>();
 const uninstallingLanguage = ref<string>();
 const installStep = ref<string>();
 let removeCoreEventListener: (() => void) | undefined;
+
+const themeOptions = computed(() => [
+  ...builtInSyntaxThemes,
+  { id: 'custom' as const, name: 'Custom', colors: settings.customSyntaxTheme },
+]);
+
+const customColorFields: { key: keyof SyntaxThemeColors; label: string }[] = [
+  { key: 'text', label: 'Text' },
+  { key: 'comment', label: 'Comment' },
+  { key: 'keyword', label: 'Keyword' },
+  { key: 'string', label: 'String' },
+  { key: 'number', label: 'Number' },
+  { key: 'function', label: 'Function' },
+  { key: 'type', label: 'Type' },
+  { key: 'property', label: 'Property' },
+  { key: 'punctuation', label: 'Punctuation' },
+];
+const previewLines = [
+  {
+    text: 'function formatUser(user: User) {',
+    spans: [
+      { startColumn: 0, endColumn: 8, scope: 'keyword.function' },
+      { startColumn: 9, endColumn: 19, scope: 'function' },
+      { startColumn: 20, endColumn: 24, scope: 'variable.parameter' },
+      { startColumn: 26, endColumn: 30, scope: 'type' },
+      { startColumn: 31, endColumn: 32, scope: 'punctuation.bracket' },
+    ],
+  },
+  {
+    text: '  const active = user.enabled && user.score > 10;',
+    spans: [
+      { startColumn: 2, endColumn: 7, scope: 'keyword' },
+      { startColumn: 8, endColumn: 14, scope: 'variable' },
+      { startColumn: 17, endColumn: 21, scope: 'variable.parameter' },
+      { startColumn: 22, endColumn: 29, scope: 'property' },
+      { startColumn: 30, endColumn: 32, scope: 'operator' },
+      { startColumn: 33, endColumn: 37, scope: 'variable.parameter' },
+      { startColumn: 38, endColumn: 43, scope: 'property' },
+      { startColumn: 46, endColumn: 48, scope: 'number' },
+    ],
+  },
+  {
+    text: '  return `${user.name}: ${active}`; // visible in review',
+    spans: [
+      { startColumn: 2, endColumn: 8, scope: 'keyword' },
+      { startColumn: 9, endColumn: 34, scope: 'string' },
+      { startColumn: 37, endColumn: 57, scope: 'comment' },
+    ],
+  },
+  {
+    text: '}',
+    spans: [{ startColumn: 0, endColumn: 1, scope: 'punctuation.bracket' }],
+  },
+];
 
 const operationInProgress = computed(() => installingLanguage.value !== undefined || uninstallingLanguage.value !== undefined);
 const installedGrammars = computed(() => grammars.value.filter((grammar) => grammar.installed));
@@ -165,6 +271,42 @@ const installButtonText = (language: string) => {
 const uninstallButtonText = (language: string) => {
   if (uninstallingLanguage.value === language) return 'Uninstalling...';
   return 'Uninstall';
+};
+
+const swatchColors = (colors: SyntaxThemeColors) => {
+  return [colors.keyword, colors.string, colors.function, colors.type, colors.comment];
+};
+
+const setCustomSyntaxColor = (key: keyof SyntaxThemeColors, event: Event) => {
+  const input = event.target as HTMLInputElement;
+  settings.setCustomSyntaxColor(key, input.value);
+};
+
+const setCustomSyntaxHexColor = (key: keyof SyntaxThemeColors, event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const color = normalizeHexColor(input.value);
+  if (!color) {
+    input.value = settings.customSyntaxTheme[key];
+    return;
+  }
+
+  settings.setCustomSyntaxColor(key, color);
+  input.value = color;
+};
+
+const previewCustomSyntaxHexColor = (key: keyof SyntaxThemeColors, event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const color = normalizeHexColor(input.value);
+  if (color) settings.setCustomSyntaxColor(key, color);
+};
+
+const normalizeHexColor = (value: string) => {
+  const trimmed = value.trim();
+  const hex = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+  if (/^#[0-9a-fA-F]{6}$/.test(hex)) return hex.toLowerCase();
+  if (!/^#[0-9a-fA-F]{3}$/.test(hex)) return undefined;
+
+  return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase();
 };
 
 onMounted(() => {
@@ -249,9 +391,135 @@ p {
 }
 
 .installed-list,
-.grammar-list {
+.grammar-list,
+.theme-grid,
+.custom-theme {
   display: grid;
   gap: 8px;
+}
+
+.theme-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.theme-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 12px;
+  color: #f5f7fb;
+  background: #1b202b;
+  border: 1px solid #2a3140;
+  border-radius: 12px;
+  cursor: pointer;
+
+  &.active {
+    border-color: #4b7bec;
+    box-shadow: inset 0 0 0 1px #4b7bec;
+  }
+}
+
+.theme-name {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-swatches {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.swatch {
+  width: 16px;
+  height: 16px;
+  margin-left: -3px;
+  border: 1px solid #111318;
+  border-radius: 999px;
+}
+
+.custom-theme {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-top: 14px;
+}
+
+.theme-preview {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid #2a3140;
+  border-radius: 12px;
+  background: #111318;
+}
+
+.preview-title {
+  padding: 8px 12px;
+  color: #7e8aa0;
+  background: #1b202b;
+  border-bottom: 1px solid #2a3140;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.theme-preview :deep(.code) {
+  height: 24px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.color-field {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  color: #cbd5e1;
+  background: #1b202b;
+  border: 1px solid #2a3140;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.color-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.color-swatch-input {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.color-swatch-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-swatch-input::-webkit-color-swatch {
+  border: 1px solid #111318;
+  border-radius: 999px;
+}
+
+.hex-input {
+  width: 86px;
+  padding: 6px 8px;
+  color: #f5f7fb;
+  background: #111318;
+  border: 1px solid #2a3140;
+  border-radius: 8px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  text-transform: lowercase;
 }
 
 .installed-card,
