@@ -2,28 +2,123 @@
   <aside class="changed-files">
     <div class="pane-title">Changed Files</div>
     <div v-if="files.length === 0" class="empty">No changed files</div>
-    <ChangedFileRow
-      v-for="file in files"
-      :key="file.id"
-      :file="file"
-      :active="file.id === activeFileId"
-      @select="$emit('selectFile', $event)"
-    />
+    <template v-else>
+      <template v-for="node in visibleNodes" :key="node.key">
+        <button v-if="node.type === 'folder'" class="folder-row" :style="{ '--depth': node.depth }" @click="toggleFolder(node.key)">
+          <span class="chevron">{{ collapsedFolders.has(node.key) ? '›' : '⌄' }}</span>
+          <span class="folder-name" :title="node.path">{{ node.name }}</span>
+        </button>
+
+        <ChangedFileRow
+          v-else
+          :file="node.file"
+          :name="node.name"
+          :depth="node.depth"
+          :active="node.file.id === activeFileId"
+          @select="$emit('selectFile', $event)"
+        />
+      </template>
+    </template>
   </aside>
 </template>
 
 <script setup lang="ts">
-import type { ChangedFile } from '../../lib/protocol'
-import ChangedFileRow from './ChangedFileRow.vue'
+import { computed, ref } from 'vue';
+import type { ChangedFile } from '../../lib/protocol';
+import ChangedFileRow from './ChangedFileRow.vue';
 
-defineProps<{
-  files: ChangedFile[]
-  activeFileId?: string 
-}>()
+type TreeFolder = {
+  type: 'folder';
+  key: string;
+  name: string;
+  path: string;
+  depth: number;
+  children: TreeNode[];
+};
+
+type TreeFile = {
+  type: 'file';
+  key: string;
+  name: string;
+  path: string;
+  depth: number;
+  file: ChangedFile;
+};
+
+type TreeNode = TreeFolder | TreeFile;
+
+const props = defineProps<{
+  files: ChangedFile[];
+  activeFileId?: string;
+}>();
 
 defineEmits<{
-  selectFile: [fileId: string]
-}>()
+  selectFile: [fileId: string];
+}>();
+
+const collapsedFolders = ref(new Set<string>());
+
+const tree = computed(() => buildTree(props.files));
+const visibleNodes = computed(() => visibleTreeNodes(tree.value));
+
+const toggleFolder = (key: string) => {
+  const next = new Set(collapsedFolders.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  collapsedFolders.value = next;
+};
+
+const visibleTreeNodes = (nodes: TreeNode[]): TreeNode[] => {
+  const visible: TreeNode[] = [];
+  for (const node of nodes) {
+    visible.push(node);
+    if (node.type === 'folder' && !collapsedFolders.value.has(node.key)) {
+      visible.push(...visibleTreeNodes(node.children));
+    }
+  }
+  return visible;
+};
+
+const buildTree = (files: ChangedFile[]): TreeNode[] => {
+  const root: TreeFolder = { type: 'folder', key: '', name: '', path: '', depth: -1, children: [] };
+  const folders = new Map<string, TreeFolder>([['', root]]);
+
+  for (const file of files) {
+    const path = file.newPath ?? file.oldPath ?? file.id;
+    const parts = path.split('/').filter(Boolean);
+    const fileName = parts.pop() ?? path;
+    let parent = root;
+    let parentPath = '';
+
+    for (const folderName of parts) {
+      const folderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+      let folder = folders.get(folderPath);
+      if (!folder) {
+        folder = { type: 'folder', key: folderPath, name: folderName, path: folderPath, depth: parent.depth + 1, children: [] };
+        folders.set(folderPath, folder);
+        parent.children.push(folder);
+      }
+      parent = folder;
+      parentPath = folderPath;
+    }
+
+    parent.children.push({ type: 'file', key: file.id, name: fileName, path, depth: parent.depth + 1, file });
+  }
+
+  sortTree(root.children);
+  return root.children;
+};
+
+const sortTree = (nodes: TreeNode[]) => {
+  nodes.sort((first, second) => {
+    if (first.type !== second.type) return first.type === 'folder' ? -1 : 1;
+    return first.name.localeCompare(second.name);
+  });
+
+  for (const node of nodes) {
+    if (node.type === 'folder') sortTree(node.children);
+  }
+};
 </script>
 
 <style scoped lang="scss">
@@ -48,5 +143,38 @@ defineEmits<{
 .empty {
   color: #6e7685;
   font-size: 13px;
+}
+
+.folder-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 10px 7px calc(10px + (var(--depth) * 16px));
+  color: #aab4c5;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: #202635;
+  }
+}
+
+.chevron {
+  color: #7e8aa0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.folder-name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

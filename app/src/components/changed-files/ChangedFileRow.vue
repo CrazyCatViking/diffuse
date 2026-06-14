@@ -1,22 +1,24 @@
 <template>
-  <button class="file-row" :class="{ active }" @click="$emit('select', file.id)">
+  <button class="file-row" :class="{ active }" :style="{ '--depth': depth }" @click="$emit('select', file.id)">
     <span class="status">{{ file.status[0].toUpperCase() }}</span>
-    <span class="path">{{ file.newPath ?? file.oldPath ?? file.id }}</span>
+    <span class="path" :title="file.newPath ?? file.oldPath ?? file.id">{{ name }}</span>
     <span class="counts">+{{ file.additions }} -{{ file.deletions }}</span>
   </button>
 </template>
 
 <script setup lang="ts">
-import type { ChangedFile } from '../../lib/protocol'
+import type { ChangedFile } from '../../lib/protocol';
 
 defineProps<{
-  file: ChangedFile
-  active: boolean
-}>()
+  file: ChangedFile;
+  active: boolean;
+  name: string;
+  depth: number;
+}>();
 
 defineEmits<{
-  select: [fileId: string]
-}>()
+  select: [fileId: string];
+}>();
 </script>
 
 <style scoped lang="scss">
@@ -26,7 +28,7 @@ defineEmits<{
   gap: 8px;
   align-items: center;
   width: 100%;
-  padding: 8px 10px;
+  padding: 8px 10px 8px calc(10px + (var(--depth) * 16px));
   color: #cbd5e1;
   background: transparent;
   border: 0;

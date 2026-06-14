@@ -18,11 +18,21 @@
       @open-recent="openRecentRepository"
     />
 
-    <main class="workspace">
+    <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
       <ChangedFilesPane
         :files="repo.changedFiles"
         :active-file-id="repo.activeFileId"
         @select-file="repo.selectFile($event)"
+      />
+      <div
+        class="resize-handle"
+        role="separator"
+        aria-label="Resize file tree"
+        aria-orientation="vertical"
+        :aria-valuenow="fileTreeWidth"
+        :aria-valuemin="minFileTreeWidth"
+        :aria-valuemax="maxFileTreeWidth"
+        @pointerdown="startFileTreeResize"
       />
       <DiffViewer
         :model="diff.current"
@@ -45,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
@@ -56,6 +66,44 @@ import { useRepoStore } from './stores/repo';
 const repo = useRepoStore();
 const diff = useDiffStore();
 const showRecentRepositories = ref(false);
+const fileTreeWidthStorageKey = 'diffuse.fileTreeWidth';
+const minFileTreeWidth = 220;
+const maxFileTreeWidth = 640;
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+
+function loadFileTreeWidth() {
+  const savedWidth = Number(window.localStorage.getItem(fileTreeWidthStorageKey));
+  if (!Number.isFinite(savedWidth)) return 320;
+  return clampFileTreeWidth(savedWidth);
+}
+
+function clampFileTreeWidth(width: number) {
+  return Math.min(maxFileTreeWidth, Math.max(minFileTreeWidth, Math.round(width)));
+}
+
+const fileTreeWidth = ref(loadFileTreeWidth());
+const fileTreeResizing = ref(false);
+
+const startFileTreeResize = (event: PointerEvent) => {
+  event.preventDefault();
+  resizeStartX = event.clientX;
+  resizeStartWidth = fileTreeWidth.value;
+  fileTreeResizing.value = true;
+  window.addEventListener('pointermove', resizeFileTree);
+  window.addEventListener('pointerup', stopFileTreeResize, { once: true });
+};
+
+const resizeFileTree = (event: PointerEvent) => {
+  fileTreeWidth.value = clampFileTreeWidth(resizeStartWidth + event.clientX - resizeStartX);
+};
+
+const stopFileTreeResize = () => {
+  if (!fileTreeResizing.value) return;
+  fileTreeResizing.value = false;
+  window.removeEventListener('pointermove', resizeFileTree);
+  window.localStorage.setItem(fileTreeWidthStorageKey, String(fileTreeWidth.value));
+};
 
 const openNewRepository = async () => {
   await repo.pickAndOpenRepository();
@@ -73,6 +121,11 @@ onMounted(async () => {
   } catch (error) {
     repo.error = error instanceof Error ? error.message : String(error);
   }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointermove', resizeFileTree);
+  window.removeEventListener('pointerup', stopFileTreeResize);
 });
 
 watch(
@@ -109,7 +162,37 @@ watch(
 
 .workspace {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
   min-height: 0;
+
+  &.resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+}
+
+.resize-handle {
+  position: relative;
+  min-height: 0;
+  cursor: col-resize;
+  background: #151821;
+
+  &::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 1px;
+    content: '';
+    background: #252a35;
+  }
+
+  &:hover,
+  .resizing & {
+    background: #202635;
+
+    &::before {
+      background: #4b7bec;
+    }
+  }
 }
 </style>
