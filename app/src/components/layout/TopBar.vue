@@ -15,10 +15,6 @@
       </Row>
 
       <Row justify="end">
-        <Button :disabled="loading || !repoPath" @click="$emit('refresh')">
-          {{ 'refresh' }}
-        </Button>
-
         <Button @click="$emit('openSettings')">
           Settings
         </Button>
