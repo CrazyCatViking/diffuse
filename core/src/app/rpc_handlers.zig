@@ -11,6 +11,8 @@ const Runtime = runtime_mod.Runtime;
 pub fn register(server: anytype) !void {
     try server.handle("getVersion", getVersion);
     try server.handle("openRepository", openRepository);
+    try server.handle("getDiffTargetDefaults", getDiffTargetDefaults);
+    try server.handle("listBranches", listBranches);
     try server.handle("listChangedFiles", listChangedFiles);
     try server.handle("getDiffRenderModel", getDiffRenderModel);
     try server.handle("getSyntaxSpans", getSyntaxSpans);
@@ -33,17 +35,44 @@ fn openRepository(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.R
     try types.writeJson(writer, types.openRepositoryResult(repo));
 }
 
-fn listChangedFiles(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
+fn getDiffTargetDefaults(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
     try runtime.session_lock.lockShared(runtime.io);
     defer runtime.session_lock.unlockShared(runtime.io);
 
     const repo = try runtime.session.requireRepo();
-    const files = try repo.listChangedFiles();
+    var defaults = try repo.diffTargetDefaults();
+    defer defaults.deinit(runtime.allocator);
+
+    try types.writeJson(writer, types.diffTargetDefaults(defaults));
+}
+
+fn listChangedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const target = getDiffTarget(request);
+    const files = try repo.listChangedFiles(target);
     defer repository.freeChangedFiles(runtime.allocator, files);
 
     var result: std.ArrayList(types.ChangedFile) = .empty;
     defer result.deinit(runtime.allocator);
     for (files) |file| try result.append(runtime.allocator, types.changedFile(file));
+
+    try types.writeJson(writer, result.items);
+}
+
+fn listBranches(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const branches = try repo.listBranches();
+    defer repository.freeBranches(runtime.allocator, branches);
+
+    var result: std.ArrayList(types.BranchInfo) = .empty;
+    defer result.deinit(runtime.allocator);
+    for (branches) |branch| try result.append(runtime.allocator, types.branchInfo(branch));
 
     try types.writeJson(writer, result.items);
 }
@@ -60,7 +89,8 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
     const repo = try runtime.session.requireRepo();
     const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
-    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root });
+    const target = getDiffTarget(request);
+    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root, .target = target });
     defer model.deinit(runtime.allocator);
 
     var rows: std.ArrayList(types.DiffRow) = .empty;
@@ -135,10 +165,11 @@ fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.R
     const repo = try runtime.session.requireRepo();
     const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
+    const target = getDiffTarget(request);
     try runtime.syntax_cache_lock.lock(runtime.io);
     defer runtime.syntax_cache_lock.unlock(runtime.io);
 
-    const spans = try diff.getSyntaxSpans(runtime.allocator, repo.io, &runtime.syntax_cache, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root }, side, start_line, end_line);
+    const spans = try diff.getSyntaxSpans(runtime.allocator, repo.io, &runtime.syntax_cache, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root, .target = target }, side, start_line, end_line);
     defer diff.freeSyntaxLineSpans(runtime.allocator, spans);
 
     var result: std.ArrayList(types.SyntaxLineSpans) = .empty;
@@ -186,6 +217,42 @@ fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
     const value = options_object.get(name) orelse return null;
     return switch (value) {
         .string => |text| text,
+        else => null,
+    };
+}
+
+fn getDiffTarget(request: json_rpc.Request) repository.DiffTarget {
+    const params = request.value.value.object.get("params") orelse return .{};
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return .{},
+    };
+    const target = params_object.get("target") orelse return .{};
+    const target_object = switch (target) {
+        .object => |object| object,
+        else => return .{},
+    };
+
+    return .{
+        .base = getObjectString(target_object, "base"),
+        .compare = getObjectString(target_object, "compare"),
+        .include_staged = getObjectBool(target_object, "includeStaged") orelse true,
+        .include_unstaged = getObjectBool(target_object, "includeUnstaged") orelse true,
+    };
+}
+
+fn getObjectString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |text| if (text.len == 0) null else text,
+        else => null,
+    };
+}
+
+fn getObjectBool(object: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .bool => |enabled| enabled,
         else => null,
     };
 }

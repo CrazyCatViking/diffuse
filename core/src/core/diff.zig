@@ -68,12 +68,14 @@ pub const DiffContextMode = enum {
 pub const DiffOptions = struct {
     context: DiffContextMode = .diff,
     grammar_root: ?[]const u8 = null,
+    target: repository.DiffTarget = .{},
 };
 
 pub fn getDiffRenderModel(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, file_id: []const u8, path: []const u8, options: DiffOptions) !DiffRenderModel {
+    var repo = repository.Repository{ .allocator = allocator, .io = io, .root = repo_root, .head = "" };
     const output = switch (options.context) {
-        .diff => try repository.git(allocator, io, repo_root, &.{ "diff", "--", path }),
-        .full => try repository.git(allocator, io, repo_root, &.{ "diff", "-U999999", "--", path }),
+        .diff => try repo.gitDiff(options.target, &.{}, path),
+        .full => try repo.gitDiff(options.target, &.{"-U999999"}, path),
     };
     defer allocator.free(output);
 
@@ -97,7 +99,7 @@ pub fn getSyntaxSpans(allocator: std.mem.Allocator, io: std.Io, cache: ?*syntax.
     const grammar_path = status.grammarPath orelse return allocator.alloc(SyntaxLineSpans, 0);
     const query_path = status.highlightsQueryPath orelse return allocator.alloc(SyntaxLineSpans, 0);
 
-    const source = try sourceForSide(allocator, io, repo_root, path, side);
+    const source = try sourceForSide(allocator, io, repo_root, path, side, options.target);
     defer allocator.free(source);
 
     const has_injections = syntax.hasInjections(language);
@@ -131,9 +133,30 @@ pub fn freeSyntaxLineSpans(allocator: std.mem.Allocator, values: []SyntaxLineSpa
     allocator.free(values);
 }
 
-fn sourceForSide(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, side: SyntaxSide) ![]u8 {
+fn sourceForSide(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, side: SyntaxSide, target: repository.DiffTarget) ![]u8 {
+    if (target.compare) |compare| {
+        return switch (side) {
+            .old => sourceFromRef(allocator, io, repo_root, target.base orelse "HEAD", path) catch allocator.dupe(u8, ""),
+            .new => sourceFromRef(allocator, io, repo_root, compare, path) catch allocator.dupe(u8, ""),
+        };
+    }
+
+    if (target.include_staged and !target.include_unstaged) {
+        return switch (side) {
+            .old => sourceFromRef(allocator, io, repo_root, target.base orelse "HEAD", path) catch allocator.dupe(u8, ""),
+            .new => sourceFromIndex(allocator, io, repo_root, path) catch allocator.dupe(u8, ""),
+        };
+    }
+
+    if (!target.include_staged and target.include_unstaged) {
+        return switch (side) {
+            .old => sourceFromIndex(allocator, io, repo_root, path) catch allocator.dupe(u8, ""),
+            .new => sourceFromWorkingTree(allocator, io, repo_root, path) catch allocator.dupe(u8, ""),
+        };
+    }
+
     return switch (side) {
-        .old => sourceFromIndex(allocator, io, repo_root, path) catch allocator.dupe(u8, ""),
+        .old => sourceFromRef(allocator, io, repo_root, target.base orelse "HEAD", path) catch allocator.dupe(u8, ""),
         .new => sourceFromWorkingTree(allocator, io, repo_root, path) catch allocator.dupe(u8, ""),
     };
 }
@@ -142,6 +165,12 @@ fn sourceFromIndex(allocator: std.mem.Allocator, io: std.Io, repo_root: []const 
     const index_path = try std.fmt.allocPrint(allocator, ":{s}", .{path});
     defer allocator.free(index_path);
     return repository.git(allocator, io, repo_root, &.{ "show", index_path });
+}
+
+fn sourceFromRef(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, ref: []const u8, path: []const u8) ![]u8 {
+    const ref_path = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ ref, path });
+    defer allocator.free(ref_path);
+    return repository.git(allocator, io, repo_root, &.{ "show", ref_path });
 }
 
 fn sourceFromWorkingTree(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8) ![]u8 {

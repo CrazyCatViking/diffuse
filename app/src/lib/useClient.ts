@@ -1,6 +1,13 @@
-import { ChangedFile, DiffRenderModel, DiffRenderOptions, InstallTreeSitterGrammarResult, OpenRepositoryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
+  const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
+    base: target.base,
+    compare: target.compare,
+    includeStaged: target.includeStaged,
+    includeUnstaged: target.includeUnstaged,
+  });
+
   const pickRepository = async (): Promise<string | null> => {
     return window.diffuse.pickRepository();
   };
@@ -13,16 +20,24 @@ export const useClient = () => {
     return window.diffuse.coreRequest('openRepository', { path });
   };
 
-  const listChangedFiles = async (): Promise<ChangedFile[]> => {
-    return window.diffuse.coreRequest('listChangedFiles');
+  const getDiffTargetDefaults = async (): Promise<DiffTargetDefaults> => {
+    return window.diffuse.coreRequest('getDiffTargetDefaults');
   };
 
-  const getDiffRenderModel = async (fileId: string, options: DiffRenderOptions): Promise<DiffRenderModel> => {
-    return window.diffuse.coreRequest('getDiffRenderModel', { fileId, options });
+  const listBranches = async (): Promise<BranchInfo[]> => {
+    return window.diffuse.coreRequest('listBranches');
   };
 
-  const getSyntaxSpans = async (fileId: string, side: SyntaxSide, startLine: number, endLine: number, options: Pick<DiffRenderOptions, 'context'>): Promise<SyntaxLineSpans[]> => {
-    return window.diffuse.coreRequest('getSyntaxSpans', { fileId, side, startLine, endLine, options });
+  const listChangedFiles = async (target: DiffTarget): Promise<ChangedFile[]> => {
+    return window.diffuse.coreRequest('listChangedFiles', { target: plainDiffTarget(target) });
+  };
+
+  const getDiffRenderModel = async (fileId: string, options: DiffRenderOptions, target: DiffTarget): Promise<DiffRenderModel> => {
+    return window.diffuse.coreRequest('getDiffRenderModel', { fileId, options, target: plainDiffTarget(target) });
+  };
+
+  const getSyntaxSpans = async (fileId: string, side: SyntaxSide, startLine: number, endLine: number, options: Pick<DiffRenderOptions, 'context'>, target: DiffTarget): Promise<SyntaxLineSpans[]> => {
+    return window.diffuse.coreRequest('getSyntaxSpans', { fileId, side, startLine, endLine, options, target: plainDiffTarget(target) });
   };
 
   const installTreeSitterGrammar = async (language: string): Promise<InstallTreeSitterGrammarResult> => {
@@ -41,6 +56,8 @@ export const useClient = () => {
     pickRepository,     
     getVersion,
     openRepository,
+    getDiffTargetDefaults,
+    listBranches,
     listChangedFiles,
     getDiffRenderModel,
     getSyntaxSpans,

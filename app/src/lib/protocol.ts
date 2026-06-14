@@ -17,6 +17,23 @@ export type ChangedFile = {
   deletions: number;
 };
 
+export type DiffTarget = {
+  base?: string;
+  compare?: string;
+  includeStaged: boolean;
+  includeUnstaged: boolean;
+};
+
+export type DiffTargetDefaults = DiffTarget & {
+  dirty: boolean;
+  upstream?: string;
+};
+
+export type BranchInfo = {
+  name: string;
+  current: boolean;
+};
+
 export type DiffViewMode = 'split' | 'inline';
 
 export type DiffContextMode = 'diff' | 'full';

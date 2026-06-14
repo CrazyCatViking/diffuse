@@ -26,6 +26,27 @@ pub const ChangedFile = struct {
     deletions: u32,
 };
 
+pub const DiffTarget = struct {
+    base: ?[]const u8 = null,
+    compare: ?[]const u8 = null,
+    includeStaged: bool,
+    includeUnstaged: bool,
+};
+
+pub const DiffTargetDefaults = struct {
+    base: []const u8,
+    compare: ?[]const u8 = null,
+    includeStaged: bool,
+    includeUnstaged: bool,
+    dirty: bool,
+    upstream: ?[]const u8 = null,
+};
+
+pub const BranchInfo = struct {
+    name: []const u8,
+    current: bool,
+};
+
 pub const DiffRenderModel = struct {
     fileId: []const u8,
     mode: []const u8,
@@ -108,6 +129,21 @@ pub fn changedFile(file: repository.ChangedFile) ChangedFile {
         .additions = file.additions,
         .deletions = file.deletions,
     };
+}
+
+pub fn diffTargetDefaults(value: repository.DiffTargetDefaults) DiffTargetDefaults {
+    return .{
+        .base = value.base,
+        .compare = value.compare,
+        .includeStaged = value.include_staged,
+        .includeUnstaged = value.include_unstaged,
+        .dirty = value.dirty,
+        .upstream = value.upstream,
+    };
+}
+
+pub fn branchInfo(value: repository.BranchInfo) BranchInfo {
+    return .{ .name = value.name, .current = value.current };
 }
 
 pub fn diffRow(row: diff.DiffRow) DiffRow {

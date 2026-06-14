@@ -32,7 +32,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         const repo_path = try readOption(args, "--repo");
         var repo = try repository.open(allocator, io, repo_path);
         defer repo.deinit();
-        const files = try repo.listChangedFiles();
+        const files = try repo.listChangedFiles(.{});
         defer repository.freeChangedFiles(allocator, files);
         var stdout_buffer: [4096]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);

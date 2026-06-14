@@ -9,6 +9,8 @@ let core: CoreRpcClient | null = null;
 const allowedCoreMethods = new Set([
   'getVersion',
   'openRepository',
+  'getDiffTargetDefaults',
+  'listBranches',
   'listChangedFiles',
   'getDiffRenderModel',
   'getSyntaxSpans',

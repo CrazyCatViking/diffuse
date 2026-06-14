@@ -21,49 +21,63 @@
 
     <SettingsView v-if="showSettings" @close="showSettings = false" />
 
-    <main v-else class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
-      <ChangedFilesPane
-        :files="repo.changedFiles"
-        :active-file-id="repo.activeFileId"
-        @select-file="repo.selectFile($event)"
+    <template v-else>
+      <DiffTargetBar
+        :target="repo.diffTarget"
+        :defaults="repo.diffTargetDefaults"
+        :branches="repo.branches"
+        :loading="repo.loading"
+        @apply="applyDiffTarget"
+        @reset="repo.resetDiffTarget()"
       />
-      <div
-        class="resize-handle"
-        role="separator"
-        aria-label="Resize file tree"
-        aria-orientation="vertical"
-        :aria-valuenow="fileTreeWidth"
-        :aria-valuemin="minFileTreeWidth"
-        :aria-valuemax="maxFileTreeWidth"
-        @pointerdown="startFileTreeResize"
-      />
-      <DiffViewer
-        :model="diff.current"
-        :loading="diff.loading"
-        :error="diff.error"
-        :view-mode="diff.viewMode"
-        :context-mode="diff.contextMode"
-        :sync-scroll="diff.syncScroll"
-        :installing-grammar="diff.installingGrammar"
-        :grammar-install-step="diff.grammarInstallStep"
-        :has-new-changes="diff.hasNewChanges"
-        @update:view-mode="diff.setViewMode($event)"
-        @update:context-mode="diff.setContextMode($event)"
-        @update:sync-scroll="diff.setSyncScroll($event)"
-        @install-grammar="diff.installMissingGrammar()"
-        @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
-      />
-    </main>
+
+      <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
+        <ChangedFilesPane
+          :files="repo.changedFiles"
+          :active-file-id="repo.activeFileId"
+          @select-file="repo.selectFile($event)"
+        />
+        <div
+          class="resize-handle"
+          role="separator"
+          aria-label="Resize file tree"
+          aria-orientation="vertical"
+          :aria-valuenow="fileTreeWidth"
+          :aria-valuemin="minFileTreeWidth"
+          :aria-valuemax="maxFileTreeWidth"
+          @pointerdown="startFileTreeResize"
+        />
+        <DiffViewer
+          :model="diff.current"
+          :loading="diff.loading"
+          :error="diff.error"
+          :view-mode="diff.viewMode"
+          :context-mode="diff.contextMode"
+          :target="repo.diffTarget"
+          :sync-scroll="diff.syncScroll"
+          :installing-grammar="diff.installingGrammar"
+          :grammar-install-step="diff.grammarInstallStep"
+          :has-new-changes="diff.hasNewChanges"
+          @update:view-mode="diff.setViewMode($event)"
+          @update:context-mode="diff.setContextMode($event)"
+          @update:sync-scroll="diff.setSyncScroll($event)"
+          @install-grammar="diff.installMissingGrammar()"
+          @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
+        />
+      </main>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
+import DiffTargetBar from './components/diff/DiffTargetBar.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import SettingsView from './components/settings/SettingsView.vue';
+import type { DiffTarget } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 
@@ -120,6 +134,10 @@ const openRecentRepository = async (path: string) => {
   if (!repo.error) showRecentRepositories.value = false;
 };
 
+const applyDiffTarget = async (target: DiffTarget) => {
+  await repo.setDiffTarget(target);
+};
+
 onMounted(async () => {
   try {
     await repo.loadVersion();
@@ -154,12 +172,21 @@ watch(
     }
   }
 );
+
+watch(
+  () => repo.diffTarget,
+  () => {
+    if (repo.activeFileId) void diff.loadDiff(repo.activeFileId);
+    else diff.clear();
+  },
+  { deep: true }
+);
 </script>
 
 <style scoped lang="scss">
 .app-shell {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   overflow: hidden;

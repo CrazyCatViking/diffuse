@@ -2,9 +2,11 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useClient } from '../lib/useClient';
 import type { DiffContextMode, DiffRenderModel, DiffViewMode } from '../lib/protocol';
+import { useRepoStore } from './repo';
 
 export const useDiffStore = defineStore('diff', () => {
   const client = useClient();
+  const repo = useRepoStore();
   const current = ref<DiffRenderModel>();
   const loading = ref(false);
   const error = ref<string>();
@@ -38,7 +40,7 @@ export const useDiffStore = defineStore('diff', () => {
       current.value = await client.getDiffRenderModel(fileId, {
         mode: viewMode.value,
         context: contextMode.value,
-      });
+      }, repo.diffTarget);
       hasNewChanges.value = false;
     } catch (err) {
       if (err instanceof Error) {

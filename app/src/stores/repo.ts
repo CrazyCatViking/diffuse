@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import type { ChangedFile, OpenRepositoryResult, VersionInfo } from '../lib/protocol';
+import type { BranchInfo, ChangedFile, DiffTarget, DiffTargetDefaults, OpenRepositoryResult, VersionInfo } from '../lib/protocol';
 import { computed, ref } from 'vue';
 import { useClient } from '../lib/useClient';
 
@@ -50,6 +50,9 @@ export const useRepoStore = defineStore('repo', () => {
   const client = useClient();
   const version = ref<VersionInfo>();
   const repository = ref<OpenRepositoryResult>();
+  const diffTarget = ref<DiffTarget>({ includeStaged: true, includeUnstaged: true });
+  const diffTargetDefaults = ref<DiffTargetDefaults>();
+  const branches = ref<BranchInfo[]>([]);
   const recentRepositories = ref<RecentRepository[]>(loadRecentRepositories());
   const changedFiles = ref<ChangedFile[]>([]);
   const activeFileId = ref<string>();
@@ -96,6 +99,9 @@ export const useRepoStore = defineStore('repo', () => {
     try {
       repository.value = await client.openRepository(path);
       rememberRepository(repository.value.root);
+      diffTargetDefaults.value = await client.getDiffTargetDefaults();
+      branches.value = await client.listBranches();
+      diffTarget.value = targetFromDefaults(diffTargetDefaults.value);
       await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
     } catch (err) {
       if (err instanceof Error) {
@@ -117,7 +123,7 @@ export const useRepoStore = defineStore('repo', () => {
 
     refreshInFlight = true;
     try {
-      const files = await client.listChangedFiles();
+      const files = await client.listChangedFiles(diffTarget.value);
       const previousActiveFileId = activeFileId.value;
       changedFileIds.value = options.trackChangedIds === false ? [] : changedFileIdsBetween(changedFiles.value, files, options.changedPaths ?? []);
       changedFiles.value = files;
@@ -184,6 +190,36 @@ export const useRepoStore = defineStore('repo', () => {
     activeFileId.value = fileId;
   };
 
+  const setDiffTarget = async (target: DiffTarget) => {
+    diffTarget.value = normalizeTarget(target);
+    await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
+  };
+
+  const resetDiffTarget = async () => {
+    if (!repository.value) return;
+    diffTargetDefaults.value = await client.getDiffTargetDefaults();
+    branches.value = await client.listBranches();
+    await setDiffTarget(targetFromDefaults(diffTargetDefaults.value));
+  };
+
+  const normalizeTarget = (target: DiffTarget): DiffTarget => {
+    return {
+      base: target.base?.trim() || undefined,
+      compare: target.compare?.trim() || undefined,
+      includeStaged: target.includeStaged,
+      includeUnstaged: target.includeUnstaged,
+    };
+  };
+
+  const targetFromDefaults = (target: DiffTargetDefaults): DiffTarget => {
+    return {
+      base: target.base,
+      compare: target.compare,
+      includeStaged: target.includeStaged,
+      includeUnstaged: target.includeUnstaged,
+    };
+  };
+
   function rememberRepository(path: string) {
     recentRepositories.value = [
       { path, name: repositoryName(path), openedAt: Date.now() },
@@ -195,6 +231,9 @@ export const useRepoStore = defineStore('repo', () => {
   return {
     version,
     repository,
+    diffTarget,
+    diffTargetDefaults,
+    branches,
     recentRepositories,
     changedFiles,
     activeFileId,
@@ -210,5 +249,7 @@ export const useRepoStore = defineStore('repo', () => {
     openRepository,
     refreshChangedFiles,
     selectFile,
+    setDiffTarget,
+    resetDiffTarget,
   };
 });

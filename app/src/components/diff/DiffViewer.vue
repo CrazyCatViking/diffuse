@@ -105,7 +105,7 @@
 import { computed, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useClient } from '../../lib/useClient';
-import type { DiffContextMode, DiffRenderModel, DiffRow, DiffViewMode, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type { DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import InlineDiffRow from './InlineDiffRow.vue';
 import SplitDiffPaneRow from './SplitDiffPaneRow.vue';
 
@@ -115,6 +115,7 @@ const props = defineProps<{
   error?: string 
   viewMode: DiffViewMode
   contextMode: DiffContextMode
+  target: DiffTarget
   syncScroll: boolean
   installingGrammar: boolean
   grammarInstallStep?: string
@@ -238,7 +239,7 @@ const runSyntaxQueue = () => {
 
     syntaxPageStates.set(request.key, 'loading');
     try {
-      const lines = await client.getSyntaxSpans(request.fileId, request.side, request.startLine, request.endLine, { context: request.context });
+      const lines = await client.getSyntaxSpans(request.fileId, request.side, request.startLine, request.endLine, { context: request.context }, props.target);
       const isCurrentRequest = request.generation === syntaxRequestGeneration && props.model?.fileId === request.fileId && props.model.context === request.context;
       if (isCurrentRequest) {
         for (const line of lines) syntaxCache.set(syntaxKey(request.side, line.line), line.spans);
