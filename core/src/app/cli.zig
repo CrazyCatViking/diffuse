@@ -5,7 +5,7 @@ const repository = @import("../core/repository.zig");
 const rpc_server = @import("rpc_server.zig");
 const types = @import("../protocol/types.zig");
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.Args) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.Args, environ_map: *const std.process.Environ.Map) !void {
     var iter = try std.process.Args.Iterator.initAllocator(process_args, allocator);
     defer iter.deinit();
 
@@ -27,7 +27,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         try stdout.print("{s} {s}\n", .{ types.app_name, types.version });
         try stdout.flush();
     } else if (std.mem.eql(u8, command, "rpc")) {
-        try rpc_server.run(allocator, io);
+        try rpc_server.run(allocator, io, environ_map);
     } else if (std.mem.eql(u8, command, "files")) {
         const repo_path = try readOption(args, "--repo");
         var repo = try repository.open(allocator, io, repo_path);
@@ -50,7 +50,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         const file_path = try readOption(args, "--file");
         var repo = try repository.open(allocator, io, repo_path);
         defer repo.deinit();
-        var model = try diff.getDiffRenderModel(allocator, io, repo.root, file_path, file_path, .{});
+        const grammar_root = try resolveGrammarRoot(allocator, environ_map);
+        defer if (grammar_root) |path| allocator.free(path);
+        var model = try diff.getDiffRenderModel(allocator, io, repo.root, file_path, file_path, .{ .grammar_root = grammar_root });
         defer model.deinit(allocator);
         var stdout_buffer: [4096]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -64,6 +66,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
             .fileId = model.file_id,
             .mode = "split",
             .context = "diff",
+            .syntax = types.syntaxStatus(model.syntax_status),
             .rows = rows.items,
         });
         try stdout.writeByte('\n');
@@ -72,6 +75,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         try printHelp(io);
         std.process.exit(1);
     }
+}
+
+fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !?[]u8 {
+    if (environ_map.get("DIFFUSE_GRAMMARS_DIR")) |path| return try allocator.dupe(u8, path);
+    const home = environ_map.get("HOME") orelse return null;
+    return try std.fs.path.join(allocator, &.{ home, ".diffuse", "grammars" });
 }
 
 fn readOption(args: []const []const u8, name: []const u8) ![]const u8 {

@@ -1,37 +1,53 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { join } from 'node:path'
-import { startCoreProcess } from './coreProcess'
-import { CoreRequestTimeoutError, type CoreRpcClient } from './coreRpcClient'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { join } from 'node:path';
+import { startCoreProcess } from './coreProcess';
+import { CoreRequestTimeoutError, type CoreEvent, type CoreRpcClient } from './coreRpcClient';
 
-let mainWindow: BrowserWindow | null = null
-let core: CoreRpcClient | null = null
+let mainWindow: BrowserWindow | null = null;
+let core: CoreRpcClient | null = null;
 
 const allowedCoreMethods = new Set([
   'getVersion',
   'openRepository',
   'listChangedFiles',
-  'getDiffRenderModel'
-])
+  'getDiffRenderModel',
+  'getSyntaxSpans',
+  'installTreeSitterGrammar'
+]);
 
 function getCore(): CoreRpcClient {
-  if (core?.isRunning) return core
+  if (core?.isRunning) return core;
 
-  core = startCoreProcess()
+  core = startCoreProcess();
+  core.on('event', (event: CoreEvent) => {
+    mainWindow?.webContents.send('core:event', event);
+  });
   core.once('exit', () => {
-    core = null
-  })
-  return core
+    core = null;
+  });
+  return core;
+}
+
+function requestTimeoutMs(method: string): number {
+  if (method === 'installTreeSitterGrammar') return 5 * 60_000;
+  if (method === 'getSyntaxSpans') return 10_000;
+  return 30_000;
+}
+
+function shouldKillCoreOnTimeout(method: string): boolean {
+  return method !== 'getSyntaxSpans';
 }
 
 async function coreRequest<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   try {
-    return await getCore().request<T>(method, params)
+    return await getCore().request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
   } catch (error) {
-    if (!(error instanceof CoreRequestTimeoutError)) throw error
+    if (!(error instanceof CoreRequestTimeoutError)) throw error;
+    if (!shouldKillCoreOnTimeout(method)) throw error;
 
-    core?.dispose()
-    core = null
-    return getCore().request<T>(method, params)
+    core?.dispose();
+    core = null;
+    return getCore().request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
   }
 }
 

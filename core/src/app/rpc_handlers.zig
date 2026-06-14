@@ -13,6 +13,8 @@ pub fn register(server: anytype) !void {
     try server.handle("openRepository", openRepository);
     try server.handle("listChangedFiles", listChangedFiles);
     try server.handle("getDiffRenderModel", getDiffRenderModel);
+    try server.handle("getSyntaxSpans", getSyntaxSpans);
+    try server.handle("installTreeSitterGrammar", installTreeSitterGrammar);
 }
 
 fn getVersion(_: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
@@ -53,7 +55,9 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
     defer runtime.session_lock.unlockShared(runtime.io);
 
     const repo = try runtime.session.requireRepo();
-    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context });
+    const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
+    defer if (grammar_root) |path| runtime.allocator.free(path);
+    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root });
     defer model.deinit(runtime.allocator);
 
     var rows: std.ArrayList(types.DiffRow) = .empty;
@@ -64,8 +68,73 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
         .fileId = model.file_id,
         .mode = mode,
         .context = context,
+        .syntax = types.syntaxStatus(model.syntax_status),
         .rows = rows.items,
     });
+}
+
+fn installTreeSitterGrammar(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const language = try json_rpc.getStringParam(request, "language");
+    const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
+    defer if (grammar_root) |path| runtime.allocator.free(path);
+
+    const progress = InstallProgress{ .runtime = runtime, .language = language };
+    var result = try diff.syntax.installGrammar(runtime.allocator, runtime.io, language, grammar_root, progress);
+    defer result.deinit(runtime.allocator);
+
+    try types.writeJson(writer, types.installTreeSitterGrammarResult(result));
+}
+
+fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const file_id = try json_rpc.getStringParam(request, "fileId");
+    const side_text = try json_rpc.getStringParam(request, "side");
+    const start_line = try getU32Param(request, "startLine");
+    const end_line = try getU32Param(request, "endLine");
+    const context = getDiffOption(request, "context") orelse "diff";
+    const diff_context: diff.DiffContextMode = if (std.mem.eql(u8, context, "full")) .full else .diff;
+    const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
+    defer if (grammar_root) |path| runtime.allocator.free(path);
+    try runtime.syntax_cache_lock.lock(runtime.io);
+    defer runtime.syntax_cache_lock.unlock(runtime.io);
+
+    const spans = try diff.getSyntaxSpans(runtime.allocator, repo.io, &runtime.syntax_cache, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root }, side, start_line, end_line);
+    defer diff.freeSyntaxLineSpans(runtime.allocator, spans);
+
+    var result: std.ArrayList(types.SyntaxLineSpans) = .empty;
+    defer result.deinit(runtime.allocator);
+    for (spans) |line| try result.append(runtime.allocator, types.syntaxLineSpans(line));
+    try types.writeJson(writer, result.items);
+}
+
+const InstallProgress = struct {
+    runtime: *Runtime,
+    language: []const u8,
+
+    pub fn emit(self: InstallProgress, step: []const u8) !void {
+        var message = std.Io.Writer.Allocating.init(self.runtime.allocator);
+        errdefer message.deinit();
+
+        try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"treeSitter/installProgress\",\"params\":{");
+        try message.writer.writeAll("\"language\":");
+        try types.writeJson(&message.writer, self.language);
+        try message.writer.writeAll(",\"step\":");
+        try types.writeJson(&message.writer, step);
+        try message.writer.writeAll("}}\n");
+
+        try self.runtime.enqueue(try message.toOwnedSlice());
+    }
+};
+
+fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !?[]u8 {
+    if (environ_map.get("DIFFUSE_GRAMMARS_DIR")) |path| return try allocator.dupe(u8, path);
+    const home = environ_map.get("HOME") orelse return null;
+    return try std.fs.path.join(allocator, &.{ home, ".diffuse", "grammars" });
 }
 
 fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
@@ -83,5 +152,18 @@ fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
     return switch (value) {
         .string => |text| text,
         else => null,
+    };
+}
+
+fn getU32Param(request: json_rpc.Request, name: []const u8) !u32 {
+    const params = request.value.value.object.get("params") orelse return error.MissingParams;
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    const value = params_object.get(name) orelse return error.MissingParam;
+    return switch (value) {
+        .integer => |number| @intCast(number),
+        else => error.InvalidParam,
     };
 }

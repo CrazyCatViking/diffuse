@@ -6,14 +6,14 @@ const rpc_runtime = @import("rpc_runtime.zig");
 
 const Runtime = rpc_runtime.Runtime;
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     var server = RpcServer.init(allocator);
     defer server.deinit();
 
     try rpc_handlers.register(&server);
 
     var runtime: Runtime = undefined;
-    runtime.init(allocator, io);
+    runtime.init(allocator, io, environ_map);
     defer runtime.deinit();
 
     var writer_group: std.Io.Group = .init;

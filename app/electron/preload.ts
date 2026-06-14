@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 export type DiffuseBridge = typeof bridge;
 
@@ -6,15 +6,22 @@ export type DiffuseBridge = typeof bridge;
 
 const coreRequest = (method: string, params?: unknown) => {
   return ipcRenderer.invoke('core:request', { method, params });
-}
+};
+
+const onCoreEvent = (listener: (event: unknown) => void) => {
+  const handler = (_event: IpcRendererEvent, coreEvent: unknown) => listener(coreEvent);
+  ipcRenderer.on('core:event', handler);
+  return () => ipcRenderer.off('core:event', handler);
+};
 
 const pickRepository = () => {
   return ipcRenderer.invoke('repo:pickDirectory');
-}
+};
 
 const bridge = {
   pickRepository,
-  coreRequest
-}
+  coreRequest,
+  onCoreEvent
+};
 
-contextBridge.exposeInMainWorld('diffuse', bridge)
+contextBridge.exposeInMainWorld('diffuse', bridge);

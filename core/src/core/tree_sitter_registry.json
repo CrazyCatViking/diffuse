@@ -1,0 +1,31 @@
+{
+  "source": "nvim-treesitter/nvim-treesitter lua/nvim-treesitter/parsers.lua",
+  "sourceLicense": "Apache-2.0",
+  "snapshotDate": "2026-06-11",
+  "languages": [
+    { "id": "bash", "url": "https://github.com/tree-sitter/tree-sitter-bash", "revision": "a06c2e4415e9bc0346c6b86d401879ffb44058f7" },
+    { "id": "c", "url": "https://github.com/tree-sitter/tree-sitter-c", "revision": "ae19b676b13bdcc13b7665397e6d9b14975473dd" },
+    { "id": "cpp", "url": "https://github.com/tree-sitter/tree-sitter-cpp", "revision": "8b5b49eb196bec7040441bee33b2c9a4838d6967", "requires": ["c"] },
+    { "id": "css", "url": "https://github.com/tree-sitter/tree-sitter-css", "revision": "dda5cfc5722c429eaba1c910ca32c2c0c5bb1a3f" },
+    { "id": "dockerfile", "url": "https://github.com/camdencheek/tree-sitter-dockerfile", "revision": "971acdd908568b4531b0ba28a445bf0bb720aba5" },
+    { "id": "go", "url": "https://github.com/tree-sitter/tree-sitter-go", "revision": "2346a3ab1bb3857b48b29d779a1ef9799a248cd7" },
+    { "id": "html", "url": "https://github.com/tree-sitter/tree-sitter-html", "revision": "73a3947324f6efddf9e17c0ea58d454843590cc0", "requires": ["html_tags"] },
+    { "id": "java", "url": "https://github.com/tree-sitter/tree-sitter-java", "revision": "e10607b45ff745f5f876bfa3e94fbcc6b44bdc11" },
+    { "id": "javascript", "url": "https://github.com/tree-sitter/tree-sitter-javascript", "revision": "58404d8cf191d69f2674a8fd507bd5776f46cb11", "requires": ["ecma", "jsx"] },
+    { "id": "json", "url": "https://github.com/tree-sitter/tree-sitter-json", "revision": "001c28d7a29832b06b0e831ec77845553c89b56d" },
+    { "id": "make", "url": "https://github.com/tree-sitter-grammars/tree-sitter-make", "revision": "70613f3d812cbabbd7f38d104d60a409c4008b43" },
+    { "id": "markdown", "url": "https://github.com/tree-sitter-grammars/tree-sitter-markdown", "revision": "f969cd3ae3f9fbd4e43205431d0ae286014c05b5", "location": "tree-sitter-markdown", "requires": ["markdown_inline"] },
+    { "id": "markdown_inline", "url": "https://github.com/tree-sitter-grammars/tree-sitter-markdown", "revision": "f969cd3ae3f9fbd4e43205431d0ae286014c05b5", "location": "tree-sitter-markdown-inline" },
+    { "id": "python", "url": "https://github.com/tree-sitter/tree-sitter-python", "revision": "v0.25.0" },
+    { "id": "rust", "url": "https://github.com/tree-sitter/tree-sitter-rust", "revision": "77a3747266f4d621d0757825e6b11edcbf991ca5" },
+    { "id": "scss", "url": "https://github.com/serenadeai/tree-sitter-scss", "revision": "c478c6868648eff49eb04a4df90d703dc45b312a", "requires": ["css"] },
+    { "id": "tsx", "url": "https://github.com/tree-sitter/tree-sitter-typescript", "revision": "75b3874edb2dc714fb1fd77a32013d0f8699989f", "location": "tsx", "requires": ["ecma", "jsx", "typescript"] },
+    { "id": "typescript", "url": "https://github.com/tree-sitter/tree-sitter-typescript", "revision": "75b3874edb2dc714fb1fd77a32013d0f8699989f", "location": "typescript", "requires": ["ecma"] },
+    { "id": "vue", "url": "https://github.com/tree-sitter-grammars/tree-sitter-vue", "revision": "ce8011a414fdf8091f4e4071752efc376f4afb08", "requires": ["html_tags"] },
+    { "id": "yaml", "url": "https://github.com/tree-sitter-grammars/tree-sitter-yaml", "revision": "4463985dfccc640f3d6991e3396a2047610cf5f8" },
+    { "id": "zig", "url": "https://github.com/tree-sitter-grammars/tree-sitter-zig", "revision": "6479aa13f32f701c383083d8b28360ebd682fb7d" },
+    { "id": "ecma", "queryOnly": true },
+    { "id": "html_tags", "queryOnly": true },
+    { "id": "jsx", "queryOnly": true }
+  ]
+}

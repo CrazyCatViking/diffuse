@@ -5,19 +5,22 @@
   <div v-else class="diff-row" :class="row.kind">
     <div class="line-number old">{{ row.oldLine ?? '' }}</div>
     <div class="line-number new">{{ row.newLine ?? '' }}</div>
-    <pre class="code">{{ text }}</pre>
+    <HighlightedCode :text="text" :spans="syntaxSpans ?? rowSpans" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { DiffRow } from '../../lib/protocol'
+import { computed } from 'vue';
+import type { DiffRow, SyntaxSpan } from '../../lib/protocol';
+import HighlightedCode from './HighlightedCode.vue';
 
 const props = defineProps<{
   row: DiffRow
-}>()
+  syntaxSpans?: SyntaxSpan[]
+}>();
 
-const text = computed(() => props.row.oldText ?? props.row.newText ?? props.row.text ?? '')
+const text = computed(() => props.row.oldText ?? props.row.newText ?? props.row.text ?? '');
+const rowSpans = computed(() => props.row.kind === 'deleted' ? props.row.oldSyntaxSpans : props.row.newSyntaxSpans);
 </script>
 
 <style scoped lang="scss">
@@ -41,25 +44,13 @@ const text = computed(() => props.row.oldText ?? props.row.newText ?? props.row.
   user-select: none;
 }
 
-.code {
-  min-width: 0;
-  margin: 0;
-  padding: 0 12px;
-  overflow: hidden;
-  color: #d8dee9;
-  font: inherit;
-  line-height: inherit;
-  text-overflow: ellipsis;
-  white-space: pre;
-}
-
 .deleted .line-number,
-.deleted .code {
+.deleted :deep(.code) {
   background: rgba(255, 99, 99, 0.16);
 }
 
 .added .line-number,
-.added .code {
+.added :deep(.code) {
   background: rgba(60, 179, 113, 0.16);
 }
 

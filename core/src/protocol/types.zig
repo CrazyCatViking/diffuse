@@ -30,7 +30,31 @@ pub const DiffRenderModel = struct {
     fileId: []const u8,
     mode: []const u8,
     context: []const u8,
+    syntax: SyntaxStatus,
     rows: []const DiffRow,
+};
+
+pub const SyntaxStatus = struct {
+    language: ?[]const u8 = null,
+    grammarInstalled: bool,
+    grammarPath: ?[]const u8 = null,
+    highlightsQueryPath: ?[]const u8 = null,
+    missingReason: ?[]const u8 = null,
+};
+
+pub const SyntaxSpan = diff.syntax.SyntaxSpan;
+
+pub const SyntaxLineSpans = struct {
+    line: u32,
+    spans: []const SyntaxSpan,
+};
+
+pub const InstallTreeSitterGrammarResult = struct {
+    language: []const u8,
+    installed: bool,
+    grammarPath: ?[]const u8 = null,
+    highlightsQueryPath: ?[]const u8 = null,
+    message: ?[]const u8 = null,
 };
 
 pub const DiffRow = struct {
@@ -41,6 +65,8 @@ pub const DiffRow = struct {
     newText: ?[]const u8 = null,
     text: ?[]const u8 = null,
     hunkHeader: ?[]const u8 = null,
+    oldSyntaxSpans: ?[]const SyntaxSpan = null,
+    newSyntaxSpans: ?[]const SyntaxSpan = null,
 };
 
 pub fn versionInfo() VersionInfo {
@@ -77,7 +103,37 @@ pub fn diffRow(row: diff.DiffRow) DiffRow {
         .newText = row.new_text,
         .text = row.text,
         .hunkHeader = row.hunk_header,
+        .oldSyntaxSpans = syntaxSpans(row.old_syntax_spans),
+        .newSyntaxSpans = syntaxSpans(row.new_syntax_spans),
     };
+}
+
+pub fn syntaxStatus(status: diff.syntax.SyntaxStatus) SyntaxStatus {
+    return .{
+        .language = status.language,
+        .grammarInstalled = status.grammarInstalled,
+        .grammarPath = status.grammarPath,
+        .highlightsQueryPath = status.highlightsQueryPath,
+        .missingReason = status.missingReason,
+    };
+}
+
+pub fn installTreeSitterGrammarResult(result: diff.syntax.InstallResult) InstallTreeSitterGrammarResult {
+    return .{
+        .language = result.language,
+        .installed = result.installed,
+        .grammarPath = result.grammarPath,
+        .highlightsQueryPath = result.highlightsQueryPath,
+        .message = result.message,
+    };
+}
+
+pub fn syntaxLineSpans(value: diff.SyntaxLineSpans) SyntaxLineSpans {
+    return .{ .line = value.line, .spans = value.spans };
+}
+
+fn syntaxSpans(spans: ?[]const diff.syntax.SyntaxSpan) ?[]const SyntaxSpan {
+    return spans;
 }
 
 pub fn writeJsonString(writer: *std.Io.Writer, value: []const u8) !void {

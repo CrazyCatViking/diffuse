@@ -1,0 +1,17 @@
+.{
+    .name = .diffuse_core,
+    .fingerprint = 0x191b7c5ed3dab1d4,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .tree_sitter_zig_bindings = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter",
+            .hash = "tree_sitter-0.26.0-8heIf3CaAQB4SSumoGzq3gLSz2rkvXxcKFyskRWqDGBz",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
