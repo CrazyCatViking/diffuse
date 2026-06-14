@@ -35,7 +35,9 @@
         <ChangedFilesPane
           :files="repo.changedFiles"
           :active-file-id="repo.activeFileId"
-          @select-file="repo.selectFile($event)"
+          :active-folder-path="selectedFolder?.path"
+          @select-file="selectFile"
+          @select-folder="selectFolder"
         />
         <div
           class="resize-handle"
@@ -47,7 +49,18 @@
           :aria-valuemax="maxFileTreeWidth"
           @pointerdown="startFileTreeResize"
         />
+        <FolderDiffViewer
+          v-if="selectedFolder"
+          :folder-path="selectedFolder.path"
+          :files="selectedFolder.files"
+          :target="repo.diffTarget"
+          :view-mode="diff.viewMode"
+          :context-mode="diff.contextMode"
+          @update:view-mode="diff.setViewMode($event)"
+          @update:context-mode="diff.setContextMode($event)"
+        />
         <DiffViewer
+          v-else
           :model="diff.current"
           :loading="diff.loading"
           :error="diff.error"
@@ -74,10 +87,11 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
 import DiffTargetBar from './components/diff/DiffTargetBar.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
+import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import SettingsView from './components/settings/SettingsView.vue';
-import type { DiffTarget } from './lib/protocol';
+import type { ChangedFile, DiffTarget } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 
@@ -85,6 +99,7 @@ const repo = useRepoStore();
 const diff = useDiffStore();
 const showRecentRepositories = ref(false);
 const showSettings = ref(false);
+const selectedFolder = ref<{ path: string; files: ChangedFile[] }>();
 const fileTreeWidthStorageKey = 'diffuse.fileTreeWidth';
 const minFileTreeWidth = 220;
 const maxFileTreeWidth = 640;
@@ -138,6 +153,40 @@ const applyDiffTarget = async (target: DiffTarget) => {
   await repo.setDiffTarget(target);
 };
 
+const selectFile = (fileId: string) => {
+  selectedFolder.value = undefined;
+  repo.selectFile(fileId);
+};
+
+const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
+  selectedFolder.value = { path: folder.path, files: sortFilesLikeSidebar(folder.files) };
+  repo.activeFileId = undefined;
+};
+
+const changedFilePath = (file: ChangedFile) => file.newPath ?? file.oldPath ?? file.id;
+
+const sortFilesLikeSidebar = (files: ChangedFile[]) => {
+  return [...files].sort((first, second) => compareSidebarPaths(changedFilePath(first), changedFilePath(second)));
+};
+
+const compareSidebarPaths = (firstPath: string, secondPath: string) => {
+  const firstParts = firstPath.split('/').filter(Boolean);
+  const secondParts = secondPath.split('/').filter(Boolean);
+  const length = Math.min(firstParts.length, secondParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    if (firstParts[index] === secondParts[index]) continue;
+
+    const firstIsFolder = index < firstParts.length - 1;
+    const secondIsFolder = index < secondParts.length - 1;
+    if (firstIsFolder !== secondIsFolder) return firstIsFolder ? -1 : 1;
+
+    return firstParts[index].localeCompare(secondParts[index]);
+  }
+
+  return firstParts.length - secondParts.length;
+};
+
 onMounted(async () => {
   try {
     await repo.loadVersion();
@@ -154,6 +203,7 @@ onBeforeUnmount(() => {
 watch(
   () => repo.activeFileId,
   (fileId) => {
+    if (selectedFolder.value) return;
     if (fileId) void diff.loadDiff(fileId, { silent: diff.current?.fileId === fileId });
     else diff.clear();
   }
@@ -162,6 +212,13 @@ watch(
 watch(
   () => repo.changeRevision,
   () => {
+    if (selectedFolder.value) {
+      const folderPath = selectedFolder.value.path;
+      const files = sortFilesLikeSidebar(repo.changedFiles.filter((file) => changedFilePath(file).startsWith(`${folderPath}/`)));
+      selectedFolder.value = files.length > 0 ? { path: folderPath, files } : undefined;
+      return;
+    }
+
     if (!repo.activeFileId) {
       diff.clear();
       return;
@@ -176,6 +233,7 @@ watch(
 watch(
   () => repo.diffTarget,
   () => {
+    if (selectedFolder.value) return;
     if (repo.activeFileId) void diff.loadDiff(repo.activeFileId);
     else diff.clear();
   },

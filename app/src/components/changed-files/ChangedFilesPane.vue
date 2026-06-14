@@ -4,10 +4,14 @@
     <div v-if="files.length === 0" class="empty">No changed files</div>
     <template v-else>
       <template v-for="node in visibleNodes" :key="node.key">
-        <button v-if="node.type === 'folder'" class="folder-row" :style="{ '--depth': node.depth }" @click="toggleFolder(node.key)">
-          <span class="chevron">{{ collapsedFolders.has(node.key) ? '›' : '⌄' }}</span>
-          <span class="folder-name" :title="node.path">{{ node.name }}</span>
-        </button>
+        <div v-if="node.type === 'folder'" class="folder-row" :class="{ active: node.key === activeFolderPath }" :style="{ '--depth': node.depth }">
+          <button class="chevron-button" type="button" :aria-label="collapsedFolders.has(node.key) ? `Expand ${node.name}` : `Collapse ${node.name}`" @click="toggleFolder(node.key)">
+            <span class="chevron">{{ collapsedFolders.has(node.key) ? '›' : '⌄' }}</span>
+          </button>
+          <button class="folder-select" type="button" :title="node.path" @click="selectFolder(node)">
+            <span class="folder-name">{{ node.name }}</span>
+          </button>
+        </div>
 
         <ChangedFileRow
           v-else
@@ -50,10 +54,12 @@ type TreeNode = TreeFolder | TreeFile;
 const props = defineProps<{
   files: ChangedFile[];
   activeFileId?: string;
+  activeFolderPath?: string;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   selectFile: [fileId: string];
+  selectFolder: [folder: { path: string; files: ChangedFile[] }];
 }>();
 
 const collapsedFolders = ref(new Set<string>());
@@ -66,6 +72,19 @@ const toggleFolder = (key: string) => {
   if (next.has(key)) next.delete(key);
   else next.add(key);
   collapsedFolders.value = next;
+};
+
+const selectFolder = (folder: TreeFolder) => {
+  emit('selectFolder', { path: folder.path, files: folderFiles(folder) });
+};
+
+const folderFiles = (folder: TreeFolder): ChangedFile[] => {
+  const files: ChangedFile[] = [];
+  for (const child of folder.children) {
+    if (child.type === 'file') files.push(child.file);
+    else files.push(...folderFiles(child));
+  }
+  return files;
 };
 
 const visibleTreeNodes = (nodes: TreeNode[]): TreeNode[] => {
@@ -154,14 +173,42 @@ const sortTree = (nodes: TreeNode[]) => {
   padding: 7px 10px 7px calc(10px + (var(--depth) * 16px));
   color: #aab4c5;
   background: transparent;
-  border: 0;
   border-radius: 8px;
-  text-align: left;
-  cursor: pointer;
 
   &:hover {
     background: #202635;
   }
+
+  &.active {
+    background: #202635;
+  }
+}
+
+.chevron-button,
+.folder-select {
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chevron-button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 22px;
+  border-radius: 5px;
+
+  &:hover {
+    background: #2a3140;
+  }
+}
+
+.folder-select {
+  height: 22px;
 }
 
 .chevron {
