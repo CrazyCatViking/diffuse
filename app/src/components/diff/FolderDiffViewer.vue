@@ -18,76 +18,88 @@
     <div v-if="loading" class="message">Loading folder diff...</div>
     <div v-else-if="error" class="message error">{{ error }}</div>
     <div v-else-if="models.length === 0" class="message">No diffs in this folder.</div>
-    <div v-else ref="folderScrollRef" class="folder-diffs" @mouseup="captureSelectionComment">
-      <div class="folder-spacer" :style="{ height: `${folderTotalSize}px` }">
-        <div
-          v-for="virtualRow in folderVirtualRows"
-          :key="String(virtualRow.key)"
-          class="virtual-row"
-          :data-index="virtualRow.index"
-          :ref="measureFolderElement"
-          :style="{ transform: `translateY(${virtualRow.start}px)` }"
-        >
-          <template v-if="folderItem(virtualRow.index).kind === 'file'">
-            <header class="file-header">
-              <span>{{ folderModel(virtualRow.index).fileId }}</span>
-              <span>{{ folderModel(virtualRow.index).rows.length }} rows</span>
-            </header>
-          </template>
-          <div v-else-if="folderItem(virtualRow.index).kind === 'empty'" class="empty-file">No diff for this file.</div>
-          <template v-else-if="folderItem(virtualRow.index).kind === 'row' && viewMode === 'split'">
-            <SplitDiffRow
-              v-if="folderDiffRow(virtualRow.index)"
-              :row="folderDiffRow(virtualRow.index)!"
-              :file-id="folderFileId(virtualRow.index)"
-              :old-syntax-spans="syntaxForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-              :new-syntax-spans="syntaxForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-              :old-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-              :new-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-              :old-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-              :new-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-              :old-review-highlights="reviewHighlightsForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-              :new-review-highlights="reviewHighlightsForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-              :comment-hover-disabled="commentHoverDisabled"
-              @comment="startLineComment(folderFileId(virtualRow.index), $event)"
-              @toggle-comments="toggleComments"
-            />
-            <div v-else-if="folderReviewRow(virtualRow.index)" class="inline-review-row synced-split" :class="folderReviewRow(virtualRow.index)?.anchor.side">
-              <div class="review-cell">
-                <InlineReviewBox :entry="folderReviewRow(virtualRow.index)!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+    <div v-else class="folder-diffs-shell" :class="{ 'has-diff-scroll': hasFolderScroll }">
+      <div ref="folderScrollRef" class="folder-diffs" @scroll="onFolderScroll" @mouseup="captureSelectionComment">
+        <div class="folder-spacer" :style="{ height: `${folderTotalSize}px` }">
+          <div
+            v-for="virtualRow in folderVirtualRows"
+            :key="String(virtualRow.key)"
+            class="virtual-row"
+            :data-index="virtualRow.index"
+            :ref="measureFolderElement"
+            :style="{ transform: `translateY(${virtualRow.start}px)` }"
+          >
+            <template v-if="folderItem(virtualRow.index).kind === 'file'">
+              <header class="file-header">
+                <span>{{ folderModel(virtualRow.index).fileId }}</span>
+                <span>{{ folderModel(virtualRow.index).rows.length }} rows</span>
+              </header>
+            </template>
+            <div v-else-if="folderItem(virtualRow.index).kind === 'empty'" class="empty-file">No diff for this file.</div>
+            <template v-else-if="folderItem(virtualRow.index).kind === 'row' && viewMode === 'split'">
+              <SplitDiffRow
+                v-if="folderDiffRow(virtualRow.index)"
+                :row="folderDiffRow(virtualRow.index)!"
+                :file-id="folderFileId(virtualRow.index)"
+                :old-syntax-spans="syntaxForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
+                :new-syntax-spans="syntaxForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                :old-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
+                :new-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                :old-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
+                :new-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                :old-review-highlights="reviewHighlightsForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
+                :new-review-highlights="reviewHighlightsForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                :comment-hover-disabled="commentHoverDisabled"
+                @comment="startLineComment(folderFileId(virtualRow.index), $event)"
+                @toggle-comments="toggleComments"
+              />
+              <div v-else-if="folderReviewRow(virtualRow.index)" class="inline-review-row synced-split" :class="folderReviewRow(virtualRow.index)?.anchor.side">
+                <div class="review-cell">
+                  <InlineReviewBox :entry="folderReviewRow(virtualRow.index)!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                </div>
               </div>
-            </div>
-          </template>
-          <template v-else-if="folderItem(virtualRow.index).kind === 'row'">
-            <InlineDiffRow
-              v-if="folderDiffRow(virtualRow.index)"
-              :row="folderDiffRow(virtualRow.index)!"
-              :file-id="folderFileId(virtualRow.index)"
-              :syntax-spans="syntaxForInlineRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!)"
-              :old-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-              :new-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-              :old-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-              :new-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-              :review-highlights="reviewHighlightsForInlineRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!)"
-              :comment-hover-disabled="commentHoverDisabled"
-              @comment="startLineComment(folderFileId(virtualRow.index), $event)"
-              @toggle-comments="toggleComments"
-            />
-            <InlineReviewBox v-else-if="folderReviewRow(virtualRow.index)" :entry="folderReviewRow(virtualRow.index)!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
-          </template>
+            </template>
+            <template v-else-if="folderItem(virtualRow.index).kind === 'row'">
+              <InlineDiffRow
+                v-if="folderDiffRow(virtualRow.index)"
+                :row="folderDiffRow(virtualRow.index)!"
+                :file-id="folderFileId(virtualRow.index)"
+                :syntax-spans="syntaxForInlineRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!)"
+                :old-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
+                :new-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                :old-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
+                :new-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                :review-highlights="reviewHighlightsForInlineRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!)"
+                :comment-hover-disabled="commentHoverDisabled"
+                @comment="startLineComment(folderFileId(virtualRow.index), $event)"
+                @toggle-comments="toggleComments"
+              />
+              <InlineReviewBox v-else-if="folderReviewRow(virtualRow.index)" :entry="folderReviewRow(virtualRow.index)!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+            </template>
+          </div>
+        </div>
+        <div v-if="selectionDraft" class="selection-toolbar" :style="selectionBubbleStyle">
+          <button type="button" title="Comment on selection" aria-label="Comment on selection" @pointerdown.prevent.stop="startSelectionComment">
+            <span class="comment-icon" aria-hidden="true" />
+          </button>
         </div>
       </div>
-      <div v-if="selectionDraft" class="selection-toolbar" :style="selectionBubbleStyle">
-        <button type="button" title="Comment on selection" aria-label="Comment on selection" @pointerdown.prevent.stop="startSelectionComment">
-          <span class="comment-icon" aria-hidden="true" />
-        </button>
+      <div v-if="hasFolderScroll" class="diff-scrollbar" @pointerdown="onScrollbarTrackPointerDown">
+        <div
+          v-for="marker in folderMarkers"
+          :key="marker.key"
+          class="diff-scroll-marker"
+          :class="marker.kind"
+          :style="marker.style"
+        />
+        <div class="diff-scroll-thumb" :style="folderThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown" />
       </div>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
@@ -122,7 +134,13 @@ const expandedResolvedCommentStarts = ref(new Set<string>());
 const selectionBubblePosition = ref({ left: 18, top: 52 });
 const selectionDraft = ref<{ file: ChangedFile; anchor: ReviewAnchor }>();
 const nativeSelectionRange = ref<Range>();
+const hasFolderScroll = ref(false);
+const folderScrollMetrics = ref<ScrollMetrics>(emptyScrollMetrics());
 let loadGeneration = 0;
+let paneResizeObserver: ResizeObserver | undefined;
+let observedFolderScroll: HTMLElement | undefined;
+let scrollbarDrag: { startY: number; startScrollTop: number; trackHeight: number } | undefined;
+let paneScrollStateFrame: number | undefined;
 
 type DisplayRow = {
   kind: 'diff';
@@ -137,6 +155,28 @@ type FolderVirtualItem = {
   fileId?: string;
   item?: DisplayRow;
 };
+
+type DiffScrollMarker = {
+  key: string;
+  kind: 'added' | 'deleted';
+  style: CSSProperties;
+};
+
+type DiffScrollMarkerRange = {
+  kind: 'added' | 'deleted';
+  top: number;
+  bottom: number;
+};
+
+type ScrollMetrics = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+};
+
+function emptyScrollMetrics(): ScrollMetrics {
+  return { scrollTop: 0, scrollHeight: 0, clientHeight: 0 };
+}
 
 const folderScrollRef = ref<HTMLElement | null>(null);
 const folderVirtualItems = computed<FolderVirtualItem[]>(() => {
@@ -162,6 +202,8 @@ const folderVirtualizer = useVirtualizer(
 const folderVirtualRows = computed(() => folderVirtualizer.value.getVirtualItems());
 const folderTotalSize = computed(() => folderVirtualizer.value.getTotalSize());
 const commentHoverDisabled = computed(() => folderVirtualizer.value.isScrolling);
+const folderMarkers = computed(() => scrollMarkersForItems(folderVirtualItems.value));
+const folderThumbStyle = computed(() => scrollThumbStyle(folderScrollMetrics.value));
 
 const measureFolderElement = (element: unknown) => {
   folderVirtualizer.value.measureElement(element instanceof Element ? element : null);
@@ -175,6 +217,123 @@ const estimateFolderItemSize = (item?: FolderVirtualItem) => {
   if (item.item.kind === 'draft') return 220;
   if (item.item.kind === 'thread') return 150;
   return item.item.row.kind === 'hunk' ? 28 : 24;
+};
+
+const scrollMarkersForItems = (items: FolderVirtualItem[]): DiffScrollMarker[] => {
+  const totalSize = items.reduce((sum, item) => sum + estimateFolderItemSize(item), 0);
+  if (totalSize <= 0) return [];
+
+  const markerRanges: DiffScrollMarkerRange[] = [];
+  let offset = 0;
+  items.forEach((item) => {
+    const size = estimateFolderItemSize(item);
+    const row = displayDiffRow(item.item);
+    if (row?.kind === 'added' || row?.kind === 'deleted') {
+      const top = offset / totalSize * 100;
+      const bottom = Math.max((offset + size) / totalSize * 100, top + 0.45);
+      markerRanges.push({ kind: row.kind, top, bottom });
+    }
+    offset += size;
+  });
+
+  return mergeMarkerRanges(markerRanges).map((marker, index) => ({
+    key: `${marker.kind}:${index}`,
+    kind: marker.kind,
+    style: {
+      top: `${marker.top}%`,
+      height: `${marker.bottom - marker.top}%`,
+    },
+  }));
+};
+
+const mergeMarkerRanges = (ranges: DiffScrollMarkerRange[]) => {
+  const merged: DiffScrollMarkerRange[] = [];
+  const sorted = [...ranges].sort((first, second) => first.kind.localeCompare(second.kind) || first.top - second.top);
+  for (const range of sorted) {
+    const previous = merged[merged.length - 1];
+    if (previous?.kind === range.kind && range.top <= previous.bottom + 0.15) {
+      previous.bottom = Math.max(previous.bottom, range.bottom);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged.sort((first, second) => first.top - second.top || first.kind.localeCompare(second.kind));
+};
+
+const scrollThumbStyle = (metrics: ScrollMetrics): CSSProperties => {
+  if (metrics.scrollHeight <= metrics.clientHeight || metrics.clientHeight <= 0) return { display: 'none' };
+  return {
+    top: `${(metrics.scrollTop / metrics.scrollHeight) * 100}%`,
+    height: `${Math.max((metrics.clientHeight / metrics.scrollHeight) * 100, 6)}%`,
+  };
+};
+
+const updatePaneScrollState = () => {
+  paneScrollStateFrame = undefined;
+  const element = folderScrollRef.value;
+  if (element && element !== observedFolderScroll) {
+    if (observedFolderScroll) paneResizeObserver?.unobserve(observedFolderScroll);
+    paneResizeObserver?.observe(element);
+    observedFolderScroll = element;
+  }
+  hasFolderScroll.value = Boolean(element && element.scrollHeight > element.clientHeight + 1);
+  folderScrollMetrics.value = {
+    scrollTop: element?.scrollTop ?? 0,
+    scrollHeight: element?.scrollHeight ?? 0,
+    clientHeight: element?.clientHeight ?? 0,
+  };
+};
+
+const schedulePaneScrollStateUpdate = () => {
+  if (paneScrollStateFrame !== undefined) return;
+  paneScrollStateFrame = requestAnimationFrame(updatePaneScrollState);
+};
+
+const updatePaneScrollStateAfterRender = () => {
+  void nextTick(() => {
+    requestAnimationFrame(updatePaneScrollState);
+  });
+};
+
+const onFolderScroll = () => {
+  schedulePaneScrollStateUpdate();
+};
+
+const onScrollbarTrackPointerDown = (event: PointerEvent) => {
+  const element = folderScrollRef.value;
+  const track = event.currentTarget as HTMLElement;
+  if (!element || track.clientHeight <= 0) return;
+
+  const thumbHeight = Math.max((element.clientHeight / element.scrollHeight) * track.clientHeight, 24);
+  const trackTop = track.getBoundingClientRect().top;
+  const targetTop = event.clientY - trackTop - thumbHeight / 2;
+  element.scrollTop = Math.max(0, Math.min(targetTop / track.clientHeight * element.scrollHeight, element.scrollHeight - element.clientHeight));
+  schedulePaneScrollStateUpdate();
+};
+
+const onScrollbarThumbPointerDown = (event: PointerEvent) => {
+  const element = folderScrollRef.value;
+  const track = (event.currentTarget as HTMLElement).parentElement;
+  if (!element || !track || track.clientHeight <= 0) return;
+
+  scrollbarDrag = { startY: event.clientY, startScrollTop: element.scrollTop, trackHeight: track.clientHeight };
+  window.addEventListener('pointermove', onScrollbarThumbPointerMove);
+  window.addEventListener('pointerup', stopScrollbarThumbDrag, { once: true });
+};
+
+const onScrollbarThumbPointerMove = (event: PointerEvent) => {
+  if (!scrollbarDrag) return;
+  const element = folderScrollRef.value;
+  if (!element || scrollbarDrag.trackHeight <= 0) return;
+
+  const deltaY = event.clientY - scrollbarDrag.startY;
+  element.scrollTop = scrollbarDrag.startScrollTop + deltaY / scrollbarDrag.trackHeight * element.scrollHeight;
+  schedulePaneScrollStateUpdate();
+};
+
+const stopScrollbarThumbDrag = () => {
+  scrollbarDrag = undefined;
+  window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
 };
 
 const folderItem = (index: number): FolderVirtualItem => folderVirtualItems.value[index] ?? { kind: 'empty', key: 'missing', fileId: '' };
@@ -542,12 +701,24 @@ watch(
   { immediate: true }
 );
 
+watch(
+  [folderTotalSize, () => props.viewMode, () => loading.value],
+  updatePaneScrollStateAfterRender,
+  { immediate: true, flush: 'post' }
+);
+
 onMounted(() => {
   document.addEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+  paneResizeObserver = new ResizeObserver(updatePaneScrollState);
+  updatePaneScrollStateAfterRender();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+  window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
+  window.removeEventListener('pointerup', stopScrollbarThumbDrag);
+  if (paneScrollStateFrame !== undefined) cancelAnimationFrame(paneScrollStateFrame);
+  paneResizeObserver?.disconnect();
 });
 </script>
 
@@ -610,10 +781,87 @@ onBeforeUnmount(() => {
   }
 }
 
+.folder-diffs-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+
+  &.has-diff-scroll {
+    grid-template-columns: minmax(0, 1fr) 18px;
+  }
+}
+
 .folder-diffs {
   position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
   min-height: 0;
   overflow: auto;
+
+  &::-webkit-scrollbar {
+    width: 0;
+    height: 14px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #151923;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #4b5568;
+    border: 4px solid #151923;
+    border-radius: 999px;
+  }
+}
+
+.diff-scrollbar {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  z-index: 4;
+  width: 18px;
+  height: 100%;
+  background: #151923;
+  border-left: 1px solid #252a35;
+  cursor: default;
+  user-select: none;
+}
+
+.diff-scroll-marker {
+  position: absolute;
+  width: 50%;
+  min-height: 2px;
+  opacity: 0.95;
+
+  &.added {
+    right: 0;
+    background: rgba(60, 179, 113, 0.16);
+  }
+
+  &.deleted {
+    left: 0;
+    background: rgba(255, 99, 99, 0.16);
+  }
+}
+
+.diff-scroll-thumb {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  min-height: 24px;
+  background: rgba(152, 162, 179, 0.42);
+  transition: background 120ms ease;
+  will-change: top;
+
+  &:hover {
+    background: rgba(174, 183, 198, 0.58);
+  }
 }
 
 .folder-spacer {

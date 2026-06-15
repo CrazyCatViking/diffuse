@@ -60,128 +60,176 @@
     <div v-else-if="!model" class="message">Select a changed file to view its diff.</div>
     <div v-else-if="rows.length === 0" class="message">No unstaged diff for this file.</div>
     <div v-else-if="initialSyntaxGateActive" class="syntax-gate" />
-    <div v-else-if="viewMode === 'split' && syncScroll" ref="syncedSplitRef" class="pane synced-split-view" @mouseup="captureSelectionComment">
-      <div class="spacer synced-split-spacer" :style="{ height: `${syncedSplitTotalSize}px` }">
-        <div
-          v-for="virtualRow in syncedSplitVirtualRows"
-          :key="String(virtualRow.key)"
-          class="virtual-row"
-          :data-index="virtualRow.index"
-          :ref="measureSyncedSplitElement"
-          :style="{ transform: `translateY(${virtualRow.start}px)` }"
-        >
-          <template v-if="displayDiffRow(syncedSplitDisplayRows[virtualRow.index])">
-            <SplitDiffRow
-              :row="displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!"
-              :old-syntax-spans="syntaxForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
-              :new-syntax-spans="syntaxForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
-              :old-comment-count="commentCountForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
-              :new-comment-count="commentCountForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
-              :old-comments-expanded="commentsExpandedForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
-              :new-comments-expanded="commentsExpandedForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
-              :old-review-highlights="reviewHighlightsForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
-              :new-review-highlights="reviewHighlightsForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
-              :comment-hover-disabled="commentHoverDisabled"
-              @comment="startLineComment"
-              @toggle-comments="toggleComments"
-            />
-          </template>
-          <div v-else class="inline-review-row synced-split" :class="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])?.anchor.side">
-            <div class="review-cell">
-              <InlineReviewBox v-if="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])" :entry="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+    <div v-else-if="viewMode === 'split' && syncScroll" class="pane-shell" :class="{ 'has-diff-scroll': hasSyncedSplitScroll }">
+      <div ref="syncedSplitRef" class="pane synced-split-view" @scroll="onSyncedSplitScroll" @mouseup="captureSelectionComment">
+        <div class="spacer synced-split-spacer" :style="{ height: `${syncedSplitTotalSize}px` }">
+          <div
+            v-for="virtualRow in syncedSplitVirtualRows"
+            :key="String(virtualRow.key)"
+            class="virtual-row"
+            :data-index="virtualRow.index"
+            :ref="measureSyncedSplitElement"
+            :style="{ transform: `translateY(${virtualRow.start}px)` }"
+          >
+            <template v-if="displayDiffRow(syncedSplitDisplayRows[virtualRow.index])">
+              <SplitDiffRow
+                :row="displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!"
+                :old-syntax-spans="syntaxForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+                :new-syntax-spans="syntaxForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+                :old-comment-count="commentCountForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+                :new-comment-count="commentCountForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+                :old-comments-expanded="commentsExpandedForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+                :new-comments-expanded="commentsExpandedForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+                :old-review-highlights="reviewHighlightsForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'old')"
+                :new-review-highlights="reviewHighlightsForRow(displayDiffRow(syncedSplitDisplayRows[virtualRow.index])!, 'new')"
+                :comment-hover-disabled="commentHoverDisabled"
+                @comment="startLineComment"
+                @toggle-comments="toggleComments"
+              />
+            </template>
+            <div v-else class="inline-review-row synced-split" :class="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])?.anchor.side">
+              <div class="review-cell">
+                <InlineReviewBox v-if="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])" :entry="displayReviewRow(syncedSplitDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              </div>
             </div>
           </div>
         </div>
+      </div>
+      <div v-if="hasSyncedSplitScroll" class="diff-scrollbar" @pointerdown="onScrollbarTrackPointerDown($event, 'syncedSplit')">
+        <div
+          v-for="marker in syncedSplitMarkers"
+          :key="marker.key"
+          class="diff-scroll-marker"
+          :class="marker.kind"
+          :style="marker.style"
+        />
+        <div class="diff-scroll-thumb" :style="syncedSplitThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown($event, 'syncedSplit')" />
       </div>
     </div>
     <div v-else-if="viewMode === 'split'" class="split-view">
-      <div ref="leftRef" class="pane old-pane" @scroll="onLeftScroll" @mouseup="captureSelectionComment">
-        <div class="spacer" :style="{ height: `${leftTotalSize}px` }">
-          <div
-            v-for="virtualRow in leftVirtualRows"
-            :key="`old-${String(virtualRow.key)}`"
-            class="virtual-row"
-            :data-index="virtualRow.index"
-            :ref="measureLeftElement"
-            :style="{ transform: `translateY(${virtualRow.start}px)` }"
-          >
-            <template v-if="displayDiffRow(leftDisplayRows[virtualRow.index])">
-            <SplitDiffPaneRow
-              :row="displayDiffRow(leftDisplayRows[virtualRow.index])!"
-              side="old"
-              :syntax-spans="syntaxForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
-              :comment-count="commentCountForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
-              :comments-expanded="commentsExpandedForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
-              :review-highlights="reviewHighlightsForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
-              :comment-hover-disabled="commentHoverDisabled"
-              @comment="startLineComment"
-              @toggle-comments="toggleComments"
-            />
-            </template>
-            <div v-else class="inline-review-row old">
-              <InlineReviewBox v-if="displayReviewRow(leftDisplayRows[virtualRow.index])" :entry="displayReviewRow(leftDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+      <div class="pane-shell old-pane-shell" :class="{ 'has-diff-scroll': hasLeftScroll }">
+        <div ref="leftRef" class="pane old-pane" @scroll="onLeftScroll" @mouseup="captureSelectionComment">
+          <div class="spacer" :style="{ height: `${leftTotalSize}px` }">
+            <div
+              v-for="virtualRow in leftVirtualRows"
+              :key="`old-${String(virtualRow.key)}`"
+              class="virtual-row"
+              :data-index="virtualRow.index"
+              :ref="measureLeftElement"
+              :style="{ transform: `translateY(${virtualRow.start}px)` }"
+            >
+              <template v-if="displayDiffRow(leftDisplayRows[virtualRow.index])">
+              <SplitDiffPaneRow
+                :row="displayDiffRow(leftDisplayRows[virtualRow.index])!"
+                side="old"
+                :syntax-spans="syntaxForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+                :comment-count="commentCountForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+                :comments-expanded="commentsExpandedForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+                :review-highlights="reviewHighlightsForRow(displayDiffRow(leftDisplayRows[virtualRow.index])!, 'old')"
+                :comment-hover-disabled="commentHoverDisabled"
+                @comment="startLineComment"
+                @toggle-comments="toggleComments"
+              />
+              </template>
+              <div v-else class="inline-review-row old">
+                <InlineReviewBox v-if="displayReviewRow(leftDisplayRows[virtualRow.index])" :entry="displayReviewRow(leftDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      <div ref="rightRef" class="pane new-pane" @scroll="onRightScroll" @mouseup="captureSelectionComment">
-        <div class="spacer" :style="{ height: `${rightTotalSize}px` }">
+        <div v-if="hasLeftScroll" class="diff-scrollbar" @pointerdown="onScrollbarTrackPointerDown($event, 'left')">
           <div
-            v-for="virtualRow in rightVirtualRows"
-            :key="`new-${String(virtualRow.key)}`"
-            class="virtual-row"
-            :data-index="virtualRow.index"
-            :ref="measureRightElement"
-            :style="{ transform: `translateY(${virtualRow.start}px)` }"
-          >
-            <template v-if="displayDiffRow(rightDisplayRows[virtualRow.index])">
-            <SplitDiffPaneRow
-              :row="displayDiffRow(rightDisplayRows[virtualRow.index])!"
-              side="new"
-              :syntax-spans="syntaxForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
-              :comment-count="commentCountForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
-              :comments-expanded="commentsExpandedForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
-              :review-highlights="reviewHighlightsForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
-              :comment-hover-disabled="commentHoverDisabled"
-              @comment="startLineComment"
-              @toggle-comments="toggleComments"
-            />
-            </template>
-            <div v-else class="inline-review-row new">
-              <InlineReviewBox v-if="displayReviewRow(rightDisplayRows[virtualRow.index])" :entry="displayReviewRow(rightDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+            v-for="marker in leftMarkers"
+            :key="marker.key"
+            class="diff-scroll-marker"
+            :class="marker.kind"
+            :style="marker.style"
+          />
+          <div class="diff-scroll-thumb" :style="leftThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown($event, 'left')" />
+        </div>
+      </div>
+      <div class="pane-shell" :class="{ 'has-diff-scroll': hasRightScroll }">
+        <div ref="rightRef" class="pane new-pane" @scroll="onRightScroll" @mouseup="captureSelectionComment">
+          <div class="spacer" :style="{ height: `${rightTotalSize}px` }">
+            <div
+              v-for="virtualRow in rightVirtualRows"
+              :key="`new-${String(virtualRow.key)}`"
+              class="virtual-row"
+              :data-index="virtualRow.index"
+              :ref="measureRightElement"
+              :style="{ transform: `translateY(${virtualRow.start}px)` }"
+            >
+              <template v-if="displayDiffRow(rightDisplayRows[virtualRow.index])">
+              <SplitDiffPaneRow
+                :row="displayDiffRow(rightDisplayRows[virtualRow.index])!"
+                side="new"
+                :syntax-spans="syntaxForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+                :comment-count="commentCountForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+                :comments-expanded="commentsExpandedForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+                :review-highlights="reviewHighlightsForRow(displayDiffRow(rightDisplayRows[virtualRow.index])!, 'new')"
+                :comment-hover-disabled="commentHoverDisabled"
+                @comment="startLineComment"
+                @toggle-comments="toggleComments"
+              />
+              </template>
+              <div v-else class="inline-review-row new">
+                <InlineReviewBox v-if="displayReviewRow(rightDisplayRows[virtualRow.index])" :entry="displayReviewRow(rightDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              </div>
             </div>
           </div>
+        </div>
+        <div v-if="hasRightScroll" class="diff-scrollbar" @pointerdown="onScrollbarTrackPointerDown($event, 'right')">
+          <div
+            v-for="marker in rightMarkers"
+            :key="marker.key"
+            class="diff-scroll-marker"
+            :class="marker.kind"
+            :style="marker.style"
+          />
+          <div class="diff-scroll-thumb" :style="rightThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown($event, 'right')" />
         </div>
       </div>
     </div>
-    <div v-else ref="inlineRef" class="pane inline-view" @mouseup="captureSelectionComment">
-      <div class="spacer inline-spacer" :style="{ height: `${inlineTotalSize}px` }">
-        <div
-          v-for="virtualRow in inlineVirtualRows"
-          :key="String(virtualRow.key)"
-          class="virtual-row"
-          :data-index="virtualRow.index"
-          :ref="measureInlineElement"
-          :style="{ transform: `translateY(${virtualRow.start}px)` }"
-        >
-          <template v-if="displayDiffRow(inlineDisplayRows[virtualRow.index])">
-            <InlineDiffRow
-              :row="displayDiffRow(inlineDisplayRows[virtualRow.index])!"
-              :syntax-spans="syntaxForInlineRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!)"
-              :old-comment-count="commentCountForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'old')"
-              :new-comment-count="commentCountForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'new')"
-              :old-comments-expanded="commentsExpandedForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'old')"
-              :new-comments-expanded="commentsExpandedForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'new')"
-              :review-highlights="reviewHighlightsForInlineRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!)"
-              :comment-hover-disabled="commentHoverDisabled"
-              @comment="startLineComment"
-              @toggle-comments="toggleComments"
-            />
-          </template>
-          <div v-else class="inline-review-row inline">
-            <InlineReviewBox v-if="displayReviewRow(inlineDisplayRows[virtualRow.index])" :entry="displayReviewRow(inlineDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+    <div v-else class="pane-shell" :class="{ 'has-diff-scroll': hasInlineScroll }">
+      <div ref="inlineRef" class="pane inline-view" @scroll="onInlineScroll" @mouseup="captureSelectionComment">
+        <div class="spacer inline-spacer" :style="{ height: `${inlineTotalSize}px` }">
+          <div
+            v-for="virtualRow in inlineVirtualRows"
+            :key="String(virtualRow.key)"
+            class="virtual-row"
+            :data-index="virtualRow.index"
+            :ref="measureInlineElement"
+            :style="{ transform: `translateY(${virtualRow.start}px)` }"
+          >
+            <template v-if="displayDiffRow(inlineDisplayRows[virtualRow.index])">
+              <InlineDiffRow
+                :row="displayDiffRow(inlineDisplayRows[virtualRow.index])!"
+                :syntax-spans="syntaxForInlineRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!)"
+                :old-comment-count="commentCountForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'old')"
+                :new-comment-count="commentCountForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'new')"
+                :old-comments-expanded="commentsExpandedForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'old')"
+                :new-comments-expanded="commentsExpandedForRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!, 'new')"
+                :review-highlights="reviewHighlightsForInlineRow(displayDiffRow(inlineDisplayRows[virtualRow.index])!)"
+                :comment-hover-disabled="commentHoverDisabled"
+                @comment="startLineComment"
+                @toggle-comments="toggleComments"
+              />
+            </template>
+            <div v-else class="inline-review-row inline">
+              <InlineReviewBox v-if="displayReviewRow(inlineDisplayRows[virtualRow.index])" :entry="displayReviewRow(inlineDisplayRows[virtualRow.index])!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+            </div>
           </div>
         </div>
+      </div>
+      <div v-if="hasInlineScroll" class="diff-scrollbar" @pointerdown="onScrollbarTrackPointerDown($event, 'inline')">
+        <div
+          v-for="marker in inlineMarkers"
+          :key="marker.key"
+          class="diff-scroll-marker"
+          :class="marker.kind"
+          :style="marker.style"
+        />
+        <div class="diff-scroll-thumb" :style="inlineThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown($event, 'inline')" />
       </div>
     </div>
     <div
@@ -197,7 +245,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useClient } from '../../lib/useClient';
 import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
@@ -262,6 +310,13 @@ let syntaxRequestGeneration = 0;
 const syntaxPageSize = 128;
 const syntaxPageLookaround = 1;
 const initialSyntaxGateMs = 80;
+const hasLeftScroll = ref(false);
+const hasRightScroll = ref(false);
+const hasSyncedSplitScroll = ref(false);
+const hasInlineScroll = ref(false);
+let paneResizeObserver: ResizeObserver | undefined;
+let scrollbarDrag: { pane: PaneKey; startY: number; startScrollTop: number; trackHeight: number } | undefined;
+let paneScrollStateFrame: number | undefined;
 
 type SyntaxPageRequest = {
   key: string;
@@ -280,6 +335,30 @@ type DisplayRow = {
   row: DiffRow;
 } | InlineReviewEntry;
 
+type DiffScrollMarker = {
+  key: string;
+  kind: 'added' | 'deleted';
+  style: CSSProperties;
+};
+
+type DiffScrollMarkerRange = {
+  kind: 'added' | 'deleted';
+  top: number;
+  bottom: number;
+};
+
+type PaneKey = 'left' | 'right' | 'syncedSplit' | 'inline';
+
+type PaneScrollMetrics = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+};
+
+function emptyScrollMetrics(): PaneScrollMetrics {
+  return { scrollTop: 0, scrollHeight: 0, clientHeight: 0 };
+}
+
 const syntaxMessage = computed(() => {
   const syntax = props.model?.syntax;
   if (!syntax?.language) return undefined;
@@ -294,6 +373,18 @@ const leftDisplayRows = computed(() => buildDisplayRows('old'));
 const rightDisplayRows = computed(() => buildDisplayRows('new'));
 const syncedSplitDisplayRows = computed(() => buildDisplayRows());
 const inlineDisplayRows = computed(() => buildDisplayRows());
+const leftMarkers = computed(() => scrollMarkersForRows(leftDisplayRows.value, 'old'));
+const rightMarkers = computed(() => scrollMarkersForRows(rightDisplayRows.value, 'new'));
+const syncedSplitMarkers = computed(() => scrollMarkersForRows(syncedSplitDisplayRows.value));
+const inlineMarkers = computed(() => scrollMarkersForRows(inlineDisplayRows.value));
+const leftScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
+const rightScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
+const syncedSplitScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
+const inlineScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
+const leftThumbStyle = computed(() => scrollThumbStyle(leftScrollMetrics.value));
+const rightThumbStyle = computed(() => scrollThumbStyle(rightScrollMetrics.value));
+const syncedSplitThumbStyle = computed(() => scrollThumbStyle(syncedSplitScrollMetrics.value));
+const inlineThumbStyle = computed(() => scrollThumbStyle(inlineScrollMetrics.value));
 const selectionBubbleStyle = computed(() => ({
   left: `${selectionBubblePosition.value.left}px`,
   top: `${selectionBubblePosition.value.top}px`,
@@ -579,10 +670,17 @@ const clearSelectionDraftWhenSelectionEnds = () => {
 
 onMounted(() => {
   document.addEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+  paneResizeObserver = new ResizeObserver(updatePaneScrollStates);
+  if (rootRef.value) paneResizeObserver.observe(rootRef.value);
+  updatePaneScrollStatesAfterRender();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+  window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
+  window.removeEventListener('pointerup', stopScrollbarThumbDrag);
+  if (paneScrollStateFrame !== undefined) cancelAnimationFrame(paneScrollStateFrame);
+  paneResizeObserver?.disconnect();
 });
 
 const diffTargetFingerprint = () => JSON.stringify({
@@ -593,12 +691,102 @@ const diffTargetFingerprint = () => JSON.stringify({
   head: repo.repository?.head,
 });
 
-const estimateDisplaySize = (items: DisplayRow[]) => (index: number) => {
-  const item = items[index];
+const paneHasVerticalScroll = (element: HTMLElement | null) => Boolean(element && element.scrollHeight > element.clientHeight + 1);
+
+const paneScrollMetrics = (element: HTMLElement | null): PaneScrollMetrics => ({
+  scrollTop: element?.scrollTop ?? 0,
+  scrollHeight: element?.scrollHeight ?? 0,
+  clientHeight: element?.clientHeight ?? 0,
+});
+
+const updatePaneScrollStates = () => {
+  paneScrollStateFrame = undefined;
+  hasLeftScroll.value = paneHasVerticalScroll(leftRef.value);
+  hasRightScroll.value = paneHasVerticalScroll(rightRef.value);
+  hasSyncedSplitScroll.value = paneHasVerticalScroll(syncedSplitRef.value);
+  hasInlineScroll.value = paneHasVerticalScroll(inlineRef.value);
+  leftScrollMetrics.value = paneScrollMetrics(leftRef.value);
+  rightScrollMetrics.value = paneScrollMetrics(rightRef.value);
+  syncedSplitScrollMetrics.value = paneScrollMetrics(syncedSplitRef.value);
+  inlineScrollMetrics.value = paneScrollMetrics(inlineRef.value);
+};
+
+const schedulePaneScrollStateUpdate = () => {
+  if (paneScrollStateFrame !== undefined) return;
+  paneScrollStateFrame = requestAnimationFrame(updatePaneScrollStates);
+};
+
+const updatePaneScrollStatesAfterRender = () => {
+  void nextTick(() => {
+    requestAnimationFrame(updatePaneScrollStates);
+  });
+};
+
+const estimateDisplayItemSize = (item?: DisplayRow) => {
   if (!item) return 24;
   if (item.kind === 'draft') return 220;
   if (item.kind === 'thread') return 150;
   return item.row.kind === 'hunk' ? 28 : 24;
+};
+
+const estimateDisplaySize = (items: DisplayRow[]) => (index: number) => estimateDisplayItemSize(items[index]);
+
+const scrollMarkersForRows = (items: DisplayRow[], side?: SyntaxSide): DiffScrollMarker[] => {
+  const totalSize = items.reduce((sum, item) => sum + estimateDisplayItemSize(item), 0);
+  if (totalSize <= 0) return [];
+
+  const markerRanges: DiffScrollMarkerRange[] = [];
+  let offset = 0;
+  items.forEach((item) => {
+    const size = estimateDisplayItemSize(item);
+    if (item.kind === 'diff' && (item.row.kind === 'added' || item.row.kind === 'deleted') && markerVisibleForSide(item.row.kind, side)) {
+      const top = offset / totalSize * 100;
+      const bottom = Math.max((offset + size) / totalSize * 100, top + 0.45);
+      const previous = markerRanges[markerRanges.length - 1];
+      if (previous?.kind === item.row.kind && top <= previous.bottom + 0.15) {
+        previous.bottom = Math.max(previous.bottom, bottom);
+      } else {
+        markerRanges.push({ kind: item.row.kind, top, bottom });
+      }
+    }
+    offset += size;
+  });
+  return mergeMarkerRanges(markerRanges).map((marker, index) => ({
+    key: `${marker.kind}:${index}`,
+    kind: marker.kind,
+    style: {
+      top: `${marker.top}%`,
+      height: `${marker.bottom - marker.top}%`,
+    },
+  }));
+};
+
+const mergeMarkerRanges = (ranges: DiffScrollMarkerRange[]) => {
+  const merged: DiffScrollMarkerRange[] = [];
+  const sorted = [...ranges].sort((first, second) => first.kind.localeCompare(second.kind) || first.top - second.top);
+  for (const range of sorted) {
+    const previous = merged[merged.length - 1];
+    if (previous?.kind === range.kind && range.top <= previous.bottom + 0.15) {
+      previous.bottom = Math.max(previous.bottom, range.bottom);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged.sort((first, second) => first.top - second.top || first.kind.localeCompare(second.kind));
+};
+
+const markerVisibleForSide = (kind: 'added' | 'deleted', side?: SyntaxSide) => {
+  if (side === 'old') return kind === 'deleted';
+  if (side === 'new') return kind === 'added';
+  return true;
+};
+
+const scrollThumbStyle = (metrics: PaneScrollMetrics): CSSProperties => {
+  if (metrics.scrollHeight <= metrics.clientHeight || metrics.clientHeight <= 0) return { display: 'none' };
+  return {
+    top: `${(metrics.scrollTop / metrics.scrollHeight) * 100}%`,
+    height: `${Math.max((metrics.clientHeight / metrics.scrollHeight) * 100, 6)}%`,
+  };
 };
 
 const leftVirtualizer = useVirtualizer(
@@ -656,6 +844,12 @@ const inlineTotalSize = computed(() => inlineVirtualizer.value.getTotalSize());
 const commentHoverDisabled = computed(() => {
   return leftVirtualizer.value.isScrolling || rightVirtualizer.value.isScrolling || syncedSplitVirtualizer.value.isScrolling || inlineVirtualizer.value.isScrolling;
 });
+
+watch(
+  [leftTotalSize, rightTotalSize, syncedSplitTotalSize, inlineTotalSize, () => props.viewMode, () => props.syncScroll],
+  updatePaneScrollStatesAfterRender,
+  { immediate: true, flush: 'post' }
+);
 
 const measureLeftElement = (element: unknown) => {
   leftVirtualizer.value.measureElement(element instanceof Element ? element : null);
@@ -867,17 +1061,72 @@ const syncScrollPosition = (source: HTMLElement, target: HTMLElement | null) => 
     if (sync.target.scrollTop !== sync.top) sync.target.scrollTop = sync.top;
     if (sync.target.scrollLeft !== sync.left) sync.target.scrollLeft = sync.left;
     isSyncingScroll = false;
+    schedulePaneScrollStateUpdate();
   });
 };
 
+const paneForKey = (pane: PaneKey) => {
+  if (pane === 'left') return leftRef.value;
+  if (pane === 'right') return rightRef.value;
+  if (pane === 'syncedSplit') return syncedSplitRef.value;
+  return inlineRef.value;
+};
+
 const onLeftScroll = (event: Event) => {
+  schedulePaneScrollStateUpdate();
   if (isSyncingScroll) return;
   syncScrollPosition(event.currentTarget as HTMLElement, rightRef.value);
 };
 
 const onRightScroll = (event: Event) => {
+  schedulePaneScrollStateUpdate();
   if (isSyncingScroll) return;
   syncScrollPosition(event.currentTarget as HTMLElement, leftRef.value);
+};
+
+const onSyncedSplitScroll = () => {
+  schedulePaneScrollStateUpdate();
+};
+
+const onInlineScroll = () => {
+  schedulePaneScrollStateUpdate();
+};
+
+const onScrollbarTrackPointerDown = (event: PointerEvent, pane: PaneKey) => {
+  const element = paneForKey(pane);
+  const track = event.currentTarget as HTMLElement;
+  if (!element || track.clientHeight <= 0) return;
+
+  const thumbHeight = Math.max((element.clientHeight / element.scrollHeight) * track.clientHeight, 24);
+  const trackTop = track.getBoundingClientRect().top;
+  const targetTop = event.clientY - trackTop - thumbHeight / 2;
+  element.scrollTop = Math.max(0, Math.min(targetTop / track.clientHeight * element.scrollHeight, element.scrollHeight - element.clientHeight));
+  schedulePaneScrollStateUpdate();
+};
+
+const onScrollbarThumbPointerDown = (event: PointerEvent, pane: PaneKey) => {
+  const element = paneForKey(pane);
+  const track = (event.currentTarget as HTMLElement).parentElement;
+  if (!element || !track || track.clientHeight <= 0) return;
+
+  scrollbarDrag = { pane, startY: event.clientY, startScrollTop: element.scrollTop, trackHeight: track.clientHeight };
+  window.addEventListener('pointermove', onScrollbarThumbPointerMove);
+  window.addEventListener('pointerup', stopScrollbarThumbDrag, { once: true });
+};
+
+const onScrollbarThumbPointerMove = (event: PointerEvent) => {
+  if (!scrollbarDrag) return;
+  const element = paneForKey(scrollbarDrag.pane);
+  if (!element || scrollbarDrag.trackHeight <= 0) return;
+
+  const deltaY = event.clientY - scrollbarDrag.startY;
+  element.scrollTop = scrollbarDrag.startScrollTop + deltaY / scrollbarDrag.trackHeight * element.scrollHeight;
+  schedulePaneScrollStateUpdate();
+};
+
+const stopScrollbarThumbDrag = () => {
+  scrollbarDrag = undefined;
+  window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
 };
 
 watch(
@@ -1092,13 +1341,90 @@ watch(
   min-height: 0;
 }
 
-.pane {
+.pane-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+
+  &.has-diff-scroll {
+    grid-template-columns: minmax(0, 1fr) 18px;
+  }
 }
 
-.old-pane {
+.old-pane-shell {
   border-right: 1px solid #252a35;
+}
+
+.pane {
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+
+  &::-webkit-scrollbar {
+    width: 0;
+    height: 14px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #151923;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #4b5568;
+    border: 4px solid #151923;
+    border-radius: 999px;
+  }
+}
+
+.diff-scrollbar {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  z-index: 4;
+  width: 18px;
+  height: 100%;
+  background: #151923;
+  border-left: 1px solid #252a35;
+  cursor: default;
+  user-select: none;
+}
+
+.diff-scroll-marker {
+  position: absolute;
+  width: 50%;
+  min-height: 2px;
+  opacity: 0.95;
+
+  &.added {
+    right: 0;
+    background: rgba(60, 179, 113, 0.16);
+  }
+
+  &.deleted {
+    left: 0;
+    background: rgba(255, 99, 99, 0.16);
+  }
+}
+
+.diff-scroll-thumb {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  min-height: 24px;
+  background: rgba(152, 162, 179, 0.42);
+  transition: background 120ms ease;
+  will-change: top;
+
+  &:hover {
+    background: rgba(174, 183, 198, 0.58);
+  }
 }
 
 .inline-view {
