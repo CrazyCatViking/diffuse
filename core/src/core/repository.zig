@@ -129,9 +129,8 @@ pub const Repository = struct {
 
         if (target.compare) |compare| {
             const base = target.base orelse "HEAD";
-            const range = try std.fmt.allocPrint(self.allocator, "{s}...{s}", .{ base, compare });
-            defer self.allocator.free(range);
-            try args.append(self.allocator, range);
+            try args.append(self.allocator, base);
+            try args.append(self.allocator, compare);
         } else if (target.include_staged and target.include_unstaged) {
             try args.append(self.allocator, target.base orelse "HEAD");
         } else if (target.include_staged) {

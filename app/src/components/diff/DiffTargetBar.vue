@@ -7,44 +7,30 @@
 
     <label class="ref-field source-field">
       <span>Source</span>
-      <input
+      <select
         v-model="sourceRef"
-        type="text"
-        list="diff-source-refs"
-        placeholder="Working tree or branch"
         @change="applySelection"
-        @keyup.enter="applySelection"
-      />
+      >
+        <option :value="workingTreeValue">Working tree</option>
+        <option v-for="option in refOptions" :key="`source-${option.value}`" :value="option.value">
+          {{ option.label }}
+        </option>
+      </select>
     </label>
 
     <span class="against">against</span>
 
     <label class="ref-field target-field">
       <span>Target</span>
-      <input
+      <select
         v-model="targetRef"
-        type="text"
-        list="diff-target-refs"
-        placeholder="HEAD, branch, commit"
         @change="applySelection"
-        @keyup.enter="applySelection"
-      />
+      >
+        <option v-for="option in refOptions" :key="`target-${option.value}`" :value="option.value">
+          {{ option.label }}
+        </option>
+      </select>
     </label>
-
-    <datalist id="diff-source-refs">
-      <option :value="workingTreeValue">Working tree</option>
-      <option value="HEAD">HEAD</option>
-      <option v-for="branch in branches" :key="branch.name" :value="branch.name">
-        {{ branch.current ? 'Current branch' : 'Branch' }}
-      </option>
-    </datalist>
-
-    <datalist id="diff-target-refs">
-      <option value="HEAD">HEAD</option>
-      <option v-for="branch in branches" :key="branch.name" :value="branch.name">
-        {{ branch.current ? 'Current branch' : 'Branch' }}
-      </option>
-    </datalist>
   </section>
 </template>
 
@@ -67,6 +53,14 @@ const emit = defineEmits<{
 const workingTreeValue = 'Working tree';
 const sourceRef = ref(workingTreeValue);
 const targetRef = ref('HEAD');
+
+const refOptions = computed(() => [
+  { value: 'HEAD', label: 'HEAD' },
+  ...props.branches.map((branch) => ({
+    value: branch.name,
+    label: branch.current ? `${branch.name} (current)` : branch.name,
+  })),
+]);
 
 const description = computed(() => {
   if (sourceRef.value === workingTreeValue) return `Working tree changes against ${targetRef.value || 'HEAD'}`;
@@ -142,7 +136,7 @@ const applySelection = () => {
   font-size: 12px;
 }
 
-input {
+select {
   width: 220px;
   height: 32px;
   color: #f5f7fb;
