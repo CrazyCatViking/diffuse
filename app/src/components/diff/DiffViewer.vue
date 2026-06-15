@@ -89,7 +89,7 @@
             </template>
             <div v-else class="inline-review-row synced-split" :class="entry.reviewRow?.anchor.side">
               <div class="review-cell">
-                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
               </div>
             </div>
           </div>
@@ -132,7 +132,7 @@
               />
               </template>
               <div v-else class="inline-review-row old">
-                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
               </div>
             </div>
           </div>
@@ -173,7 +173,7 @@
               />
               </template>
               <div v-else class="inline-review-row new">
-                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
               </div>
             </div>
           </div>
@@ -216,7 +216,7 @@
               />
             </template>
             <div v-else class="inline-review-row inline">
-              <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
             </div>
           </div>
         </div>
@@ -554,6 +554,11 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
   });
 };
 
+const chatMessagesForEntry = (entry: InlineReviewEntry) => {
+  if (entry.kind !== 'thread') return [];
+  return review.chatMessages.filter((message) => message.context?.threadIds?.includes(entry.thread.id));
+};
+
 const startLineComment = (payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }) => {
   if (!props.model || !activeFile.value) return;
   selectionDraft.value = undefined;
@@ -656,6 +661,13 @@ const cancelDraft = () => {
 
 const addReply = async (payload: { thread: ReviewThread; body: string }) => {
   await review.addMessage(payload.thread, payload.body);
+  const next = new Set(collapsedCommentStarts.value);
+  next.delete(commentStartKey(payload.thread.anchor.side, payload.thread.anchor.startLine));
+  collapsedCommentStarts.value = next;
+};
+
+const askAiInThread = async (payload: { thread: ReviewThread; body: string }) => {
+  await review.askAgentInThread(payload.thread, payload.body);
   const next = new Set(collapsedCommentStarts.value);
   next.delete(commentStartKey(payload.thread.anchor.side, payload.thread.anchor.startLine));
   collapsedCommentStarts.value = next;

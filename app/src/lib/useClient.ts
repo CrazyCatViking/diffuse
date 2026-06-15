@@ -118,6 +118,17 @@ export const useClient = () => {
     await window.diffuse.stopReviewAgent();
   };
 
+  const chatWithReviewAgent = async (repositoryRoot: string, sessionId: string, thread: ReviewThread, question: string, chatMessages: ReviewChatMessage[], userMessageId?: string): Promise<ReviewChatMessage> => {
+    return window.diffuse.chatWithReviewAgent({
+      repositoryRoot,
+      sessionId,
+      thread: plainJson(thread),
+      question,
+      userMessageId,
+      chatMessages: plainJson(chatMessages),
+    });
+  };
+
   const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
     return window.diffuse.coreRequest('listTreeSitterGrammars');
   };
@@ -153,6 +164,7 @@ export const useClient = () => {
     saveReviewChatMessage,
     startReviewAgent,
     stopReviewAgent,
+    chatWithReviewAgent,
     installTreeSitterGrammar,
     listTreeSitterGrammars,
     uninstallTreeSitterGrammar

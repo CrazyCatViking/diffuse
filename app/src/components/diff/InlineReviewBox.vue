@@ -21,9 +21,9 @@
     </form>
 
     <article v-else class="thread">
-      <div v-for="message in entry.thread.messages" :key="message.id" class="message">
+      <div v-for="message in timelineMessages" :key="message.id" class="message" :class="{ chat: message.kind === 'chat' }">
         <div class="message-meta">
-          <strong>{{ authorName(message.authorId) }}</strong>
+          <strong>{{ message.author }}</strong>
           <time>{{ formatTime(message.createdAt) }}</time>
         </div>
         <p>{{ message.body }}</p>
@@ -38,15 +38,18 @@
           @input="resizeReplyTextarea"
           @keydown.enter.exact.prevent="submitReply"
         />
-        <button type="submit" :disabled="replyBody.trim().length === 0">Send</button>
+        <div class="reply-actions">
+          <button type="button" :disabled="replyBody.trim().length === 0" @click="submitChat">Ask AI</button>
+          <button type="submit" :disabled="replyBody.trim().length === 0">Send</button>
+        </div>
       </form>
     </article>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
-import type { ReviewAnchor, ReviewThread } from '../../lib/protocol';
+import { computed, ref } from 'vue';
+import type { ReviewAnchor, ReviewChatMessage, ReviewThread } from '../../lib/protocol';
 
 export type InlineReviewEntry = {
   kind: 'draft';
@@ -62,6 +65,7 @@ export type InlineReviewEntry = {
 const props = defineProps<{
   entry: InlineReviewEntry
   draftBody: string
+  chatMessages?: ReviewChatMessage[]
   error?: string
 }>();
 
@@ -70,6 +74,7 @@ const emit = defineEmits<{
   submit: []
   cancel: []
   reply: [payload: { thread: ReviewThread; body: string }]
+  chat: [payload: { thread: ReviewThread; body: string }]
   collapse: [anchor: ReviewAnchor]
   resolve: [thread: ReviewThread]
   reopen: [thread: ReviewThread]
@@ -86,6 +91,34 @@ const submitReply = () => {
   replyBody.value = '';
   resizeReplyTextarea();
 };
+
+const submitChat = () => {
+  if (props.entry.kind !== 'thread') return;
+  const body = replyBody.value.trim();
+  if (!body) return;
+  emit('chat', { thread: props.entry.thread, body });
+  replyBody.value = '';
+  resizeReplyTextarea();
+};
+
+const timelineMessages = computed(() => {
+  if (props.entry.kind !== 'thread') return [];
+  const threadMessages = props.entry.thread.messages.map((message) => ({
+    id: message.id,
+    kind: 'thread' as const,
+    author: authorName(message.authorId),
+    body: message.body,
+    createdAt: message.createdAt,
+  }));
+  const chatMessages = (props.chatMessages ?? []).map((message) => ({
+    id: message.id,
+    kind: 'chat' as const,
+    author: message.role === 'assistant' ? 'AI agent' : message.role === 'system' ? 'System' : 'You asked AI',
+    body: message.body,
+    createdAt: message.createdAt,
+  }));
+  return [...threadMessages, ...chatMessages].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+});
 
 const resizeReplyTextarea = () => {
   window.requestAnimationFrame(() => {
@@ -188,12 +221,22 @@ const formatTime = (value: string) => {
   border-radius: 8px;
 }
 
+.message.chat {
+  background: rgba(31, 43, 70, 0.72);
+  border-color: rgba(82, 118, 178, 0.85);
+}
+
 .reply-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: end;
   padding-top: 2px;
+}
+
+.reply-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .message-meta {

@@ -153,3 +153,7 @@ ipcMain.handle('review-agent:start', async (_event, request: { repositoryRoot: s
 ipcMain.handle('review-agent:stop', async () => {
   return getReviewAgentRunner().stop();
 });
+
+ipcMain.handle('review-agent:chat', async (_event, request: Parameters<ReviewAgentRunner['chat']>[0]) => {
+  return getReviewAgentRunner().chat(request);
+});

@@ -259,6 +259,43 @@ export const useReviewStore = defineStore('review', () => {
     }
   };
 
+  const askAgentInThread = async (thread: ReviewThread, body: string) => {
+    if (!repo.repository) return false;
+    if (!session.value) await ensureSession();
+    if (!session.value) return false;
+    const text = body.trim();
+    if (!text) return false;
+
+    const context: ReviewChatMessage['context'] = {
+      fileId: thread.fileId,
+      selection: thread.anchor,
+      threadIds: [thread.id],
+    };
+    const userMessage: ReviewChatMessage = {
+      id: createId('chat'),
+      sessionId: session.value.id,
+      role: 'user',
+      body: text,
+      createdAt: new Date().toISOString(),
+      context,
+    };
+
+    loading.value = true;
+    error.value = undefined;
+    try {
+      const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
+      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== savedUser.id), savedUser].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+      const assistant = await client.chatWithReviewAgent(repo.repository.root, session.value.id, thread, text, chatMessages.value, savedUser.id);
+      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== assistant.id), assistant].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+      return true;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      return false;
+    } finally {
+      loading.value = false;
+    }
+  };
+
   const threadCountForAnchor = (fileId: string, side: 'old' | 'new', line: number) => {
     return openThreads.value.filter((thread) => {
       return thread.fileId === fileId && thread.anchor.side === side && line >= thread.anchor.startLine && line <= thread.anchor.endLine;
@@ -305,6 +342,7 @@ export const useReviewStore = defineStore('review', () => {
     resolveThread,
     reopenThread,
     saveChatMessage,
+    askAgentInThread,
     threadCountForAnchor,
     clear,
   };

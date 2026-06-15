@@ -18,6 +18,49 @@ type ReviewAgentStartRequest = {
   files: ChangedFile[];
 };
 
+type ReviewChatRequest = {
+  repositoryRoot: string;
+  sessionId: string;
+  thread: ReviewThread;
+  question: string;
+  userMessageId?: string;
+  chatMessages?: ReviewChatMessage[];
+};
+
+type ReviewAnchor = {
+  side: 'old' | 'new';
+  startLine: number;
+  endLine: number;
+  selectedText?: string;
+  lineText?: string;
+};
+
+type ReviewThread = {
+  id: string;
+  sessionId: string;
+  fileId: string;
+  oldPath?: string;
+  newPath?: string;
+  anchor: ReviewAnchor;
+  status: string;
+  messages: Array<{ id: string; authorId: string; body: string; createdAt: string }>;
+};
+
+type ReviewChatMessage = {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'system';
+  body: string;
+  createdAt: string;
+  provider?: string;
+  runId?: string;
+  context?: {
+    fileId?: string;
+    selection?: ReviewAnchor;
+    threadIds?: string[];
+  };
+};
+
 type ReviewRunStatus = 'starting' | 'planning' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
 
 type ReviewRun = {
@@ -165,6 +208,61 @@ export class ReviewAgentRunner {
       }
     }));
     return this.status();
+  }
+
+  async chat(request: ReviewChatRequest): Promise<ReviewChatMessage> {
+    if (!request.repositoryRoot || !request.sessionId) throw new Error('Missing review chat session context');
+    const question = request.question.trim();
+    if (!question) throw new Error('Missing review chat question');
+
+    const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
+    const opencode = await createOpencode({ config: opencodeConfig(config) });
+    const chatRunId = createId('chat-run');
+
+    try {
+      const created = await opencode.client.session.create({
+        query: { directory: request.repositoryRoot },
+        body: { title: `Diffuse thread chat ${request.thread.id}` },
+        throwOnError: true,
+      });
+
+      const diff = await this.coreRequest<unknown>('getDiffRenderModel', {
+        fileId: request.thread.fileId,
+        options: { mode: 'inline', context: 'full' },
+        target: { includeStaged: true, includeUnstaged: true },
+      });
+
+      const response = await opencode.client.session.prompt({
+        path: { id: created.data.id },
+        query: { directory: request.repositoryRoot },
+        body: {
+          agent: process.env.DIFFUSE_OPENCODE_AGENT ?? config.agent,
+          model: opencodeModel(config),
+          system: 'You answer Diffuse code review thread questions. Do not edit files. Be concise, concrete, and reference the existing thread/diff context. If you find a new actionable issue, say so plainly, but do not create review comments from chat.',
+          parts: [{ type: 'text', text: reviewChatPrompt(request, diff) }],
+        },
+        throwOnError: true,
+      });
+
+      const body = textFromOpencodeParts(response.data.parts) || 'I could not produce a response for this thread.';
+      const message: ReviewChatMessage = {
+        id: createId('chat'),
+        sessionId: request.sessionId,
+        role: 'assistant',
+        body,
+        createdAt: new Date().toISOString(),
+        provider: 'opencode',
+        runId: chatRunId,
+        context: {
+          fileId: request.thread.fileId,
+          selection: request.thread.anchor,
+          threadIds: [request.thread.id],
+        },
+      };
+      return await this.coreRequest<ReviewChatMessage>('saveReviewChatMessage', { sessionId: request.sessionId, message });
+    } finally {
+      opencode.server.close();
+    }
   }
 
   dispose(): void {
@@ -537,6 +635,48 @@ ${config.promptInstructions}
 Changed files:
 ${fileList}
 `;
+};
+
+const reviewChatPrompt = (request: ReviewChatRequest, diff: unknown): string => {
+  const threadMessages = request.thread.messages.map((message) => `- ${message.authorId}: ${message.body}`).join('\n') || '- No thread messages';
+  const chatMessages = (request.chatMessages ?? [])
+    .filter((message) => message.context?.threadIds?.includes(request.thread.id))
+    .map((message) => `- ${message.role}: ${message.body}`)
+    .join('\n') || '- No prior chat messages';
+
+  return `Answer this Diffuse review thread question.
+
+Session: ${request.sessionId}
+Thread: ${request.thread.id}
+File: ${request.thread.fileId}
+Anchor: ${request.thread.anchor.side} lines ${request.thread.anchor.startLine}-${request.thread.anchor.endLine}
+Selected text: ${request.thread.anchor.selectedText ?? request.thread.anchor.lineText ?? ''}
+
+Thread messages:
+${threadMessages}
+
+Prior thread chat:
+${chatMessages}
+
+Question:
+${request.question}
+
+Full diff render model JSON:
+${JSON.stringify(diff).slice(0, 120_000)}
+`;
+};
+
+const textFromOpencodeParts = (parts: unknown): string => {
+  if (!Array.isArray(parts)) return '';
+  return parts
+    .map((part) => {
+      if (!part || typeof part !== 'object') return '';
+      const record = part as Record<string, unknown>;
+      return record.type === 'text' && typeof record.text === 'string' ? record.text : '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
 };
 
 const filePath = (file: ChangedFile): string => file.newPath ?? file.oldPath ?? file.id;

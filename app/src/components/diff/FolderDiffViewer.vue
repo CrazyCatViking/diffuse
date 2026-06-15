@@ -55,7 +55,7 @@
               />
               <div v-else-if="entry.reviewRow" class="inline-review-row synced-split" :class="entry.reviewRow.anchor.side">
                 <div class="review-cell">
-                  <InlineReviewBox :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                  <InlineReviewBox :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
                 </div>
               </div>
             </template>
@@ -74,7 +74,7 @@
                 @comment="startLineComment(entry.fileId, $event)"
                 @toggle-comments="toggleComments"
               />
-              <InlineReviewBox v-else-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              <InlineReviewBox v-else-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
             </template>
           </div>
         </div>
@@ -555,6 +555,11 @@ const displayDiffRow = (item?: DisplayRow) => item?.kind === 'diff' ? item.row :
 
 const displayReviewRow = (item?: DisplayRow): InlineReviewEntry | undefined => item && item.kind !== 'diff' ? item : undefined;
 
+const chatMessagesForEntry = (entry: InlineReviewEntry) => {
+  if (entry.kind !== 'thread') return [];
+  return review.chatMessages.filter((message) => message.context?.threadIds?.includes(entry.thread.id));
+};
+
 const fileThreads = (fileId: string) => review.threads.filter((thread) => thread.fileId === fileId);
 
 const commentCountForRow = (fileId: string, row: DiffRow, side: SyntaxSide) => {
@@ -753,6 +758,13 @@ const cancelDraft = () => {
 
 const addReply = async (payload: { thread: ReviewThread; body: string }) => {
   await review.addMessage(payload.thread, payload.body);
+  const next = new Set(collapsedCommentStarts.value);
+  next.delete(commentStartKey(payload.thread.anchor.side, payload.thread.anchor.startLine));
+  collapsedCommentStarts.value = next;
+};
+
+const askAiInThread = async (payload: { thread: ReviewThread; body: string }) => {
+  await review.askAgentInThread(payload.thread, payload.body);
   const next = new Set(collapsedCommentStarts.value);
   next.delete(commentStartKey(payload.thread.anchor.side, payload.thread.anchor.startLine));
   collapsedCommentStarts.value = next;

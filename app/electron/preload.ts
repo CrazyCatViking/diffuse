@@ -26,12 +26,17 @@ const stopReviewAgent = () => {
   return ipcRenderer.invoke('review-agent:stop');
 };
 
+const chatWithReviewAgent = (request: unknown) => {
+  return ipcRenderer.invoke('review-agent:chat', request);
+};
+
 const bridge = {
   pickRepository,
   coreRequest,
   onCoreEvent,
   startReviewAgent,
-  stopReviewAgent
+  stopReviewAgent,
+  chatWithReviewAgent
 };
 
 contextBridge.exposeInMainWorld('diffuse', bridge);
