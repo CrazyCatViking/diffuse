@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
         .default_target = .{
             .cpu_arch = .x86_64,
             .os_tag = .linux,
-            .abi = .musl,
+            .abi = .gnu,
         },
     });
     const optimize = b.standardOptimizeOption(.{});
