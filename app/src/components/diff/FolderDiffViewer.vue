@@ -22,59 +22,59 @@
       <div ref="folderScrollRef" class="folder-diffs" @scroll="onFolderScroll" @mouseup="captureSelectionComment">
         <div class="folder-spacer" :style="{ height: `${folderTotalSize}px` }">
           <div
-            v-for="virtualRow in folderVirtualRows"
-            :key="String(virtualRow.key)"
+            v-for="entry in folderRenderedRows"
+            :key="String(entry.virtualRow.key)"
             class="virtual-row"
-            :data-index="virtualRow.index"
-            :ref="measureFolderElement"
-            :style="{ transform: `translateY(${virtualRow.start}px)` }"
+            :data-index="entry.virtualRow.index"
+            :ref="entry.diffRow ? undefined : measureFolderElement"
+            :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
           >
-            <template v-if="folderItem(virtualRow.index).kind === 'file'">
+            <template v-if="entry.item.kind === 'file'">
               <header class="file-header">
-                <span>{{ folderModel(virtualRow.index).fileId }}</span>
-                <span>{{ folderModel(virtualRow.index).rows.length }} rows</span>
+                <span>{{ entry.model.fileId }}</span>
+                <span>{{ entry.model.rows.length }} rows</span>
               </header>
             </template>
-            <div v-else-if="folderItem(virtualRow.index).kind === 'empty'" class="empty-file">No diff for this file.</div>
-            <template v-else-if="folderItem(virtualRow.index).kind === 'row' && viewMode === 'split'">
+            <div v-else-if="entry.item.kind === 'empty'" class="empty-file">No diff for this file.</div>
+            <template v-else-if="entry.item.kind === 'row' && viewMode === 'split'">
               <SplitDiffRow
-                v-if="folderDiffRow(virtualRow.index)"
-                :row="folderDiffRow(virtualRow.index)!"
-                :file-id="folderFileId(virtualRow.index)"
-                :old-syntax-spans="syntaxForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-                :new-syntax-spans="syntaxForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-                :old-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-                :new-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-                :old-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-                :new-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-                :old-review-highlights="reviewHighlightsForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-                :new-review-highlights="reviewHighlightsForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
+                v-if="entry.diffRow"
+                :row="entry.diffRow"
+                :file-id="entry.fileId"
+                :old-syntax-spans="entry.oldSyntaxSpans"
+                :new-syntax-spans="entry.newSyntaxSpans"
+                :old-comment-count="entry.oldCommentCount"
+                :new-comment-count="entry.newCommentCount"
+                :old-comments-expanded="entry.oldCommentsExpanded"
+                :new-comments-expanded="entry.newCommentsExpanded"
+                :old-review-highlights="entry.oldReviewHighlights"
+                :new-review-highlights="entry.newReviewHighlights"
                 :comment-hover-disabled="commentHoverDisabled"
-                @comment="startLineComment(folderFileId(virtualRow.index), $event)"
+                @comment="startLineComment(entry.fileId, $event)"
                 @toggle-comments="toggleComments"
               />
-              <div v-else-if="folderReviewRow(virtualRow.index)" class="inline-review-row synced-split" :class="folderReviewRow(virtualRow.index)?.anchor.side">
+              <div v-else-if="entry.reviewRow" class="inline-review-row synced-split" :class="entry.reviewRow.anchor.side">
                 <div class="review-cell">
-                  <InlineReviewBox :entry="folderReviewRow(virtualRow.index)!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                  <InlineReviewBox :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
                 </div>
               </div>
             </template>
-            <template v-else-if="folderItem(virtualRow.index).kind === 'row'">
+            <template v-else-if="entry.item.kind === 'row'">
               <InlineDiffRow
-                v-if="folderDiffRow(virtualRow.index)"
-                :row="folderDiffRow(virtualRow.index)!"
-                :file-id="folderFileId(virtualRow.index)"
-                :syntax-spans="syntaxForInlineRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!)"
-                :old-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-                :new-comment-count="commentCountForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-                :old-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'old')"
-                :new-comments-expanded="commentsExpandedForRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!, 'new')"
-                :review-highlights="reviewHighlightsForInlineRow(folderFileId(virtualRow.index), folderDiffRow(virtualRow.index)!)"
+                v-if="entry.diffRow"
+                :row="entry.diffRow"
+                :file-id="entry.fileId"
+                :syntax-spans="entry.inlineSyntaxSpans"
+                :old-comment-count="entry.oldCommentCount"
+                :new-comment-count="entry.newCommentCount"
+                :old-comments-expanded="entry.oldCommentsExpanded"
+                :new-comments-expanded="entry.newCommentsExpanded"
+                :review-highlights="entry.inlineReviewHighlights"
                 :comment-hover-disabled="commentHoverDisabled"
-                @comment="startLineComment(folderFileId(virtualRow.index), $event)"
+                @comment="startLineComment(entry.fileId, $event)"
                 @toggle-comments="toggleComments"
               />
-              <InlineReviewBox v-else-if="folderReviewRow(virtualRow.index)" :entry="folderReviewRow(virtualRow.index)!" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              <InlineReviewBox v-else-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
             </template>
           </div>
         </div>
@@ -156,6 +156,31 @@ type FolderVirtualItem = {
   item?: DisplayRow;
 };
 
+type VirtualRow = {
+  index: number;
+  key: unknown;
+  start: number;
+};
+
+type FolderRenderedRow = {
+  virtualRow: VirtualRow;
+  item: FolderVirtualItem;
+  model: DiffRenderModel;
+  fileId: string;
+  diffRow?: DiffRow;
+  reviewRow?: InlineReviewEntry;
+  oldSyntaxSpans?: SyntaxSpan[];
+  newSyntaxSpans?: SyntaxSpan[];
+  inlineSyntaxSpans?: SyntaxSpan[];
+  oldCommentCount: number;
+  newCommentCount: number;
+  oldCommentsExpanded: boolean;
+  newCommentsExpanded: boolean;
+  oldReviewHighlights: ReviewTextHighlight[];
+  newReviewHighlights: ReviewTextHighlight[];
+  inlineReviewHighlights: ReviewTextHighlight[];
+};
+
 type DiffScrollMarker = {
   key: string;
   kind: 'added' | 'deleted';
@@ -194,16 +219,50 @@ const folderVirtualizer = useVirtualizer(
     getScrollElement: () => folderScrollRef.value,
     getItemKey: (index) => folderVirtualItems.value[index]?.key ?? index,
     estimateSize: (index: number) => estimateFolderItemSize(folderVirtualItems.value[index]),
-    overscan: 18,
+    overscan: 40,
     useAnimationFrameWithResizeObserver: true,
   }))
 );
 
 const folderVirtualRows = computed(() => folderVirtualizer.value.getVirtualItems());
+const folderRenderedRows = computed(() => buildFolderRenderedRows(folderVirtualRows.value));
 const folderTotalSize = computed(() => folderVirtualizer.value.getTotalSize());
 const commentHoverDisabled = computed(() => folderVirtualizer.value.isScrolling);
 const folderMarkers = computed(() => scrollMarkersForItems(folderVirtualItems.value));
 const folderThumbStyle = computed(() => scrollThumbStyle(folderScrollMetrics.value));
+const threadCountsByStart = computed(() => {
+  const counts = new Map<string, number>();
+  for (const thread of review.threads) {
+    const key = fileCommentStartKey(thread.fileId, thread.anchor.side, thread.anchor.startLine);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+});
+const expandedCommentStarts = computed(() => {
+  const expanded = new Set<string>();
+  for (const thread of review.threads) {
+    const startKey = commentStartKey(thread.anchor.side, thread.anchor.startLine);
+    if (collapsedCommentStarts.value.has(startKey)) continue;
+    if (thread.status === 'open' || expandedResolvedCommentStarts.value.has(startKey)) expanded.add(fileCommentStartKey(thread.fileId, thread.anchor.side, thread.anchor.startLine));
+  }
+  return expanded;
+});
+const reviewHighlightAnchorsByFileSide = computed(() => {
+  const anchors = new Map<string, ReviewAnchor[]>();
+  const addAnchor = (fileId: string, anchor: ReviewAnchor) => {
+    if (anchor.startColumn === undefined || anchor.endColumn === undefined) return;
+    const key = fileSideKey(fileId, anchor.side);
+    anchors.set(key, [...anchors.get(key) ?? [], anchor]);
+  };
+  for (const thread of review.threads) {
+    if (!expandedCommentStarts.value.has(fileCommentStartKey(thread.fileId, thread.anchor.side, thread.anchor.startLine))) continue;
+    addAnchor(thread.fileId, thread.anchor);
+  }
+  if (review.draftAnchor && review.draftFile) addAnchor(review.draftFile.id, review.draftAnchor);
+  const pendingSelection = selectionDraft.value;
+  if (pendingSelection) addAnchor(pendingSelection.file.id, pendingSelection.anchor);
+  return anchors;
+});
 
 const measureFolderElement = (element: unknown) => {
   folderVirtualizer.value.measureElement(element instanceof Element ? element : null);
@@ -336,9 +395,51 @@ const stopScrollbarThumbDrag = () => {
   window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
 };
 
+const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[] => {
+  return virtualRows.map((virtualRow) => {
+    const item = folderVirtualItems.value[virtualRow.index] ?? { kind: 'empty', key: 'missing', fileId: '' };
+    const model = item.model ?? models.value.find((candidate) => candidate.fileId === item.fileId) ?? emptyModel();
+    const fileId = item.fileId ?? model.fileId;
+    const diffRow = displayDiffRow(item.item);
+    const reviewRow = displayReviewRow(item.item);
+    const oldLine = diffRow?.oldLine;
+    const newLine = diffRow?.newLine;
+    const oldText = diffRow?.oldText ?? '';
+    const newText = diffRow?.newText ?? '';
+    const oldReviewHighlights = diffRow && oldLine && oldText.length > 0 ? reviewHighlightsForLine(fileId, 'old', oldLine, oldText.length) : [];
+    const newReviewHighlights = diffRow && newLine && newText.length > 0 ? reviewHighlightsForLine(fileId, 'new', newLine, newText.length) : [];
+    return {
+      virtualRow,
+      item,
+      model,
+      fileId,
+      diffRow,
+      reviewRow,
+      oldSyntaxSpans: oldLine ? syntaxSpans.value[syntaxKey(fileId, 'old', oldLine)] : undefined,
+      newSyntaxSpans: newLine ? syntaxSpans.value[syntaxKey(fileId, 'new', newLine)] : undefined,
+      inlineSyntaxSpans: diffRow?.kind === 'deleted'
+        ? oldLine ? syntaxSpans.value[syntaxKey(fileId, 'old', oldLine)] : undefined
+        : newLine ? syntaxSpans.value[syntaxKey(fileId, 'new', newLine)] : undefined,
+      oldCommentCount: oldLine ? threadCountsByStart.value.get(fileCommentStartKey(fileId, 'old', oldLine)) ?? 0 : 0,
+      newCommentCount: newLine ? threadCountsByStart.value.get(fileCommentStartKey(fileId, 'new', newLine)) ?? 0 : 0,
+      oldCommentsExpanded: Boolean(oldLine && expandedCommentStarts.value.has(fileCommentStartKey(fileId, 'old', oldLine))),
+      newCommentsExpanded: Boolean(newLine && expandedCommentStarts.value.has(fileCommentStartKey(fileId, 'new', newLine))),
+      oldReviewHighlights,
+      newReviewHighlights,
+      inlineReviewHighlights: diffRow?.kind === 'deleted' ? oldReviewHighlights : newReviewHighlights,
+    };
+  });
+};
+
+const emptyModel = (): DiffRenderModel => ({ fileId: '', mode: props.viewMode, context: props.contextMode, syntax: { grammarInstalled: false }, rows: [] });
+
+const fileSideKey = (fileId: string, side: SyntaxSide) => `${fileId}:${side}`;
+
+const fileCommentStartKey = (fileId: string, side: SyntaxSide, line: number) => `${fileId}:${side}:${line}`;
+
 const folderItem = (index: number): FolderVirtualItem => folderVirtualItems.value[index] ?? { kind: 'empty', key: 'missing', fileId: '' };
 
-const folderModel = (index: number): DiffRenderModel => folderItem(index).model ?? { fileId: '', mode: props.viewMode, context: props.contextMode, syntax: { grammarInstalled: false }, rows: [] };
+const folderModel = (index: number): DiffRenderModel => folderItem(index).model ?? emptyModel();
 
 const folderFileId = (index: number): string => folderItem(index).fileId ?? '';
 
@@ -503,8 +604,12 @@ const reviewHighlightsForRow = (fileId: string, row: DiffRow, side: SyntaxSide):
   const text = side === 'old' ? row.oldText ?? '' : row.newText ?? '';
   if (!line || text.length === 0) return [];
 
-  return reviewHighlightAnchors(fileId, side)
-    .map((anchor) => reviewHighlightForLine(anchor, line, text.length))
+  return reviewHighlightsForLine(fileId, side, line, text.length);
+};
+
+const reviewHighlightsForLine = (fileId: string, side: SyntaxSide, line: number, textLength: number): ReviewTextHighlight[] => {
+  return (reviewHighlightAnchorsByFileSide.value.get(fileSideKey(fileId, side)) ?? [])
+    .map((anchor) => reviewHighlightForLine(anchor, line, textLength))
     .filter((highlight): highlight is ReviewTextHighlight => Boolean(highlight));
 };
 
@@ -874,6 +979,8 @@ onBeforeUnmount(() => {
   top: 0;
   right: 0;
   left: 0;
+  contain: layout paint style;
+  overflow: hidden;
 }
 
 .inline-review-row.synced-split {

@@ -148,12 +148,12 @@ const emitComment = (event: MouseEvent) => {
 
 .deleted.old .line-number,
 .deleted.old :deep(.code) {
-  background: rgba(255, 99, 99, 0.16);
+  background: #362226;
 }
 
 .added.new .line-number,
 .added.new :deep(.code) {
-  background: rgba(60, 179, 113, 0.16);
+  background: #19312a;
 }
 
 .hunk {

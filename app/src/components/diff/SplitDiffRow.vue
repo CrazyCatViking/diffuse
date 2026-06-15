@@ -145,17 +145,17 @@ const emitNewComment = (event: MouseEvent) => {
 
 .added {
   .new,
-  .new + :deep(.code),
-  :deep(.code.new) {
-    background: rgba(60, 179, 113, 0.16);
+    .new + :deep(.code),
+    :deep(.code.new) {
+    background: #19312a;
   }
 }
 
 .deleted {
   .old,
-  .old + :deep(.code),
-  :deep(.code.old) {
-    background: rgba(255, 99, 99, 0.16);
+    .old + :deep(.code),
+    :deep(.code.old) {
+    background: #362226;
   }
 }
 
