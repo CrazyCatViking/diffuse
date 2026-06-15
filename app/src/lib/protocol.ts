@@ -143,6 +143,21 @@ export type ReviewRun = {
   completedAt?: string;
 };
 
+export type ReviewChatMessage = {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'system';
+  body: string;
+  createdAt: string;
+  provider?: string;
+  runId?: string;
+  context?: {
+    fileId?: string;
+    selection?: ReviewAnchor;
+    threadIds?: string[];
+  };
+};
+
 export type ReviewAnchor = {
   side: ReviewSide;
   startLine: number;

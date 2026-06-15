@@ -26,11 +26,14 @@ pub fn register(server: anytype) !void {
     try server.handle("saveReviewProgress", saveReviewProgress);
     try server.handle("saveReviewAgentState", saveReviewAgentState);
     try server.handle("getReviewRuns", getReviewRuns);
+    try server.handle("recoverStaleReviewRuns", recoverStaleReviewRuns);
     try server.handle("saveReviewRun", saveReviewRun);
     try server.handle("createReviewRun", saveReviewRun);
     try server.handle("updateReviewRun", saveReviewRun);
     try server.handle("finishReviewRun", saveReviewRun);
     try server.handle("getReviewThreads", getReviewThreads);
+    try server.handle("getReviewChatMessages", getReviewChatMessages);
+    try server.handle("saveReviewChatMessage", saveReviewChatMessage);
     try server.handle("addReviewCommentPayload", addReviewCommentPayload);
     try server.handle("addReviewComment", addReviewComment);
     try server.handle("saveReviewThread", saveReviewThread);
@@ -176,6 +179,60 @@ fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Re
     try writer.writeAll(saved);
 }
 
+fn recoverStaleReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const runs_json = try review.listRuns(runtime.allocator, runtime.io, repo.root, session_id);
+    defer runtime.allocator.free(runs_json);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, runtime.allocator, runs_json, .{});
+    defer parsed.deinit();
+
+    var recovered: u32 = 0;
+    const now_ms = std.Io.Timestamp.now(runtime.io, .real).toMilliseconds();
+
+    const array = switch (parsed.value) {
+        .array => |array| array,
+        else => return error.InvalidParam,
+    };
+
+    for (array.items) |*item| {
+        const object = switch (item.*) {
+            .object => |*object| object,
+            else => continue,
+        };
+        const status = object.get("status") orelse continue;
+        const status_text = switch (status) {
+            .string => |text| text,
+            else => continue,
+        };
+        if (!isActiveRunStatus(status_text)) continue;
+
+        const run_id = try getRequiredString(object.*, "id");
+        const timestamp = try std.fmt.allocPrint(runtime.allocator, "{d}", .{now_ms});
+        defer runtime.allocator.free(timestamp);
+
+        try object.put(runtime.allocator, "status", .{ .string = "failed" });
+        try object.put(runtime.allocator, "currentPhase", .{ .string = "interrupted" });
+        try object.put(runtime.allocator, "message", .{ .string = "Review run was interrupted before Diffuse could attach a provider" });
+        try object.put(runtime.allocator, "updatedAt", .{ .string = timestamp });
+        try object.put(runtime.allocator, "completedAt", .{ .string = timestamp });
+
+        const run_json = try stringifyJsonValue(runtime.allocator, item.*);
+        defer runtime.allocator.free(run_json);
+        const saved = try review.writeRun(runtime.allocator, runtime.io, repo.root, session_id, run_id, run_json);
+        defer runtime.allocator.free(saved);
+        recovered += 1;
+    }
+
+    if (recovered > 0) try emitReviewChanged(runtime, repo.root, session_id, "runs.recovered");
+    try writer.print("{{\"recovered\":{d}}}", .{recovered});
+}
+
 fn getReviewThreads(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try json_rpc.getStringParam(request, "sessionId");
 
@@ -186,6 +243,35 @@ fn getReviewThreads(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
     const threads_json = try review.listThreads(runtime.allocator, runtime.io, repo.root, session_id);
     defer runtime.allocator.free(threads_json);
     try writer.writeAll(threads_json);
+}
+
+fn getReviewChatMessages(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const messages_json = try review.listChatMessages(runtime.allocator, runtime.io, repo.root, session_id);
+    defer runtime.allocator.free(messages_json);
+    try writer.writeAll(messages_json);
+}
+
+fn saveReviewChatMessage(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const message = try getObjectParam(request, "message");
+    const message_id = try getObjectRequiredString(message, "id");
+    const message_json = try stringifyJsonValue(runtime.allocator, message);
+    defer runtime.allocator.free(message_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeChatMessage(runtime.allocator, runtime.io, repo.root, session_id, message_id, message_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "chat.updated");
+    try writer.writeAll(saved);
 }
 
 fn saveReviewThread(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -548,6 +634,13 @@ fn getOptionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
         .string => |text| if (text.len == 0) null else text,
         else => null,
     };
+}
+
+fn isActiveRunStatus(status: []const u8) bool {
+    return std.mem.eql(u8, status, "starting") or
+        std.mem.eql(u8, status, "planning") or
+        std.mem.eql(u8, status, "running") or
+        std.mem.eql(u8, status, "cancelling");
 }
 
 fn getRequiredU32(object: std.json.ObjectMap, name: []const u8) !u32 {

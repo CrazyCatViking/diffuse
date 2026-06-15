@@ -43,7 +43,7 @@ type ReviewConfig = {
 
 export type ReviewAgentStatus = {
   running: boolean;
-  runId?: string;
+  runIds?: string[];
   provider?: string;
   status?: string;
   message?: string;
@@ -64,24 +64,31 @@ type ActiveRun = {
 };
 
 export class ReviewAgentRunner {
-  private activeRun: ActiveRun | null = null;
+  private activeRuns = new Map<string, ActiveRun>();
 
   constructor(private readonly coreRequest: CoreRequest) {}
 
   status(): ReviewAgentStatus {
-    if (!this.activeRun) return { running: false };
+    if (this.activeRuns.size === 0) return { running: false };
     return {
       running: true,
-      runId: this.activeRun.id,
+      runIds: [...this.activeRuns.keys()],
       provider: 'opencode',
-      status: this.activeRun.stopping ? 'stopping' : 'running',
+      status: [...this.activeRuns.values()].some((run) => run.stopping) ? 'stopping' : 'running',
     };
   }
 
   async start(request: ReviewAgentStartRequest): Promise<ReviewAgentStatus> {
-    if (this.activeRun) return this.status();
+    if (this.activeRuns.size > 0) return this.status();
     if (!request.repositoryRoot || !request.sessionId) throw new Error('Missing review agent session context');
 
+    const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
+    const groups = partitionFiles(request.files, Math.max(1, Math.min(config.maxParallelAgents || 1, request.files.length || 1)));
+    await Promise.all(groups.map((files, index) => this.startRun(request, config, files, index + 1, groups.length)));
+    return this.status();
+  }
+
+  private async startRun(request: ReviewAgentStartRequest, config: ReviewConfig, files: ChangedFile[], index: number, total: number): Promise<void> {
     const run: ActiveRun = {
       id: createId('agent-run'),
       sessionId: request.sessionId,
@@ -91,19 +98,18 @@ export class ReviewAgentRunner {
       idlePolls: 0,
       startedAt: new Date().toISOString(),
     };
-    this.activeRun = run;
+    this.activeRuns.set(run.id, run);
 
-    await this.saveRun(run, 'starting', 'Preparing opencode review prompt');
-    await this.saveAgentState(run, 'starting', 'Preparing opencode review prompt');
-    await this.saveProgress(run, 'planning', `Preparing review for ${request.files.length} changed file${request.files.length === 1 ? '' : 's'}`, request.files, []);
+    await this.saveRun(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
+    await this.saveAgentState(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
+    await this.saveProgress(run, 'planning', `Preparing review shard ${index}/${total} for ${files.length} changed file${files.length === 1 ? '' : 's'}`, files, []);
 
-    const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
-    const prompt = reviewPrompt(run, request.files, config);
-    await writePrompt(request.repositoryRoot, request.sessionId, prompt);
+    const prompt = reviewPrompt(run, files, config, index, total);
+    await writePrompt(request.repositoryRoot, request.sessionId, run.id, prompt);
     await writeOpencodeTools(request.repositoryRoot);
 
     try {
-      run.bridge = await ReviewToolBridge.start(this.coreRequest, run, request.files);
+      run.bridge = await ReviewToolBridge.start(this.coreRequest, run, files);
       process.env.DIFFUSE_REVIEW_BRIDGE_URL = run.bridge.url;
       process.env.DIFFUSE_REVIEW_BRIDGE_TOKEN = run.bridge.token;
       const opencode = await createOpencode({
@@ -113,7 +119,7 @@ export class ReviewAgentRunner {
 
       const created = await opencode.client.session.create({
         query: { directory: request.repositoryRoot },
-        body: { title: `Diffuse review ${request.sessionId}` },
+        body: { title: `Diffuse review ${request.sessionId} ${index}/${total}` },
         throwOnError: true,
       });
       run.opencodeSessionId = created.data.id;
@@ -131,40 +137,39 @@ export class ReviewAgentRunner {
       });
       await this.saveRun(run, 'running', 'opencode review is running');
       await this.saveAgentState(run, 'running', 'opencode review is running');
-      await this.saveProgress(run, 'running', 'opencode review is running', request.files, []);
-      this.pollStatus(run, request.files);
+      await this.saveProgress(run, 'running', 'opencode review is running', files, []);
+      this.pollStatus(run, files);
     } catch (error) {
-      this.activeRun = null;
+      this.activeRuns.delete(run.id);
       this.closeRun(run);
       await this.saveRun(run, 'failed', errorMessage(error));
       await this.saveAgentState(run, 'failed', errorMessage(error));
-      await this.saveProgress(run, 'failed', errorMessage(error), request.files, []);
+      await this.saveProgress(run, 'failed', errorMessage(error), files, []);
       throw error;
     }
-
-    return this.status();
   }
 
   async stop(): Promise<ReviewAgentStatus> {
-    const run = this.activeRun;
-    if (!run) return { running: false };
+    if (this.activeRuns.size === 0) return { running: false };
 
-    run.stopping = true;
-    await this.saveRun(run, 'cancelling', 'Stopping opencode review');
-    await this.saveAgentState(run, 'cancelled', 'Stopping opencode review');
-    if (run.opencode && run.opencodeSessionId) {
-      await run.opencode.client.session.abort({
-        path: { id: run.opencodeSessionId },
-        query: { directory: run.repositoryRoot },
-        throwOnError: true,
-      });
-    }
+    await Promise.all([...this.activeRuns.values()].map(async (run) => {
+      run.stopping = true;
+      await this.saveRun(run, 'cancelling', 'Stopping opencode review');
+      await this.saveAgentState(run, 'cancelled', 'Stopping opencode review');
+      if (run.opencode && run.opencodeSessionId) {
+        await run.opencode.client.session.abort({
+          path: { id: run.opencodeSessionId },
+          query: { directory: run.repositoryRoot },
+          throwOnError: true,
+        });
+      }
+    }));
     return this.status();
   }
 
   dispose(): void {
-    if (this.activeRun) this.closeRun(this.activeRun);
-    this.activeRun = null;
+    for (const run of this.activeRuns.values()) this.closeRun(run);
+    this.activeRuns.clear();
   }
 
   private pollStatus(run: ActiveRun, files: ChangedFile[]): void {
@@ -174,7 +179,7 @@ export class ReviewAgentRunner {
   }
 
   private async checkStatus(run: ActiveRun, files: ChangedFile[]): Promise<void> {
-    if (this.activeRun?.id !== run.id || !run.opencode || !run.opencodeSessionId) return;
+    if (!this.activeRuns.has(run.id) || !run.opencode || !run.opencodeSessionId) return;
 
     try {
       const statuses = await run.opencode.client.session.status({
@@ -213,7 +218,7 @@ export class ReviewAgentRunner {
   }
 
   private async finishRun(run: ActiveRun, files: ChangedFile[], status: 'completed' | 'failed' | 'cancelled', message: string): Promise<void> {
-    this.activeRun = null;
+    this.activeRuns.delete(run.id);
     this.closeRun(run);
     await this.saveRun(run, status, message);
     await this.saveAgentState(run, status, message);
@@ -398,10 +403,10 @@ const opencodeModel = (config: ReviewConfig) => {
   };
 };
 
-const writePrompt = async (repositoryRoot: string, sessionId: string, prompt: string): Promise<void> => {
+const writePrompt = async (repositoryRoot: string, sessionId: string, runId: string, prompt: string): Promise<void> => {
   const promptDir = join(repositoryRoot, '.diffuse', 'reviews', 'sessions', sessionId, 'prompts');
   await mkdir(promptDir, { recursive: true });
-  await writeFile(join(promptDir, 'initial.md'), prompt);
+  await writeFile(join(promptDir, `${runId}.md`), prompt);
 };
 
 const writeOpencodeTools = async (repositoryRoot: string): Promise<void> => {
@@ -500,13 +505,14 @@ export const get_diff = tool({
 });
 `;
 
-const reviewPrompt = (run: ActiveRun, files: ChangedFile[], config: ReviewConfig): string => {
+const reviewPrompt = (run: ActiveRun, files: ChangedFile[], config: ReviewConfig, index: number, total: number): string => {
   const fileList = files.map((file) => `- ${filePath(file)} (${file.status})`).join('\n') || '- No changed files detected';
 
   return `You are the built-in Diffuse code review agent using opencode.
 
 Review session: ${run.sessionId}
 Agent run: ${run.id}
+Review shard: ${index}/${total}
 
 Read and follow the Diffuse Review Spec in docs/review-spec-v1.md if present.
 
@@ -523,7 +529,7 @@ Also keep progress and agent state up to date when useful:
 .diffuse/reviews/sessions/${run.sessionId}/progress.json
 .diffuse/reviews/sessions/${run.sessionId}/agents/${run.id}.json
 
-Only review changed files. Do not edit application source files.
+Only review the changed files assigned to this shard. Do not edit application source files.
 
 Review instructions:
 ${config.promptInstructions}
@@ -534,6 +540,16 @@ ${fileList}
 };
 
 const filePath = (file: ChangedFile): string => file.newPath ?? file.oldPath ?? file.id;
+
+const partitionFiles = (files: ChangedFile[], count: number): ChangedFile[][] => {
+  if (files.length === 0) return [[]];
+
+  const groups = Array.from({ length: Math.max(1, count) }, () => [] as ChangedFile[]);
+  files.forEach((file, index) => {
+    groups[index % groups.length].push(file);
+  });
+  return groups.filter((group) => group.length > 0);
+};
 
 const createId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
 

@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -82,6 +82,10 @@ export const useClient = () => {
     return window.diffuse.coreRequest('getReviewRuns', { sessionId });
   };
 
+  const recoverStaleReviewRuns = async (sessionId: string): Promise<{ recovered: number }> => {
+    return window.diffuse.coreRequest('recoverStaleReviewRuns', { sessionId });
+  };
+
   const saveReviewRun = async (sessionId: string, run: ReviewRun): Promise<ReviewRun> => {
     return window.diffuse.coreRequest('saveReviewRun', { sessionId, run: plainJson(run) });
   };
@@ -92,6 +96,14 @@ export const useClient = () => {
 
   const saveReviewThread = async (sessionId: string, thread: ReviewThread): Promise<ReviewThread> => {
     return window.diffuse.coreRequest('saveReviewThread', { sessionId, thread: plainJson(thread) });
+  };
+
+  const getReviewChatMessages = async (sessionId: string): Promise<ReviewChatMessage[]> => {
+    return window.diffuse.coreRequest('getReviewChatMessages', { sessionId });
+  };
+
+  const saveReviewChatMessage = async (sessionId: string, message: ReviewChatMessage): Promise<ReviewChatMessage> => {
+    return window.diffuse.coreRequest('saveReviewChatMessage', { sessionId, message: plainJson(message) });
   };
 
   const addReviewComment = async (sessionId: string, comment: ReviewThread): Promise<ReviewThread> => {
@@ -132,10 +144,13 @@ export const useClient = () => {
     saveReviewProgress,
     saveReviewAgentState,
     getReviewRuns,
+    recoverStaleReviewRuns,
     saveReviewRun,
     getReviewThreads,
     addReviewComment,
     saveReviewThread,
+    getReviewChatMessages,
+    saveReviewChatMessage,
     startReviewAgent,
     stopReviewAgent,
     installTreeSitterGrammar,

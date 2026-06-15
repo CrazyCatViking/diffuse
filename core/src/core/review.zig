@@ -230,6 +230,51 @@ pub fn writeRun(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8,
     return try allocator.dupe(u8, run_json);
 }
 
+pub fn listChatMessages(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) ![]u8 {
+    try ensureSessionDir(allocator, io, repo_root, session_id);
+    const dir_path = try chatMessagesDirPath(allocator, io, repo_root, session_id);
+    defer allocator.free(dir_path);
+    try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
+
+    var dir = try std.Io.Dir.openDir(.cwd(), io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var result = std.Io.Writer.Allocating.init(allocator);
+    errdefer result.deinit();
+    try result.writer.writeByte('[');
+
+    var first = true;
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        defer allocator.free(path);
+        const contents = try std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(contents);
+
+        if (!first) try result.writer.writeByte(',');
+        first = false;
+        try result.writer.writeAll(contents);
+    }
+
+    try result.writer.writeByte(']');
+    return try result.toOwnedSlice();
+}
+
+pub fn writeChatMessage(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, message_id: []const u8, message_json: []const u8) ![]u8 {
+    try ensureSessionDir(allocator, io, repo_root, session_id);
+    const dir_path = try chatMessagesDirPath(allocator, io, repo_root, session_id);
+    defer allocator.free(dir_path);
+    try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
+
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.json", .{message_id});
+    defer allocator.free(file_name);
+    const path = try std.fs.path.join(allocator, &.{ dir_path, file_name });
+    defer allocator.free(path);
+    try writeFileAtomic(allocator, io, path, message_json);
+    return try allocator.dupe(u8, message_json);
+}
+
 fn ensureReviewsDir(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) !void {
     const path = try reviewsRoot(allocator, io, repo_root);
     defer allocator.free(path);
@@ -292,6 +337,12 @@ fn runsDirPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, 
     const dir_path = try sessionDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, "runs" });
+}
+
+fn chatMessagesDirPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) ![]u8 {
+    const dir_path = try sessionDirPath(allocator, io, repo_root, session_id);
+    defer allocator.free(dir_path);
+    return std.fs.path.join(allocator, &.{ dir_path, "chat", "messages" });
 }
 
 fn writeFileAtomic(allocator: std.mem.Allocator, io: std.Io, path: []const u8, contents: []const u8) !void {

@@ -20,8 +20,11 @@ This directory is intentionally plain JSON and Markdown so external agent harnes
           <run-id>.json
         agents/
           <agent-run-id>.json
+        chat/
+          messages/
+            <message-id>.json
         prompts/
-          initial.md
+          <run-id>.md
           file-review.md
 ```
 
@@ -152,6 +155,24 @@ Files in `agents/` describe lower-level live agent activity. Store summaries of 
 }
 ```
 
+## Chat Messages
+
+Files in `chat/messages/` are persisted user/assistant/system messages for chat during review. Messages may reference current file selection or review threads so a built-in provider can answer with review context without coupling UI state to a provider process.
+
+```json
+{
+  "id": "chat-...",
+  "sessionId": "session-...",
+  "role": "user",
+  "body": "Is this auth change safe?",
+  "createdAt": "2026-06-15T12:07:00.000Z",
+  "context": {
+    "fileId": "src/auth.ts",
+    "threadIds": ["thread-..."]
+  }
+}
+```
+
 ## Built-In Tool Calls
 
 Built-in providers should use Diffuse RPC/tool calls instead of writing JSON directly when possible:
@@ -166,6 +187,8 @@ saveReviewAgentState
 getReviewRuns
 saveReviewRun
 getReviewThreads
+getReviewChatMessages
+saveReviewChatMessage
 addReviewComment
 saveReviewThread
 ```
@@ -174,7 +197,7 @@ saveReviewThread
 
 ## Built-In opencode Runner
 
-The desktop app can start one built-in opencode review run for the active session. Zig core owns the review run state in `runs/<agent-run-id>.json`. Electron only acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates an opencode session for the repository directory, sends the review prompt asynchronously, and reports status changes back to core.
+The desktop app can start built-in opencode review runs for the active session. Zig core owns the review run state in `runs/<agent-run-id>.json`. Electron only acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
 
 Cancellation uses the opencode SDK `session.abort` API.
 
@@ -185,4 +208,4 @@ DIFFUSE_OPENCODE_MODEL=provider/model
 DIFFUSE_OPENCODE_AGENT=agent-name
 ```
 
-The runner currently instructs opencode to write review files following this spec. A future MCP or opencode custom-tool bridge should preserve the same persisted file contract while replacing direct JSON writes with validated Diffuse tool calls.
+The runner generates opencode custom tools that call back into Diffuse for validated comments, progress, agent state, assigned changed files, and diff access. Future chat provider sessions should preserve the same persisted file contract in `chat/messages/`.

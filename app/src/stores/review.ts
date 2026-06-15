@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -14,6 +14,7 @@ export const useReviewStore = defineStore('review', () => {
   const progress = ref<ReviewProgress | null>(null);
   const runs = ref<ReviewRun[]>([]);
   const threads = ref<ReviewThread[]>([]);
+  const chatMessages = ref<ReviewChatMessage[]>([]);
   const loading = ref(false);
   const error = ref<string>();
   const draftAnchor = ref<ReviewAnchor>();
@@ -49,6 +50,7 @@ export const useReviewStore = defineStore('review', () => {
     try {
       const active = await client.getActiveReviewSession();
       session.value = active ?? await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget));
+      await client.recoverStaleReviewRuns(session.value.id);
       await refreshReviewState();
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
@@ -64,6 +66,15 @@ export const useReviewStore = defineStore('review', () => {
     }
 
     threads.value = await client.getReviewThreads(session.value.id);
+  };
+
+  const loadChatMessages = async () => {
+    if (!session.value) {
+      chatMessages.value = [];
+      return;
+    }
+
+    chatMessages.value = (await client.getReviewChatMessages(session.value.id)).sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   };
 
   const loadSessions = async () => {
@@ -94,7 +105,7 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const refreshReviewState = async () => {
-    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadRuns()]);
+    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadRuns(), loadChatMessages()]);
   };
 
   const startAgentReview = async () => {
@@ -222,6 +233,32 @@ export const useReviewStore = defineStore('review', () => {
     threads.value = threads.value.map((item) => item.id === saved.id ? saved : item);
   };
 
+  const saveChatMessage = async (role: ReviewChatMessage['role'], body: string, context?: ReviewChatMessage['context']) => {
+    if (!session.value) await ensureSession();
+    if (!session.value) return false;
+    const text = body.trim();
+    if (!text) return false;
+
+    const message: ReviewChatMessage = {
+      id: createId('chat'),
+      sessionId: session.value.id,
+      role,
+      body: text,
+      createdAt: new Date().toISOString(),
+      ...(context ? { context } : {}),
+    };
+
+    try {
+      const saved = await client.saveReviewChatMessage(session.value.id, message);
+      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== saved.id), saved].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+      error.value = undefined;
+      return true;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      return false;
+    }
+  };
+
   const threadCountForAnchor = (fileId: string, side: 'old' | 'new', line: number) => {
     return openThreads.value.filter((thread) => {
       return thread.fileId === fileId && thread.anchor.side === side && line >= thread.anchor.startLine && line <= thread.anchor.endLine;
@@ -234,6 +271,7 @@ export const useReviewStore = defineStore('review', () => {
     progress.value = null;
     runs.value = [];
     threads.value = [];
+    chatMessages.value = [];
     error.value = undefined;
     cancelDraft();
   };
@@ -243,6 +281,7 @@ export const useReviewStore = defineStore('review', () => {
     sessions,
     progress,
     runs,
+    chatMessages,
     activeRun,
     threads,
     openThreads,
@@ -254,6 +293,7 @@ export const useReviewStore = defineStore('review', () => {
     loadSessions,
     loadProgress,
     loadRuns,
+    loadChatMessages,
     refreshReviewState,
     startAgentReview,
     stopAgentReview,
@@ -264,6 +304,7 @@ export const useReviewStore = defineStore('review', () => {
     addMessage,
     resolveThread,
     reopenThread,
+    saveChatMessage,
     threadCountForAnchor,
     clear,
   };
