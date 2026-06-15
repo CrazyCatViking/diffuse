@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewMessage, ReviewSession, ReviewThread } from '../lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewMessage, ReviewProgress, ReviewSession, ReviewThread } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -10,6 +10,8 @@ export const useReviewStore = defineStore('review', () => {
   const client = useClient();
   const repo = useRepoStore();
   const session = ref<ReviewSession | null>(null);
+  const sessions = ref<ReviewSession[]>([]);
+  const progress = ref<ReviewProgress | null>(null);
   const threads = ref<ReviewThread[]>([]);
   const loading = ref(false);
   const error = ref<string>();
@@ -17,6 +19,20 @@ export const useReviewStore = defineStore('review', () => {
   const draftFile = ref<ChangedFile>();
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
+
+  const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
+    return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
+  };
+
+  window.diffuse.onCoreEvent((event) => {
+    if (!isCoreEvent(event) || event.method !== 'review/changed') return;
+    if (!event.params || typeof event.params !== 'object') return;
+
+    const params = event.params as { root?: unknown; sessionId?: unknown };
+    if (params.root !== repo.repository?.root) return;
+    if (typeof params.sessionId === 'string' && session.value?.id && params.sessionId !== session.value.id) return;
+    void refreshReviewState();
+  });
 
   const ensureSession = async () => {
     if (!repo.repository) return;
@@ -26,7 +42,7 @@ export const useReviewStore = defineStore('review', () => {
     try {
       const active = await client.getActiveReviewSession();
       session.value = active ?? await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget));
-      await loadThreads();
+      await refreshReviewState();
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
     } finally {
@@ -41,6 +57,28 @@ export const useReviewStore = defineStore('review', () => {
     }
 
     threads.value = await client.getReviewThreads(session.value.id);
+  };
+
+  const loadSessions = async () => {
+    if (!repo.repository) {
+      sessions.value = [];
+      return;
+    }
+
+    sessions.value = await client.listReviewSessions();
+  };
+
+  const loadProgress = async () => {
+    if (!session.value) {
+      progress.value = null;
+      return;
+    }
+
+    progress.value = await client.getReviewProgress(session.value.id);
+  };
+
+  const refreshReviewState = async () => {
+    await Promise.all([loadSessions(), loadThreads(), loadProgress()]);
   };
 
   const startDraft = (file: ChangedFile, anchor: ReviewAnchor) => {
@@ -143,6 +181,8 @@ export const useReviewStore = defineStore('review', () => {
 
   const clear = () => {
     session.value = null;
+    sessions.value = [];
+    progress.value = null;
     threads.value = [];
     error.value = undefined;
     cancelDraft();
@@ -150,6 +190,8 @@ export const useReviewStore = defineStore('review', () => {
 
   return {
     session,
+    sessions,
+    progress,
     threads,
     openThreads,
     loading,
@@ -157,6 +199,9 @@ export const useReviewStore = defineStore('review', () => {
     draftAnchor,
     draftFile,
     ensureSession,
+    loadSessions,
+    loadProgress,
+    refreshReviewState,
     loadThreads,
     startDraft,
     cancelDraft,

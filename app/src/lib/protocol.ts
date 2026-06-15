@@ -99,6 +99,29 @@ export type ReviewSession = {
   participants: ReviewParticipant[];
 };
 
+export type ReviewProgress = {
+  status: 'idle' | 'planning' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  totalFiles?: number;
+  reviewedFiles?: number;
+  activeFiles?: string[];
+  pendingFiles?: string[];
+  completedFiles?: string[];
+  message?: string;
+  lastActivityAt?: string;
+};
+
+export type ReviewAgentState = {
+  id: string;
+  provider: string;
+  status: 'starting' | 'running' | 'idle' | 'completed' | 'failed' | 'cancelled';
+  currentPhase?: string;
+  currentFile?: string;
+  lastThoughtSummary?: string;
+  reviewedFiles?: string[];
+  startedAt?: string;
+  updatedAt?: string;
+};
+
 export type ReviewAnchor = {
   side: ReviewSide;
   startLine: number;
@@ -127,6 +150,14 @@ export type ReviewThread = {
   newPath?: string;
   anchor: ReviewAnchor;
   status: 'open' | 'resolved';
+  severity?: 'info' | 'low' | 'medium' | 'high' | 'critical';
+  category?: 'bug' | 'security' | 'performance' | 'maintainability' | 'test' | 'style' | 'question';
+  confidence?: 'low' | 'medium' | 'high';
+  source?: {
+    kind: 'human' | 'agent';
+    provider?: string;
+    agentRunId?: string;
+  };
   createdAt: string;
   updatedAt: string;
   messages: ReviewMessage[];

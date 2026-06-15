@@ -18,8 +18,13 @@ pub fn register(server: anytype) !void {
     try server.handle("getDiffRenderModel", getDiffRenderModel);
     try server.handle("getSyntaxSpans", getSyntaxSpans);
     try server.handle("getActiveReviewSession", getActiveReviewSession);
+    try server.handle("listReviewSessions", listReviewSessions);
     try server.handle("createReviewSession", createReviewSession);
+    try server.handle("getReviewProgress", getReviewProgress);
+    try server.handle("saveReviewProgress", saveReviewProgress);
+    try server.handle("saveReviewAgentState", saveReviewAgentState);
     try server.handle("getReviewThreads", getReviewThreads);
+    try server.handle("addReviewComment", addReviewComment);
     try server.handle("saveReviewThread", saveReviewThread);
     try server.handle("listTreeSitterGrammars", listTreeSitterGrammars);
     try server.handle("installTreeSitterGrammar", installTreeSitterGrammar);
@@ -49,6 +54,63 @@ fn createReviewSession(runtime: *Runtime, writer: *std.Io.Writer, request: json_
     const repo = try runtime.session.requireRepo();
     const saved = try review.createSession(runtime.allocator, runtime.io, repo.root, session_id, session_json);
     defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "session.created");
+    try writer.writeAll(saved);
+}
+
+fn listReviewSessions(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const sessions_json = try review.listSessions(runtime.allocator, runtime.io, repo.root);
+    defer runtime.allocator.free(sessions_json);
+    try writer.writeAll(sessions_json);
+}
+
+fn getReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const progress_json = try review.readProgress(runtime.allocator, runtime.io, repo.root, session_id);
+    defer if (progress_json) |json| runtime.allocator.free(json);
+
+    if (progress_json) |json| try writer.writeAll(json) else try writer.writeAll("null");
+}
+
+fn saveReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const progress = try getObjectParam(request, "progress");
+    const progress_json = try stringifyJsonValue(runtime.allocator, progress);
+    defer runtime.allocator.free(progress_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeProgress(runtime.allocator, runtime.io, repo.root, session_id, progress_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "progress.updated");
+    try writer.writeAll(saved);
+}
+
+fn saveReviewAgentState(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const agent = try getObjectParam(request, "agent");
+    const agent_run_id = try getObjectRequiredString(agent, "id");
+    const agent_json = try stringifyJsonValue(runtime.allocator, agent);
+    defer runtime.allocator.free(agent_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeAgentState(runtime.allocator, runtime.io, repo.root, session_id, agent_run_id, agent_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "agent.updated");
     try writer.writeAll(saved);
 }
 
@@ -77,7 +139,41 @@ fn saveReviewThread(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
     const repo = try runtime.session.requireRepo();
     const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, thread_id, thread_json);
     defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "thread.updated");
     try writer.writeAll(saved);
+}
+
+fn addReviewComment(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const comment = try getObjectParam(request, "comment");
+    const comment_id = try getObjectRequiredString(comment, "id");
+    const comment_json = try stringifyJsonValue(runtime.allocator, comment);
+    defer runtime.allocator.free(comment_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, comment_id, comment_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "thread.created");
+    try writer.writeAll(saved);
+}
+
+fn emitReviewChanged(runtime: *Runtime, root: []const u8, session_id: []const u8, change: []const u8) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"review/changed\",\"params\":{");
+    try message.writer.writeAll("\"root\":");
+    try types.writeJson(&message.writer, root);
+    try message.writer.writeAll(",\"sessionId\":");
+    try types.writeJson(&message.writer, session_id);
+    try message.writer.writeAll(",\"change\":");
+    try types.writeJson(&message.writer, change);
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
 }
 
 fn getVersion(_: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {

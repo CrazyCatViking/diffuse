@@ -6,3 +6,4 @@ core/zig-pkg/
 core/zig-out/
 .DS_Store
 **/tree_sitter_queries/
+.diffuse

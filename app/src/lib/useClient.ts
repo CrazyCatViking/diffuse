@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewProgress, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -54,12 +54,32 @@ export const useClient = () => {
     return window.diffuse.coreRequest('createReviewSession', { session: plainJson(session) });
   };
 
+  const listReviewSessions = async (): Promise<ReviewSession[]> => {
+    return window.diffuse.coreRequest('listReviewSessions');
+  };
+
+  const getReviewProgress = async (sessionId: string): Promise<ReviewProgress | null> => {
+    return window.diffuse.coreRequest('getReviewProgress', { sessionId });
+  };
+
+  const saveReviewProgress = async (sessionId: string, progress: ReviewProgress): Promise<ReviewProgress> => {
+    return window.diffuse.coreRequest('saveReviewProgress', { sessionId, progress: plainJson(progress) });
+  };
+
+  const saveReviewAgentState = async (sessionId: string, agent: ReviewAgentState): Promise<ReviewAgentState> => {
+    return window.diffuse.coreRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
+  };
+
   const getReviewThreads = async (sessionId: string): Promise<ReviewThread[]> => {
     return window.diffuse.coreRequest('getReviewThreads', { sessionId });
   };
 
   const saveReviewThread = async (sessionId: string, thread: ReviewThread): Promise<ReviewThread> => {
     return window.diffuse.coreRequest('saveReviewThread', { sessionId, thread: plainJson(thread) });
+  };
+
+  const addReviewComment = async (sessionId: string, comment: ReviewThread): Promise<ReviewThread> => {
+    return window.diffuse.coreRequest('addReviewComment', { sessionId, comment: plainJson(comment) });
   };
 
   const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
@@ -80,8 +100,13 @@ export const useClient = () => {
     getDiffRenderModel,
     getSyntaxSpans,
     getActiveReviewSession,
+    listReviewSessions,
     createReviewSession,
+    getReviewProgress,
+    saveReviewProgress,
+    saveReviewAgentState,
     getReviewThreads,
+    addReviewComment,
     saveReviewThread,
     installTreeSitterGrammar,
     listTreeSitterGrammars,

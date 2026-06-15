@@ -100,7 +100,7 @@ pub const RepositoryWatcher = struct {
                     quiet_ticks -= 1;
                 } else {
                     pending = false;
-                    self.emitRepositoryChanged(root, changed_paths.items) catch |err| {
+                    self.emitChanged(root, changed_paths.items) catch |err| {
                         std.debug.print("repository watcher failed to emit change: {s}\n", .{@errorName(err)});
                     };
                     clearChangedPaths(self.allocator, &changed_paths);
@@ -109,6 +109,24 @@ pub const RepositoryWatcher = struct {
 
             sleepMs(100);
         }
+    }
+
+    fn emitChanged(self: *RepositoryWatcher, root: []const u8, changed_paths: []const []const u8) !void {
+        var repo_paths: std.ArrayList([]const u8) = .empty;
+        defer repo_paths.deinit(self.allocator);
+        var review_paths: std.ArrayList([]const u8) = .empty;
+        defer review_paths.deinit(self.allocator);
+
+        for (changed_paths) |path| {
+            if (isReviewPath(path)) {
+                try review_paths.append(self.allocator, path);
+            } else {
+                try repo_paths.append(self.allocator, path);
+            }
+        }
+
+        if (repo_paths.items.len > 0) try self.emitRepositoryChanged(root, repo_paths.items);
+        if (review_paths.items.len > 0) try self.emitReviewChanged(root, review_paths.items);
     }
 
     fn emitRepositoryChanged(self: *RepositoryWatcher, root: []const u8, changed_paths: []const []const u8) !void {
@@ -125,7 +143,26 @@ pub const RepositoryWatcher = struct {
         const owned = try message.toOwnedSlice();
         self.outbound.putOneUncancelable(self.io, owned) catch self.allocator.free(owned);
     }
+
+    fn emitReviewChanged(self: *RepositoryWatcher, root: []const u8, changed_paths: []const []const u8) !void {
+        var message = std.Io.Writer.Allocating.init(self.allocator);
+        errdefer message.deinit();
+
+        try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"review/changed\",\"params\":{");
+        try message.writer.writeAll("\"root\":");
+        try types.writeJson(&message.writer, root);
+        try message.writer.writeAll(",\"paths\":");
+        try types.writeJson(&message.writer, changed_paths);
+        try message.writer.writeAll("}}\n");
+
+        const owned = try message.toOwnedSlice();
+        self.outbound.putOneUncancelable(self.io, owned) catch self.allocator.free(owned);
+    }
 };
+
+fn isReviewPath(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, ".diffuse/reviews/") or std.mem.eql(u8, path, ".diffuse/reviews") or std.mem.eql(u8, path, ".diffuse/reviews/active-session");
+}
 
 fn inotifyInit() !i32 {
     const result = linux.inotify_init1(in_nonblock | in_cloexec);
