@@ -16,6 +16,8 @@ This directory is intentionally plain JSON and Markdown so external agent harnes
         progress.json
         threads/
           <thread-id>.json
+        runs/
+          <run-id>.json
         agents/
           <agent-run-id>.json
         prompts/
@@ -118,7 +120,23 @@ Each file in `threads/` is a review thread. Agent findings and human comments sh
 
 ## Agent State
 
-Files in `agents/` describe live agent activity. Store summaries of activity, not raw hidden reasoning.
+Files in `runs/` are the canonical source of truth for managed review run lifecycle. Electron provider adapters may own external process handles, but they must report lifecycle state back to core by updating these run records.
+
+```json
+{
+  "id": "agent-run-...",
+  "sessionId": "session-...",
+  "provider": "opencode",
+  "status": "running",
+  "currentPhase": "running",
+  "message": "opencode is reviewing changed files",
+  "opencodeSessionId": "ses_...",
+  "startedAt": "2026-06-15T12:00:00.000Z",
+  "updatedAt": "2026-06-15T12:05:00.000Z"
+}
+```
+
+Files in `agents/` describe lower-level live agent activity. Store summaries of activity, not raw hidden reasoning.
 
 ```json
 {
@@ -145,9 +163,26 @@ createReviewSession
 getReviewProgress
 saveReviewProgress
 saveReviewAgentState
+getReviewRuns
+saveReviewRun
 getReviewThreads
 addReviewComment
 saveReviewThread
 ```
 
 `addReviewComment` accepts a complete thread object as `comment` and persists it under `threads/<id>.json`.
+
+## Built-In opencode Runner
+
+The desktop app can start one built-in opencode review run for the active session. Zig core owns the review run state in `runs/<agent-run-id>.json`. Electron only acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates an opencode session for the repository directory, sends the review prompt asynchronously, and reports status changes back to core.
+
+Cancellation uses the opencode SDK `session.abort` API.
+
+Environment overrides:
+
+```text
+DIFFUSE_OPENCODE_MODEL=provider/model
+DIFFUSE_OPENCODE_AGENT=agent-name
+```
+
+The runner currently instructs opencode to write review files following this spec. A future MCP or opencode custom-tool bridge should preserve the same persisted file contract while replacing direct JSON writes with validated Diffuse tool calls.

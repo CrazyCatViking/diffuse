@@ -18,10 +18,20 @@ const pickRepository = () => {
   return ipcRenderer.invoke('repo:pickDirectory');
 };
 
+const startReviewAgent = (request: unknown) => {
+  return ipcRenderer.invoke('review-agent:start', request);
+};
+
+const stopReviewAgent = () => {
+  return ipcRenderer.invoke('review-agent:stop');
+};
+
 const bridge = {
   pickRepository,
   coreRequest,
-  onCoreEvent
+  onCoreEvent,
+  startReviewAgent,
+  stopReviewAgent
 };
 
 contextBridge.exposeInMainWorld('diffuse', bridge);

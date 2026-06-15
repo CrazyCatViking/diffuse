@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewMessage, ReviewProgress, ReviewSession, ReviewThread } from '../lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -12,6 +12,7 @@ export const useReviewStore = defineStore('review', () => {
   const session = ref<ReviewSession | null>(null);
   const sessions = ref<ReviewSession[]>([]);
   const progress = ref<ReviewProgress | null>(null);
+  const runs = ref<ReviewRun[]>([]);
   const threads = ref<ReviewThread[]>([]);
   const loading = ref(false);
   const error = ref<string>();
@@ -19,6 +20,12 @@ export const useReviewStore = defineStore('review', () => {
   const draftFile = ref<ChangedFile>();
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
+  const activeRun = computed(() => {
+    const active = runs.value
+      .filter((run) => run.status === 'starting' || run.status === 'planning' || run.status === 'running' || run.status === 'cancelling')
+      .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt))[0];
+    return active ?? null;
+  });
 
   const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
     return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
@@ -77,8 +84,50 @@ export const useReviewStore = defineStore('review', () => {
     progress.value = await client.getReviewProgress(session.value.id);
   };
 
+  const loadRuns = async () => {
+    if (!session.value) {
+      runs.value = [];
+      return;
+    }
+
+    runs.value = await client.getReviewRuns(session.value.id);
+  };
+
   const refreshReviewState = async () => {
-    await Promise.all([loadSessions(), loadThreads(), loadProgress()]);
+    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadRuns()]);
+  };
+
+  const startAgentReview = async () => {
+    if (!repo.repository) return false;
+    if (!session.value) await ensureSession();
+    if (!session.value) return false;
+
+    loading.value = true;
+    error.value = undefined;
+    try {
+      await client.startReviewAgent(repo.repository.root, session.value.id, repo.changedFiles);
+      await refreshReviewState();
+      return true;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      await loadRuns();
+      return false;
+    } finally {
+      loading.value = false;
+    }
+  };
+
+  const stopAgentReview = async () => {
+    loading.value = true;
+    error.value = undefined;
+    try {
+      await client.stopReviewAgent();
+      await refreshReviewState();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+    } finally {
+      loading.value = false;
+    }
   };
 
   const startDraft = (file: ChangedFile, anchor: ReviewAnchor) => {
@@ -183,6 +232,7 @@ export const useReviewStore = defineStore('review', () => {
     session.value = null;
     sessions.value = [];
     progress.value = null;
+    runs.value = [];
     threads.value = [];
     error.value = undefined;
     cancelDraft();
@@ -192,6 +242,8 @@ export const useReviewStore = defineStore('review', () => {
     session,
     sessions,
     progress,
+    runs,
+    activeRun,
     threads,
     openThreads,
     loading,
@@ -201,7 +253,10 @@ export const useReviewStore = defineStore('review', () => {
     ensureSession,
     loadSessions,
     loadProgress,
+    loadRuns,
     refreshReviewState,
+    startAgentReview,
+    stopAgentReview,
     loadThreads,
     startDraft,
     cancelDraft,

@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewProgress, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -70,6 +70,14 @@ export const useClient = () => {
     return window.diffuse.coreRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
   };
 
+  const getReviewRuns = async (sessionId: string): Promise<ReviewRun[]> => {
+    return window.diffuse.coreRequest('getReviewRuns', { sessionId });
+  };
+
+  const saveReviewRun = async (sessionId: string, run: ReviewRun): Promise<ReviewRun> => {
+    return window.diffuse.coreRequest('saveReviewRun', { sessionId, run: plainJson(run) });
+  };
+
   const getReviewThreads = async (sessionId: string): Promise<ReviewThread[]> => {
     return window.diffuse.coreRequest('getReviewThreads', { sessionId });
   };
@@ -80,6 +88,14 @@ export const useClient = () => {
 
   const addReviewComment = async (sessionId: string, comment: ReviewThread): Promise<ReviewThread> => {
     return window.diffuse.coreRequest('addReviewComment', { sessionId, comment: plainJson(comment) });
+  };
+
+  const startReviewAgent = async (repositoryRoot: string, sessionId: string, files: ChangedFile[]): Promise<void> => {
+    await window.diffuse.startReviewAgent({ repositoryRoot, sessionId, files: plainJson(files) });
+  };
+
+  const stopReviewAgent = async (): Promise<void> => {
+    await window.diffuse.stopReviewAgent();
   };
 
   const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
@@ -105,9 +121,13 @@ export const useClient = () => {
     getReviewProgress,
     saveReviewProgress,
     saveReviewAgentState,
+    getReviewRuns,
+    saveReviewRun,
     getReviewThreads,
     addReviewComment,
     saveReviewThread,
+    startReviewAgent,
+    stopReviewAgent,
     installTreeSitterGrammar,
     listTreeSitterGrammars,
     uninstallTreeSitterGrammar

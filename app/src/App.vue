@@ -31,6 +31,17 @@
         @reset="repo.resetDiffTarget()"
       />
 
+      <ReviewAgentBar
+        :enabled="Boolean(repo.repository && repo.changedFiles.length > 0)"
+        :loading="review.loading"
+        :progress="review.progress"
+        :active-run="review.activeRun"
+        :open-thread-count="review.openThreads.length"
+        :error="review.error"
+        @start="review.startAgentReview()"
+        @stop="review.stopAgentReview()"
+      />
+
       <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
         <ChangedFilesPane
           :files="repo.changedFiles"
@@ -90,6 +101,7 @@ import DiffViewer from './components/diff/DiffViewer.vue';
 import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
+import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
 import SettingsView from './components/settings/SettingsView.vue';
 import type { ChangedFile, DiffTarget } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
@@ -205,8 +217,11 @@ onBeforeUnmount(() => {
 watch(
   () => repo.repository?.root,
   (root) => {
-    if (root) void review.ensureSession();
-    else review.clear();
+    if (root) {
+      void review.ensureSession();
+    } else {
+      review.clear();
+    }
   }
 );
 
@@ -254,7 +269,7 @@ watch(
 <style scoped lang="scss">
 .app-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   overflow: hidden;

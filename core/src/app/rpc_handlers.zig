@@ -23,6 +23,8 @@ pub fn register(server: anytype) !void {
     try server.handle("getReviewProgress", getReviewProgress);
     try server.handle("saveReviewProgress", saveReviewProgress);
     try server.handle("saveReviewAgentState", saveReviewAgentState);
+    try server.handle("getReviewRuns", getReviewRuns);
+    try server.handle("saveReviewRun", saveReviewRun);
     try server.handle("getReviewThreads", getReviewThreads);
     try server.handle("addReviewComment", addReviewComment);
     try server.handle("saveReviewThread", saveReviewThread);
@@ -111,6 +113,35 @@ fn saveReviewAgentState(runtime: *Runtime, writer: *std.Io.Writer, request: json
     const saved = try review.writeAgentState(runtime.allocator, runtime.io, repo.root, session_id, agent_run_id, agent_json);
     defer runtime.allocator.free(saved);
     try emitReviewChanged(runtime, repo.root, session_id, "agent.updated");
+    try writer.writeAll(saved);
+}
+
+fn getReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const runs_json = try review.listRuns(runtime.allocator, runtime.io, repo.root, session_id);
+    defer runtime.allocator.free(runs_json);
+    try writer.writeAll(runs_json);
+}
+
+fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const run = try getObjectParam(request, "run");
+    const run_id = try getObjectRequiredString(run, "id");
+    const run_json = try stringifyJsonValue(runtime.allocator, run);
+    defer runtime.allocator.free(run_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeRun(runtime.allocator, runtime.io, repo.root, session_id, run_id, run_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "run.updated");
     try writer.writeAll(saved);
 }
 

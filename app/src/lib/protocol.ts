@@ -122,6 +122,19 @@ export type ReviewAgentState = {
   updatedAt?: string;
 };
 
+export type ReviewRun = {
+  id: string;
+  sessionId: string;
+  provider: string;
+  status: 'starting' | 'planning' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
+  currentPhase?: string;
+  message?: string;
+  opencodeSessionId?: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
 export type ReviewAnchor = {
   side: ReviewSide;
   startLine: number;

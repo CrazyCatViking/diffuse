@@ -2,9 +2,11 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { startCoreProcess } from './coreProcess';
 import { CoreRequestTimeoutError, type CoreEvent, type CoreRpcClient } from './coreRpcClient';
+import { ReviewAgentRunner } from './reviewAgentRunner';
 
 let mainWindow: BrowserWindow | null = null;
 let core: CoreRpcClient | null = null;
+let reviewAgentRunner: ReviewAgentRunner | null = null;
 
 const allowedCoreMethods = new Set([
   'getVersion',
@@ -20,6 +22,8 @@ const allowedCoreMethods = new Set([
   'getReviewProgress',
   'saveReviewProgress',
   'saveReviewAgentState',
+  'getReviewRuns',
+  'saveReviewRun',
   'getReviewThreads',
   'addReviewComment',
   'saveReviewThread',
@@ -64,6 +68,11 @@ async function coreRequest<T>(method: string, params: Record<string, unknown> = 
   }
 }
 
+function getReviewAgentRunner(): ReviewAgentRunner {
+  reviewAgentRunner ??= new ReviewAgentRunner(coreRequest);
+  return reviewAgentRunner;
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -105,6 +114,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  reviewAgentRunner?.dispose();
   core?.dispose();
 });
 
@@ -126,4 +136,12 @@ ipcMain.handle('core:request', async (_event, request: { method: string; params?
   }
 
   return coreRequest(request.method, request.params ?? {});
+});
+
+ipcMain.handle('review-agent:start', async (_event, request: { repositoryRoot: string; sessionId: string; files: unknown[] }) => {
+  return getReviewAgentRunner().start(request as Parameters<ReviewAgentRunner['start']>[0]);
+});
+
+ipcMain.handle('review-agent:stop', async () => {
+  return getReviewAgentRunner().stop();
 });
