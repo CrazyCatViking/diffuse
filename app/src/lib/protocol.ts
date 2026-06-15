@@ -110,6 +110,14 @@ export type ReviewProgress = {
   lastActivityAt?: string;
 };
 
+export type ReviewConfig = {
+  provider: 'opencode' | string;
+  model?: string;
+  agent?: string;
+  maxParallelAgents: number;
+  promptInstructions: string;
+};
+
 export type ReviewAgentState = {
   id: string;
   provider: string;

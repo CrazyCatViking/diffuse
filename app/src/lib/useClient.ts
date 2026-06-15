@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -48,6 +48,14 @@ export const useClient = () => {
 
   const getActiveReviewSession = async (): Promise<ReviewSession | null> => {
     return window.diffuse.coreRequest('getActiveReviewSession');
+  };
+
+  const getReviewConfig = async (): Promise<ReviewConfig> => {
+    return window.diffuse.coreRequest('getReviewConfig');
+  };
+
+  const saveReviewConfig = async (config: ReviewConfig): Promise<ReviewConfig> => {
+    return window.diffuse.coreRequest('saveReviewConfig', { config: plainJson(config) });
   };
 
   const createReviewSession = async (session: ReviewSession): Promise<ReviewSession> => {
@@ -115,6 +123,8 @@ export const useClient = () => {
     listChangedFiles,
     getDiffRenderModel,
     getSyntaxSpans,
+    getReviewConfig,
+    saveReviewConfig,
     getActiveReviewSession,
     listReviewSessions,
     createReviewSession,

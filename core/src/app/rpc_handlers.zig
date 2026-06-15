@@ -17,6 +17,8 @@ pub fn register(server: anytype) !void {
     try server.handle("listChangedFiles", listChangedFiles);
     try server.handle("getDiffRenderModel", getDiffRenderModel);
     try server.handle("getSyntaxSpans", getSyntaxSpans);
+    try server.handle("getReviewConfig", getReviewConfig);
+    try server.handle("saveReviewConfig", saveReviewConfig);
     try server.handle("getActiveReviewSession", getActiveReviewSession);
     try server.handle("listReviewSessions", listReviewSessions);
     try server.handle("createReviewSession", createReviewSession);
@@ -25,12 +27,41 @@ pub fn register(server: anytype) !void {
     try server.handle("saveReviewAgentState", saveReviewAgentState);
     try server.handle("getReviewRuns", getReviewRuns);
     try server.handle("saveReviewRun", saveReviewRun);
+    try server.handle("createReviewRun", saveReviewRun);
+    try server.handle("updateReviewRun", saveReviewRun);
+    try server.handle("finishReviewRun", saveReviewRun);
     try server.handle("getReviewThreads", getReviewThreads);
+    try server.handle("addReviewCommentPayload", addReviewCommentPayload);
     try server.handle("addReviewComment", addReviewComment);
     try server.handle("saveReviewThread", saveReviewThread);
     try server.handle("listTreeSitterGrammars", listTreeSitterGrammars);
     try server.handle("installTreeSitterGrammar", installTreeSitterGrammar);
     try server.handle("uninstallTreeSitterGrammar", uninstallTreeSitterGrammar);
+}
+
+fn getReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const config_json = try review.readConfig(runtime.allocator, runtime.io, repo.root);
+    defer runtime.allocator.free(config_json);
+    try writer.writeAll(config_json);
+}
+
+fn saveReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const config = try getObjectParam(request, "config");
+    const config_json = try stringifyJsonValue(runtime.allocator, config);
+    defer runtime.allocator.free(config_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeConfig(runtime.allocator, runtime.io, repo.root, config_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, "", "config.updated");
+    try writer.writeAll(saved);
 }
 
 fn getActiveReviewSession(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
@@ -186,6 +217,77 @@ fn addReviewComment(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
 
     const repo = try runtime.session.requireRepo();
     const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, comment_id, comment_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "thread.created");
+    try writer.writeAll(saved);
+}
+
+fn addReviewCommentPayload(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const run_id = try json_rpc.getStringParam(request, "runId");
+    const comment = try getObjectParam(request, "comment");
+    const object = switch (comment) {
+        .object => |object| object,
+        else => return error.InvalidParam,
+    };
+
+    const file_path = try getRequiredString(object, "filePath");
+    if (std.fs.path.isAbsolute(file_path) or std.mem.indexOf(u8, file_path, "..") != null) return error.InvalidParam;
+    const side = try getRequiredString(object, "side");
+    if (!std.mem.eql(u8, side, "old") and !std.mem.eql(u8, side, "new")) return error.InvalidParam;
+    const start_line = try getRequiredU32(object, "startLine");
+    const end_line = try getRequiredU32(object, "endLine");
+    if (start_line == 0 or end_line < start_line) return error.InvalidParam;
+    const body = std.mem.trim(u8, try getRequiredString(object, "body"), "\r\n\t ");
+    if (body.len == 0) return error.InvalidParam;
+
+    const now_ms = std.Io.Timestamp.now(runtime.io, .real).toMilliseconds();
+    const thread_id = try std.fmt.allocPrint(runtime.allocator, "thread-{d}-{d}-{d}-{d}", .{ now_ms, start_line, end_line, body.len });
+    defer runtime.allocator.free(thread_id);
+    const message_id = try std.fmt.allocPrint(runtime.allocator, "msg-{d}-{d}-{d}-{d}", .{ now_ms, start_line, end_line, body.len });
+    defer runtime.allocator.free(message_id);
+    const timestamp = try std.fmt.allocPrint(runtime.allocator, "{d}", .{now_ms});
+    defer runtime.allocator.free(timestamp);
+
+    var thread_json = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer thread_json.deinit();
+    try thread_json.writer.writeAll("{");
+    try writeJsonField(&thread_json.writer, "id", thread_id, true);
+    try writeJsonField(&thread_json.writer, "sessionId", session_id, false);
+    try writeJsonField(&thread_json.writer, "fileId", file_path, false);
+    try writeJsonField(&thread_json.writer, if (std.mem.eql(u8, side, "old")) "oldPath" else "newPath", file_path, false);
+    try thread_json.writer.writeAll(",\"anchor\":{");
+    try writeJsonField(&thread_json.writer, "side", side, true);
+    try thread_json.writer.print(",\"startLine\":{},\"endLine\":{},\"diffTargetFingerprint\":\"agent\"", .{ start_line, end_line });
+    if (getOptionalString(object, "selectedText")) |text| {
+        try thread_json.writer.writeAll(",\"selectedText\":");
+        try types.writeJson(&thread_json.writer, text);
+    }
+    try thread_json.writer.writeAll("}");
+    try writeJsonField(&thread_json.writer, "status", "open", false);
+    if (getOptionalString(object, "severity")) |value| try writeJsonField(&thread_json.writer, "severity", value, false);
+    if (getOptionalString(object, "category")) |value| try writeJsonField(&thread_json.writer, "category", value, false);
+    if (getOptionalString(object, "confidence")) |value| try writeJsonField(&thread_json.writer, "confidence", value, false);
+    try thread_json.writer.writeAll(",\"source\":{\"kind\":\"agent\",\"provider\":\"opencode\",\"agentRunId\":");
+    try types.writeJson(&thread_json.writer, run_id);
+    try thread_json.writer.writeAll("}");
+    try writeJsonField(&thread_json.writer, "createdAt", timestamp, false);
+    try writeJsonField(&thread_json.writer, "updatedAt", timestamp, false);
+    try thread_json.writer.writeAll(",\"messages\":[{");
+    try writeJsonField(&thread_json.writer, "id", message_id, true);
+    try writeJsonField(&thread_json.writer, "authorId", run_id, false);
+    try writeJsonField(&thread_json.writer, "body", body, false);
+    try writeJsonField(&thread_json.writer, "createdAt", timestamp, false);
+    try thread_json.writer.writeAll("}]}");
+
+    const owned = try thread_json.toOwnedSlice();
+    defer runtime.allocator.free(owned);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, thread_id, owned);
     defer runtime.allocator.free(saved);
     try emitReviewChanged(runtime, repo.root, session_id, "thread.created");
     try writer.writeAll(saved);
@@ -430,6 +532,37 @@ fn getObjectRequiredString(value: std.json.Value, name: []const u8) ![]const u8 
         .string => |text| text,
         else => error.InvalidParam,
     };
+}
+
+fn getRequiredString(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
+    const field = object.get(name) orelse return error.MissingParam;
+    return switch (field) {
+        .string => |text| text,
+        else => error.InvalidParam,
+    };
+}
+
+fn getOptionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const field = object.get(name) orelse return null;
+    return switch (field) {
+        .string => |text| if (text.len == 0) null else text,
+        else => null,
+    };
+}
+
+fn getRequiredU32(object: std.json.ObjectMap, name: []const u8) !u32 {
+    const field = object.get(name) orelse return error.MissingParam;
+    return switch (field) {
+        .integer => |number| if (number >= 0) @intCast(number) else error.InvalidParam,
+        else => error.InvalidParam,
+    };
+}
+
+fn writeJsonField(writer: *std.Io.Writer, name: []const u8, value: []const u8, first: bool) !void {
+    if (!first) try writer.writeByte(',');
+    try types.writeJson(writer, name);
+    try writer.writeByte(':');
+    try types.writeJson(writer, value);
 }
 
 fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {

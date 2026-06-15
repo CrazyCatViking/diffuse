@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { createOpencode } from '@opencode-ai/sdk';
 
@@ -32,6 +33,14 @@ type ReviewRun = {
   completedAt?: string;
 };
 
+type ReviewConfig = {
+  provider: string;
+  model?: string;
+  agent?: string;
+  maxParallelAgents: number;
+  promptInstructions: string;
+};
+
 export type ReviewAgentStatus = {
   running: boolean;
   runId?: string;
@@ -46,6 +55,7 @@ type ActiveRun = {
   repositoryRoot: string;
   opencode?: Awaited<ReturnType<typeof createOpencode>>;
   opencodeSessionId?: string;
+  bridge?: ReviewToolBridge;
   pollTimer?: NodeJS.Timeout;
   stopping: boolean;
   seenBusy: boolean;
@@ -87,12 +97,17 @@ export class ReviewAgentRunner {
     await this.saveAgentState(run, 'starting', 'Preparing opencode review prompt');
     await this.saveProgress(run, 'planning', `Preparing review for ${request.files.length} changed file${request.files.length === 1 ? '' : 's'}`, request.files, []);
 
-    const prompt = reviewPrompt(run, request.files);
+    const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
+    const prompt = reviewPrompt(run, request.files, config);
     await writePrompt(request.repositoryRoot, request.sessionId, prompt);
+    await writeOpencodeTools(request.repositoryRoot);
 
     try {
+      run.bridge = await ReviewToolBridge.start(this.coreRequest, run, request.files);
+      process.env.DIFFUSE_REVIEW_BRIDGE_URL = run.bridge.url;
+      process.env.DIFFUSE_REVIEW_BRIDGE_TOKEN = run.bridge.token;
       const opencode = await createOpencode({
-        config: opencodeConfig(),
+        config: opencodeConfig(config),
       });
       run.opencode = opencode;
 
@@ -108,8 +123,8 @@ export class ReviewAgentRunner {
         path: { id: run.opencodeSessionId },
         query: { directory: request.repositoryRoot },
         body: {
-          agent: process.env.DIFFUSE_OPENCODE_AGENT,
-          model: opencodeModel(),
+          agent: process.env.DIFFUSE_OPENCODE_AGENT ?? config.agent,
+          model: opencodeModel(config),
           parts: [{ type: 'text', text: prompt }],
         },
         throwOnError: true,
@@ -208,8 +223,10 @@ export class ReviewAgentRunner {
   private closeRun(run: ActiveRun): void {
     if (run.pollTimer) clearTimeout(run.pollTimer);
     run.opencode?.server.close();
+    run.bridge?.close();
     run.pollTimer = undefined;
     run.opencode = undefined;
+    run.bridge = undefined;
   }
 
   private async saveAgentState(run: ActiveRun, status: string, message: string): Promise<void> {
@@ -243,7 +260,8 @@ export class ReviewAgentRunner {
       updatedAt: now,
       ...(finished ? { completedAt: now } : {}),
     };
-    await this.coreRequest('saveReviewRun', {
+    const method = status === 'starting' ? 'createReviewRun' : finished ? 'finishReviewRun' : 'updateReviewRun';
+    await this.coreRequest(method, {
       sessionId: run.sessionId,
       run: reviewRun,
     });
@@ -267,13 +285,110 @@ export class ReviewAgentRunner {
   }
 }
 
-const opencodeConfig = () => {
-  const model = opencodeModel();
+const opencodeConfig = (config: ReviewConfig) => {
+  const model = opencodeModel(config);
   return model ? { model: `${model.providerID}/${model.modelID}` } : {};
 };
 
-const opencodeModel = () => {
-  const value = process.env.DIFFUSE_OPENCODE_MODEL;
+class ReviewToolBridge {
+  private constructor(
+    private readonly server: http.Server,
+    readonly url: string,
+    readonly token: string,
+  ) {}
+
+  static async start(coreRequest: CoreRequest, run: ActiveRun, files: ChangedFile[]): Promise<ReviewToolBridge> {
+    const token = createId('tool-token');
+    const server = http.createServer((request, response) => {
+      void handleToolRequest(coreRequest, run, files, token, request, response);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Failed to start review tool bridge');
+    return new ReviewToolBridge(server, `http://127.0.0.1:${address.port}`, token);
+  }
+
+  close(): void {
+    this.server.close();
+  }
+}
+
+const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files: ChangedFile[], token: string, request: IncomingMessage, response: ServerResponse): Promise<void> => {
+  try {
+    if (request.method !== 'POST') return writeJson(response, 405, { error: 'Method not allowed' });
+    if (request.headers.authorization !== `Bearer ${token}`) return writeJson(response, 401, { error: 'Unauthorized' });
+
+    const body = await readJsonBody(request);
+    if (request.url === '/add-comment') {
+      const result = await coreRequest('addReviewCommentPayload', { sessionId: run.sessionId, runId: run.id, comment: body });
+      return writeJson(response, 200, result);
+    }
+
+    if (request.url === '/set-progress') {
+      const result = await coreRequest('saveReviewProgress', { sessionId: run.sessionId, progress: body });
+      return writeJson(response, 200, result);
+    }
+
+    if (request.url === '/set-agent-state') {
+      const result = await coreRequest('saveReviewAgentState', { sessionId: run.sessionId, agent: { ...body, id: run.id, provider: 'opencode' } });
+      return writeJson(response, 200, result);
+    }
+
+    if (request.url === '/changed-files') return writeJson(response, 200, files);
+
+    if (request.url === '/diff') {
+      const fileId = stringField(body, 'fileId');
+      const result = await coreRequest('getDiffRenderModel', {
+        fileId,
+        options: { mode: 'inline', context: 'full' },
+        target: { includeStaged: true, includeUnstaged: true },
+      });
+      return writeJson(response, 200, result);
+    }
+
+    return writeJson(response, 404, { error: 'Unknown review tool endpoint' });
+  } catch (error) {
+    return writeJson(response, 500, { error: errorMessage(error) });
+  }
+};
+
+const readJsonBody = (request: IncomingMessage): Promise<Record<string, unknown>> => {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on('error', reject);
+    request.on('end', () => {
+      try {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve(text ? JSON.parse(text) as Record<string, unknown> : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+};
+
+const writeJson = (response: ServerResponse, status: number, body: unknown): void => {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(body));
+};
+
+const stringField = (value: Record<string, unknown>, field: string): string => {
+  const result = value[field];
+  if (typeof result !== 'string' || result.trim().length === 0) throw new Error(`Missing ${field}`);
+  return result;
+};
+
+const opencodeModel = (config: ReviewConfig) => {
+  const value = process.env.DIFFUSE_OPENCODE_MODEL ?? config.model;
   if (!value) return undefined;
   const separator = value.indexOf('/');
   if (separator <= 0 || separator === value.length - 1) return undefined;
@@ -289,7 +404,103 @@ const writePrompt = async (repositoryRoot: string, sessionId: string, prompt: st
   await writeFile(join(promptDir, 'initial.md'), prompt);
 };
 
-const reviewPrompt = (run: ActiveRun, files: ChangedFile[]): string => {
+const writeOpencodeTools = async (repositoryRoot: string): Promise<void> => {
+  const toolDir = join(repositoryRoot, '.opencode', 'tools');
+  await mkdir(toolDir, { recursive: true });
+  await ensureOpencodePackage(repositoryRoot);
+  await writeFile(join(toolDir, 'diffuse_review.ts'), diffuseReviewToolSource());
+};
+
+const ensureOpencodePackage = async (repositoryRoot: string): Promise<void> => {
+  const packagePath = join(repositoryRoot, '.opencode', 'package.json');
+  try {
+    await access(packagePath);
+  } catch {
+    await writeFile(packagePath, `${JSON.stringify({ dependencies: { '@opencode-ai/plugin': '1.17.7' } }, null, 2)}\n`);
+  }
+};
+
+const diffuseReviewToolSource = (): string => `import { tool } from "@opencode-ai/plugin";
+
+const callDiffuse = async (path: string, body: unknown) => {
+  const url = process.env.DIFFUSE_REVIEW_BRIDGE_URL;
+  const token = process.env.DIFFUSE_REVIEW_BRIDGE_TOKEN;
+  if (!url || !token) throw new Error("Diffuse review bridge is not configured");
+  const response = await fetch(url + path, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + token },
+    body: JSON.stringify(body ?? {}),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || "Diffuse review tool failed: " + response.status);
+  return text;
+};
+
+export const add_comment = tool({
+  description: "Add a validated Diffuse review comment anchored to a changed file line.",
+  args: {
+    filePath: tool.schema.string().describe("Changed file path to comment on"),
+    side: tool.schema.enum(["old", "new"]).describe("Diff side"),
+    startLine: tool.schema.number().describe("1-based start line"),
+    endLine: tool.schema.number().describe("1-based end line"),
+    body: tool.schema.string().describe("Actionable review comment"),
+    severity: tool.schema.enum(["info", "low", "medium", "high", "critical"]).optional(),
+    category: tool.schema.enum(["bug", "security", "performance", "maintainability", "test", "style", "question"]).optional(),
+    confidence: tool.schema.enum(["low", "medium", "high"]).optional(),
+    selectedText: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    return callDiffuse("/add-comment", args);
+  },
+});
+
+export const set_progress = tool({
+  description: "Update Diffuse review progress.",
+  args: {
+    status: tool.schema.enum(["idle", "planning", "running", "paused", "completed", "failed", "cancelled"]),
+    message: tool.schema.string().optional(),
+    totalFiles: tool.schema.number().optional(),
+    reviewedFiles: tool.schema.number().optional(),
+    activeFiles: tool.schema.array(tool.schema.string()).optional(),
+    pendingFiles: tool.schema.array(tool.schema.string()).optional(),
+    completedFiles: tool.schema.array(tool.schema.string()).optional(),
+  },
+  async execute(args) {
+    return callDiffuse("/set-progress", { ...args, lastActivityAt: new Date().toISOString() });
+  },
+});
+
+export const set_agent_state = tool({
+  description: "Update Diffuse review agent state with summarized activity.",
+  args: {
+    status: tool.schema.enum(["starting", "running", "idle", "completed", "failed", "cancelled"]),
+    currentPhase: tool.schema.string().optional(),
+    currentFile: tool.schema.string().optional(),
+    lastThoughtSummary: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    return callDiffuse("/set-agent-state", { ...args, updatedAt: new Date().toISOString() });
+  },
+});
+
+export const get_changed_files = tool({
+  description: "Get the changed files assigned to this Diffuse review run.",
+  args: {},
+  async execute() {
+    return callDiffuse("/changed-files", {});
+  },
+});
+
+export const get_diff = tool({
+  description: "Get the full diff render model for a changed file.",
+  args: { fileId: tool.schema.string().describe("Changed file id/path") },
+  async execute(args) {
+    return callDiffuse("/diff", args);
+  },
+});
+`;
+
+const reviewPrompt = (run: ActiveRun, files: ChangedFile[], config: ReviewConfig): string => {
   const fileList = files.map((file) => `- ${filePath(file)} (${file.status})`).join('\n') || '- No changed files detected';
 
   return `You are the built-in Diffuse code review agent using opencode.
@@ -299,14 +510,23 @@ Agent run: ${run.id}
 
 Read and follow the Diffuse Review Spec in docs/review-spec-v1.md if present.
 
-Write review findings as JSON files under:
-.diffuse/reviews/sessions/${run.sessionId}/threads/
+Use the Diffuse review tools to inspect changes and add findings:
+- diffuse_review_get_changed_files
+- diffuse_review_get_diff
+- diffuse_review_add_comment
+- diffuse_review_set_progress
+- diffuse_review_set_agent_state
+
+Do not hand-write review thread JSON unless the tools are unavailable.
 
 Also keep progress and agent state up to date when useful:
 .diffuse/reviews/sessions/${run.sessionId}/progress.json
 .diffuse/reviews/sessions/${run.sessionId}/agents/${run.id}.json
 
-Only review changed files. Do not edit application source files. Do not create comments for non-actionable observations. Prefer high-signal correctness, security, data-loss, race, and test-coverage findings.
+Only review changed files. Do not edit application source files.
+
+Review instructions:
+${config.promptInstructions}
 
 Changed files:
 ${fileList}
