@@ -6,13 +6,7 @@ const active_file = "active-session";
 const progress_file = "progress.json";
 const config_file = "config.json";
 
-const default_config =
-    \\{
-    \\  "provider": "opencode",
-    \\  "maxParallelAgents": 1,
-    \\  "promptInstructions": "Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations."
-    \\}
-;
+const default_config = "{\"provider\":\"opencode\",\"maxParallelAgents\":1,\"promptInstructions\":\"Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations.\"}";
 
 pub fn getActiveSession(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) !?[]u8 {
     const reviews_root = try reviewsRoot(allocator, io, repo_root);
@@ -183,6 +177,37 @@ pub fn writeAgentState(allocator: std.mem.Allocator, io: std.Io, repo_root: []co
     defer allocator.free(path);
     try writeFileAtomic(allocator, io, path, agent_json);
     return try allocator.dupe(u8, agent_json);
+}
+
+pub fn listAgentStates(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) ![]u8 {
+    try ensureSessionDir(allocator, io, repo_root, session_id);
+    const dir_path = try agentsDirPath(allocator, io, repo_root, session_id);
+    defer allocator.free(dir_path);
+    try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
+
+    var dir = try std.Io.Dir.openDir(.cwd(), io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var result = std.Io.Writer.Allocating.init(allocator);
+    errdefer result.deinit();
+    try result.writer.writeByte('[');
+
+    var first = true;
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        defer allocator.free(path);
+        const contents = try std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(contents);
+
+        if (!first) try result.writer.writeByte(',');
+        first = false;
+        try result.writer.writeAll(contents);
+    }
+
+    try result.writer.writeByte(']');
+    return try result.toOwnedSlice();
 }
 
 pub fn listRuns(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) ![]u8 {

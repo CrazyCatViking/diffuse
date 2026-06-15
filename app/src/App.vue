@@ -36,6 +36,7 @@
         :loading="review.loading"
         :progress="review.progress"
         :active-run="review.activeRun"
+        :active-agent-state="review.activeAgentState"
         :sessions="review.sessions"
         :runs="review.runs"
         :open-thread-count="review.openThreads.length"

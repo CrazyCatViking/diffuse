@@ -89,7 +89,7 @@
             </template>
             <div v-else class="inline-review-row synced-split" :class="entry.reviewRow?.anchor.side">
               <div class="review-cell">
-                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :agent-responding="agentRespondingForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @submit-chat-draft="submitChatDraft" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
               </div>
             </div>
           </div>
@@ -132,7 +132,7 @@
               />
               </template>
               <div v-else class="inline-review-row old">
-                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :agent-responding="agentRespondingForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @submit-chat-draft="submitChatDraft" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
               </div>
             </div>
           </div>
@@ -173,7 +173,7 @@
               />
               </template>
               <div v-else class="inline-review-row new">
-                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :agent-responding="agentRespondingForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @submit-chat-draft="submitChatDraft" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
               </div>
             </div>
           </div>
@@ -216,7 +216,7 @@
               />
             </template>
             <div v-else class="inline-review-row inline">
-              <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              <InlineReviewBox v-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :agent-responding="agentRespondingForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @submit-chat-draft="submitChatDraft" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
             </div>
           </div>
         </div>
@@ -239,6 +239,9 @@
     >
       <button type="button" title="Comment on selection" aria-label="Comment on selection" @pointerdown.prevent.stop="startSelectionComment">
         <span class="comment-icon" aria-hidden="true" />
+      </button>
+      <button type="button" title="Ask AI about selection" aria-label="Ask AI about selection" @pointerdown.prevent.stop="startSelectionChat">
+        <span class="ai-icon" aria-hidden="true" />
       </button>
     </div>
   </section>
@@ -513,8 +516,10 @@ const reviewEntriesByEndLine = (side?: SyntaxSide) => {
     addEntry({ kind: 'thread', key: `thread:${thread.id}`, anchor: thread.anchor, thread });
   }
 
+  for (const chat of selectionChatEntries.value) addEntry(chat);
+
   if (review.draftAnchor && review.draftFile?.id === props.model?.fileId) {
-    addEntry({ kind: 'draft', key: `draft:${review.draftAnchor.side}:${review.draftAnchor.startLine}:${review.draftAnchor.endLine}`, anchor: review.draftAnchor });
+    addEntry({ kind: 'draft', key: `draft:${review.draftMode}:${review.draftAnchor.side}:${review.draftAnchor.startLine}:${review.draftAnchor.endLine}`, anchor: review.draftAnchor, mode: review.draftMode });
   }
 
   return entries;
@@ -555,9 +560,31 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
 };
 
 const chatMessagesForEntry = (entry: InlineReviewEntry) => {
-  if (entry.kind !== 'thread') return [];
-  return review.chatMessages.filter((message) => message.context?.threadIds?.includes(entry.thread.id));
+  if (entry.kind === 'draft') return [];
+  const threadId = entry.kind === 'thread' ? entry.thread.id : entry.chatThreadId;
+  return review.chatMessages.filter((message) => message.context?.threadIds?.includes(threadId));
 };
+
+const agentRespondingForEntry = (entry: InlineReviewEntry) => {
+  if (entry.kind === 'draft') return entry.mode === 'chat' && Boolean(review.draftFile && review.draftAnchor && review.pendingAgentChatKeys.has(selectionChatThreadId(review.draftFile.id, review.draftAnchor)));
+  return review.pendingAgentChatKeys.has(entry.kind === 'thread' ? entry.thread.id : entry.chatThreadId);
+};
+
+const selectionChatEntries = computed<InlineReviewEntry[]>(() => {
+  if (!props.model?.fileId) return [];
+  const seen = new Set<string>();
+  const result: InlineReviewEntry[] = [];
+  for (const message of review.chatMessages) {
+    const threadId = message.context?.threadIds?.[0];
+    const anchor = message.context?.selection;
+    if (!threadId?.startsWith('chat:') || !anchor || message.context?.fileId !== props.model.fileId || seen.has(threadId)) continue;
+    seen.add(threadId);
+    result.push({ kind: 'chat', key: threadId, anchor, chatThreadId: threadId });
+  }
+  return result;
+});
+
+const selectionChatThreadId = (fileId: string, anchor: ReviewAnchor) => `chat:${fileId}:${anchor.side}:${anchor.startLine}:${anchor.endLine}:${anchor.startColumn ?? ''}:${anchor.endColumn ?? ''}`;
 
 const startLineComment = (payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }) => {
   if (!props.model || !activeFile.value) return;
@@ -653,6 +680,13 @@ const submitComment = async () => {
   clearNativeSelection();
 };
 
+const submitChatDraft = async () => {
+  const saved = await review.askAgentAtDraft(draftBody.value);
+  if (!saved) return;
+  draftBody.value = '';
+  clearNativeSelection();
+};
+
 const cancelDraft = () => {
   draftBody.value = '';
   review.cancelDraft();
@@ -705,7 +739,14 @@ const reopenThread = async (thread: ReviewThread) => {
 const startSelectionComment = (event: PointerEvent) => {
   if (!selectionDraft.value) return;
   draftBody.value = '';
-  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor);
+  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor, 'comment');
+  selectionDraft.value = undefined;
+};
+
+const startSelectionChat = () => {
+  if (!selectionDraft.value) return;
+  draftBody.value = '';
+  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor, 'chat');
   selectionDraft.value = undefined;
 };
 
@@ -793,6 +834,7 @@ const estimateDisplayItemSize = (item?: DisplayRow) => {
   if (!item) return 24;
   if (item.kind === 'draft') return 220;
   if (item.kind === 'thread') return 150;
+  if (item.kind === 'chat') return 150;
   return item.row.kind === 'hunk' ? 28 : 24;
 };
 
@@ -1575,6 +1617,40 @@ watch(
     border-right: 2px solid #f0c36a;
     border-bottom: 2px solid #f0c36a;
     content: "";
+  }
+}
+
+.ai-icon {
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  width: 12px;
+  height: 12px;
+  color: #8fb3ff;
+
+  &::before,
+  &::after {
+    position: absolute;
+    content: "";
+    background: currentColor;
+  }
+
+  &::before {
+    top: 0;
+    left: 5px;
+    width: 2px;
+    height: 12px;
+    border-radius: 999px;
+    box-shadow: 0 0 8px rgba(143, 179, 255, 0.55);
+  }
+
+  &::after {
+    top: 5px;
+    left: 0;
+    width: 12px;
+    height: 2px;
+    border-radius: 999px;
+    transform: rotate(45deg);
   }
 }
 

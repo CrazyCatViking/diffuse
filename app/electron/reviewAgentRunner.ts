@@ -24,6 +24,7 @@ type ReviewChatRequest = {
   thread: ReviewThread;
   question: string;
   userMessageId?: string;
+  responseMessageId?: string;
   chatMessages?: ReviewChatMessage[];
 };
 
@@ -246,7 +247,7 @@ export class ReviewAgentRunner {
 
       const body = textFromOpencodeParts(response.data.parts) || 'I could not produce a response for this thread.';
       const message: ReviewChatMessage = {
-        id: createId('chat'),
+        id: request.responseMessageId ?? createId('chat'),
         sessionId: request.sessionId,
         role: 'assistant',
         body,
@@ -288,7 +289,6 @@ export class ReviewAgentRunner {
       if (status?.type === 'busy') {
         run.seenBusy = true;
         await this.saveRun(run, 'running', 'opencode is reviewing changed files');
-        await this.saveAgentState(run, 'running', 'opencode is reviewing changed files');
         this.pollStatus(run, files);
         return;
       }
@@ -432,6 +432,8 @@ const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files
     const body = await readJsonBody(request);
     if (request.url === '/add-comment') {
       const result = await coreRequest('addReviewCommentPayload', { sessionId: run.sessionId, runId: run.id, comment: body });
+      const file = typeof body.filePath === 'string' ? body.filePath : undefined;
+      await saveBridgeAgentState(coreRequest, run, 'recording-finding', file, file ? `Adding a review comment for ${file}` : 'Adding a review comment');
       return writeJson(response, 200, result);
     }
 
@@ -445,10 +447,14 @@ const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files
       return writeJson(response, 200, result);
     }
 
-    if (request.url === '/changed-files') return writeJson(response, 200, files);
+    if (request.url === '/changed-files') {
+      await saveBridgeAgentState(coreRequest, run, 'listing-files', undefined, `Planning review across ${files.length} changed file${files.length === 1 ? '' : 's'}`);
+      return writeJson(response, 200, files);
+    }
 
     if (request.url === '/diff') {
       const fileId = stringField(body, 'fileId');
+      await saveBridgeAgentState(coreRequest, run, 'reviewing-file', fileId, `Inspecting the diff for ${fileId}`);
       const result = await coreRequest('getDiffRenderModel', {
         fileId,
         options: { mode: 'inline', context: 'full' },
@@ -461,6 +467,22 @@ const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files
   } catch (error) {
     return writeJson(response, 500, { error: errorMessage(error) });
   }
+};
+
+const saveBridgeAgentState = async (coreRequest: CoreRequest, run: ActiveRun, phase: string, currentFile: string | undefined, summary: string): Promise<void> => {
+  const now = new Date().toISOString();
+  await coreRequest('saveReviewAgentState', {
+    sessionId: run.sessionId,
+    agent: {
+      id: run.id,
+      provider: 'opencode',
+      status: 'running',
+      currentPhase: phase,
+      currentFile,
+      lastThoughtSummary: summary,
+      updatedAt: now,
+    },
+  });
 };
 
 const readJsonBody = (request: IncomingMessage): Promise<Record<string, unknown>> => {
@@ -558,7 +580,7 @@ export const add_comment = tool({
 });
 
 export const set_progress = tool({
-  description: "Update Diffuse review progress.",
+  description: "Update Diffuse review progress with a short user-visible status message.",
   args: {
     status: tool.schema.enum(["idle", "planning", "running", "paused", "completed", "failed", "cancelled"]),
     message: tool.schema.string().optional(),
@@ -574,7 +596,7 @@ export const set_progress = tool({
 });
 
 export const set_agent_state = tool({
-  description: "Update Diffuse review agent state with summarized activity.",
+  description: "Update Diffuse review agent state with current file and a concise user-visible activity summary. Do not include hidden chain-of-thought.",
   args: {
     status: tool.schema.enum(["starting", "running", "idle", "completed", "failed", "cancelled"]),
     currentPhase: tool.schema.string().optional(),
@@ -614,12 +636,20 @@ Review shard: ${index}/${total}
 
 Read and follow the Diffuse Review Spec in docs/review-spec-v1.md if present.
 
-Use the Diffuse review tools to inspect changes and add findings:
-- diffuse_review_get_changed_files
-- diffuse_review_get_diff
-- diffuse_review_add_comment
-- diffuse_review_set_progress
-- diffuse_review_set_agent_state
+Use these Diffuse review tools to inspect changes and add findings:
+- get_changed_files
+- get_diff
+- add_comment
+- set_progress
+- set_agent_state
+
+First call get_changed_files, then call get_diff for each assigned file before deciding whether to add comments. Add comments with add_comment for every actionable finding.
+
+Keep the UI informed while you work:
+- Before each file, call set_agent_state with currentPhase="reviewing-file", currentFile set to the file path, and lastThoughtSummary like "Checking API error handling" or "Tracing auth validation".
+- When switching activities, call set_agent_state again with a concise summary of what you are doing now.
+- Keep lastThoughtSummary under 120 characters. It must be a user-visible activity summary, not hidden reasoning.
+- Use set_progress with activeFiles, pendingFiles, completedFiles, reviewedFiles, and a short message as you move through files.
 
 Do not hand-write review thread JSON unless the tools are unavailable.
 

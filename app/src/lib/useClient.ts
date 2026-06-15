@@ -78,6 +78,10 @@ export const useClient = () => {
     return window.diffuse.coreRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
   };
 
+  const getReviewAgentStates = async (sessionId: string): Promise<ReviewAgentState[]> => {
+    return window.diffuse.coreRequest('getReviewAgentStates', { sessionId });
+  };
+
   const getReviewRuns = async (sessionId: string): Promise<ReviewRun[]> => {
     return window.diffuse.coreRequest('getReviewRuns', { sessionId });
   };
@@ -118,13 +122,14 @@ export const useClient = () => {
     await window.diffuse.stopReviewAgent();
   };
 
-  const chatWithReviewAgent = async (repositoryRoot: string, sessionId: string, thread: ReviewThread, question: string, chatMessages: ReviewChatMessage[], userMessageId?: string): Promise<ReviewChatMessage> => {
+  const chatWithReviewAgent = async (repositoryRoot: string, sessionId: string, thread: ReviewThread, question: string, chatMessages: ReviewChatMessage[], userMessageId?: string, responseMessageId?: string): Promise<ReviewChatMessage> => {
     return window.diffuse.chatWithReviewAgent({
       repositoryRoot,
       sessionId,
       thread: plainJson(thread),
       question,
       userMessageId,
+      responseMessageId,
       chatMessages: plainJson(chatMessages),
     });
   };
@@ -153,6 +158,7 @@ export const useClient = () => {
     createReviewSession,
     getReviewProgress,
     saveReviewProgress,
+    getReviewAgentStates,
     saveReviewAgentState,
     getReviewRuns,
     recoverStaleReviewRuns,

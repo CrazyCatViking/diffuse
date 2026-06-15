@@ -1,5 +1,5 @@
 <template>
-  <section class="review-box" :class="{ resolved: entry.kind === 'thread' && entry.thread.status === 'resolved' }">
+  <section class="review-box" :class="{ resolved: entry.kind === 'thread' && entry.thread.status === 'resolved', chat: entry.kind === 'chat' || entry.kind === 'draft' && entry.mode === 'chat' }">
     <div v-if="entry.kind === 'thread'" class="review-box-header">
       <span v-if="entry.thread.status === 'resolved'" class="resolved-label">Resolved</span>
       <span v-else class="thread-label">Thread</span>
@@ -11,12 +11,12 @@
       </div>
     </div>
 
-    <form v-if="entry.kind === 'draft'" class="comment-composer" @submit.prevent="emit('submit')">
+    <form v-if="entry.kind === 'draft'" class="comment-composer" @submit.prevent="submitDraft">
       <div class="composer-author">You</div>
-      <textarea :value="draftBody" placeholder="Add a review comment" @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)" />
+      <textarea :value="draftBody" :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'" @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)" />
       <div class="composer-actions">
         <button type="button" @click="emit('cancel')">Cancel</button>
-        <button type="submit" :disabled="draftBody.trim().length === 0">Comment</button>
+        <button type="submit" :disabled="draftBody.trim().length === 0 || agentResponding">{{ entry.mode === 'chat' ? 'Ask AI' : 'Comment' }}</button>
       </div>
     </form>
 
@@ -35,12 +35,13 @@
           class="reply-input"
           rows="1"
           placeholder="Reply or ask an agent..."
+          :disabled="agentResponding"
           @input="resizeReplyTextarea"
           @keydown.enter.exact.prevent="submitReply"
         />
         <div class="reply-actions">
-          <button type="button" :disabled="replyBody.trim().length === 0" @click="submitChat">Ask AI</button>
-          <button type="submit" :disabled="replyBody.trim().length === 0">Send</button>
+          <button type="button" :disabled="replyBody.trim().length === 0 || agentResponding" @click="submitChat">Ask AI</button>
+          <button type="submit" :disabled="replyBody.trim().length === 0 || agentResponding">Send</button>
         </div>
       </form>
     </article>
@@ -55,23 +56,31 @@ export type InlineReviewEntry = {
   kind: 'draft';
   key: string;
   anchor: ReviewAnchor;
+  mode: 'comment' | 'chat';
 } | {
   kind: 'thread';
   key: string;
   anchor: ReviewAnchor;
   thread: ReviewThread;
+} | {
+  kind: 'chat';
+  key: string;
+  anchor: ReviewAnchor;
+  chatThreadId: string;
 };
 
 const props = defineProps<{
   entry: InlineReviewEntry
   draftBody: string
   chatMessages?: ReviewChatMessage[]
+  agentResponding?: boolean
   error?: string
 }>();
 
 const emit = defineEmits<{
   'update:draftBody': [value: string]
   submit: []
+  submitChatDraft: []
   cancel: []
   reply: [payload: { thread: ReviewThread; body: string }]
   chat: [payload: { thread: ReviewThread; body: string }]
@@ -82,11 +91,18 @@ const emit = defineEmits<{
 
 const replyBody = ref('');
 const replyTextareaRef = ref<HTMLTextAreaElement | null>(null);
+const agentResponding = computed(() => props.agentResponding ?? false);
+
+const submitDraft = () => {
+  if (props.entry.kind !== 'draft') return;
+  if (props.entry.mode === 'chat') emit('submitChatDraft');
+  else emit('submit');
+};
 
 const submitReply = () => {
   if (props.entry.kind !== 'thread') return;
   const body = replyBody.value.trim();
-  if (!body) return;
+  if (!body || agentResponding.value) return;
   emit('reply', { thread: props.entry.thread, body });
   replyBody.value = '';
   resizeReplyTextarea();
@@ -95,21 +111,20 @@ const submitReply = () => {
 const submitChat = () => {
   if (props.entry.kind !== 'thread') return;
   const body = replyBody.value.trim();
-  if (!body) return;
+  if (!body || agentResponding.value) return;
   emit('chat', { thread: props.entry.thread, body });
   replyBody.value = '';
   resizeReplyTextarea();
 };
 
 const timelineMessages = computed(() => {
-  if (props.entry.kind !== 'thread') return [];
-  const threadMessages = props.entry.thread.messages.map((message) => ({
+  const threadMessages = props.entry.kind === 'thread' ? props.entry.thread.messages.map((message) => ({
     id: message.id,
     kind: 'thread' as const,
     author: authorName(message.authorId),
     body: message.body,
     createdAt: message.createdAt,
-  }));
+  })) : [];
   const chatMessages = (props.chatMessages ?? []).map((message) => ({
     id: message.id,
     kind: 'chat' as const,
@@ -162,6 +177,11 @@ const formatTime = (value: string) => {
 .review-box.resolved {
   min-height: 72px;
   opacity: 0.78;
+}
+
+.review-box.chat {
+  background: linear-gradient(90deg, rgba(118, 157, 255, 0.14), rgba(17, 23, 34, 0.98) 18px);
+  border-left-color: #769dff;
 }
 
 .review-box-header,

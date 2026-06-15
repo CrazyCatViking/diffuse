@@ -38,7 +38,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { ReviewProgress, ReviewRun, ReviewSession } from '../../lib/protocol';
+import type { ReviewAgentState, ReviewProgress, ReviewRun, ReviewSession } from '../../lib/protocol';
 import Button from '../Button.vue';
 
 const props = defineProps<{
@@ -46,6 +46,7 @@ const props = defineProps<{
   loading: boolean;
   progress: ReviewProgress | null;
   activeRun: ReviewRun | null;
+  activeAgentState: ReviewAgentState | null;
   sessions: ReviewSession[];
   runs: ReviewRun[];
   openThreadCount: number;
@@ -61,12 +62,26 @@ const showHistory = ref(false);
 
 const message = computed(() => {
   if (props.error) return props.error;
+  if (liveAgentMessage.value) return liveAgentMessage.value;
   if (props.activeRun?.message) return props.activeRun.message;
   if (props.progress?.message) return props.progress.message;
   if (props.activeRun) return 'Review agent is running';
   if (!props.enabled) return 'Open a repository with changed files to start a review';
   return `${props.openThreadCount} open review thread${props.openThreadCount === 1 ? '' : 's'}`;
 });
+
+const liveAgentMessage = computed(() => {
+  const agent = props.activeAgentState;
+  if (!agent) return undefined;
+  const summary = agent.lastThoughtSummary?.trim();
+  const file = agent.currentFile?.trim();
+  if (file && summary) return truncateStatus(`${file}: ${summary}`);
+  if (summary) return truncateStatus(summary);
+  if (file) return truncateStatus(`Reviewing ${file}`);
+  return undefined;
+});
+
+const truncateStatus = (value: string) => value.length > 150 ? `${value.slice(0, 147)}...` : value;
 
 const progressText = computed(() => {
   if (!props.progress || props.progress.totalFiles === undefined || props.progress.reviewedFiles === undefined) return undefined;

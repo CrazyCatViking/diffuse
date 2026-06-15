@@ -24,6 +24,7 @@ pub fn register(server: anytype) !void {
     try server.handle("createReviewSession", createReviewSession);
     try server.handle("getReviewProgress", getReviewProgress);
     try server.handle("saveReviewProgress", saveReviewProgress);
+    try server.handle("getReviewAgentStates", getReviewAgentStates);
     try server.handle("saveReviewAgentState", saveReviewAgentState);
     try server.handle("getReviewRuns", getReviewRuns);
     try server.handle("recoverStaleReviewRuns", recoverStaleReviewRuns);
@@ -49,7 +50,7 @@ fn getReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Reques
     const repo = try runtime.session.requireRepo();
     const config_json = try review.readConfig(runtime.allocator, runtime.io, repo.root);
     defer runtime.allocator.free(config_json);
-    try writer.writeAll(config_json);
+    try writeCompactJson(runtime.allocator, writer, config_json);
 }
 
 fn saveReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -75,7 +76,7 @@ fn getActiveReviewSession(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc
     const session_json = try review.getActiveSession(runtime.allocator, runtime.io, repo.root);
     defer if (session_json) |json| runtime.allocator.free(json);
 
-    if (session_json) |json| try writer.writeAll(json) else try writer.writeAll("null");
+    if (session_json) |json| try writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("null");
 }
 
 fn createReviewSession(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -101,7 +102,7 @@ fn listReviewSessions(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Req
     const repo = try runtime.session.requireRepo();
     const sessions_json = try review.listSessions(runtime.allocator, runtime.io, repo.root);
     defer runtime.allocator.free(sessions_json);
-    try writer.writeAll(sessions_json);
+    try writeCompactJson(runtime.allocator, writer, sessions_json);
 }
 
 fn getReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -114,7 +115,7 @@ fn getReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_rp
     const progress_json = try review.readProgress(runtime.allocator, runtime.io, repo.root, session_id);
     defer if (progress_json) |json| runtime.allocator.free(json);
 
-    if (progress_json) |json| try writer.writeAll(json) else try writer.writeAll("null");
+    if (progress_json) |json| try writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("null");
 }
 
 fn saveReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -150,6 +151,18 @@ fn saveReviewAgentState(runtime: *Runtime, writer: *std.Io.Writer, request: json
     try writer.writeAll(saved);
 }
 
+fn getReviewAgentStates(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const agents_json = try review.listAgentStates(runtime.allocator, runtime.io, repo.root, session_id);
+    defer runtime.allocator.free(agents_json);
+    try writeCompactJson(runtime.allocator, writer, agents_json);
+}
+
 fn getReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try json_rpc.getStringParam(request, "sessionId");
 
@@ -159,7 +172,7 @@ fn getReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Re
     const repo = try runtime.session.requireRepo();
     const runs_json = try review.listRuns(runtime.allocator, runtime.io, repo.root, session_id);
     defer runtime.allocator.free(runs_json);
-    try writer.writeAll(runs_json);
+    try writeCompactJson(runtime.allocator, writer, runs_json);
 }
 
 fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -242,7 +255,7 @@ fn getReviewThreads(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
     const repo = try runtime.session.requireRepo();
     const threads_json = try review.listThreads(runtime.allocator, runtime.io, repo.root, session_id);
     defer runtime.allocator.free(threads_json);
-    try writer.writeAll(threads_json);
+    try writeCompactJson(runtime.allocator, writer, threads_json);
 }
 
 fn getReviewChatMessages(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -254,7 +267,7 @@ fn getReviewChatMessages(runtime: *Runtime, writer: *std.Io.Writer, request: jso
     const repo = try runtime.session.requireRepo();
     const messages_json = try review.listChatMessages(runtime.allocator, runtime.io, repo.root, session_id);
     defer runtime.allocator.free(messages_json);
-    try writer.writeAll(messages_json);
+    try writeCompactJson(runtime.allocator, writer, messages_json);
 }
 
 fn saveReviewChatMessage(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
@@ -663,6 +676,12 @@ fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8
     errdefer buffer.deinit();
     try std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &buffer.writer);
     return try buffer.toOwnedSlice();
+}
+
+fn writeCompactJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, json: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    try std.json.Stringify.value(parsed.value, .{ .emit_null_optional_fields = false }, writer);
 }
 
 fn getDiffTarget(request: json_rpc.Request) repository.DiffTarget {

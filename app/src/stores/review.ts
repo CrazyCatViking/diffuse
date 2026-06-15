@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewAgentState, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -13,12 +13,15 @@ export const useReviewStore = defineStore('review', () => {
   const sessions = ref<ReviewSession[]>([]);
   const progress = ref<ReviewProgress | null>(null);
   const runs = ref<ReviewRun[]>([]);
+  const agentStates = ref<ReviewAgentState[]>([]);
   const threads = ref<ReviewThread[]>([]);
   const chatMessages = ref<ReviewChatMessage[]>([]);
   const loading = ref(false);
   const error = ref<string>();
   const draftAnchor = ref<ReviewAnchor>();
   const draftFile = ref<ChangedFile>();
+  const draftMode = ref<'comment' | 'chat'>('comment');
+  const pendingAgentChatKeys = ref(new Set<string>());
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
   const activeRun = computed(() => {
@@ -26,6 +29,11 @@ export const useReviewStore = defineStore('review', () => {
       .filter((run) => run.status === 'starting' || run.status === 'planning' || run.status === 'running' || run.status === 'cancelling')
       .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt))[0];
     return active ?? null;
+  });
+  const activeAgentState = computed(() => {
+    const activeRunId = activeRun.value?.id;
+    const states = activeRunId ? agentStates.value.filter((agent) => agent.id === activeRunId) : agentStates.value;
+    return [...states].sort((first, second) => (second.updatedAt ?? '').localeCompare(first.updatedAt ?? ''))[0] ?? null;
   });
 
   const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
@@ -104,8 +112,17 @@ export const useReviewStore = defineStore('review', () => {
     runs.value = await client.getReviewRuns(session.value.id);
   };
 
+  const loadAgentStates = async () => {
+    if (!session.value) {
+      agentStates.value = [];
+      return;
+    }
+
+    agentStates.value = await client.getReviewAgentStates(session.value.id);
+  };
+
   const refreshReviewState = async () => {
-    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadRuns(), loadChatMessages()]);
+    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadRuns(), loadAgentStates(), loadChatMessages()]);
   };
 
   const startAgentReview = async () => {
@@ -141,14 +158,16 @@ export const useReviewStore = defineStore('review', () => {
     }
   };
 
-  const startDraft = (file: ChangedFile, anchor: ReviewAnchor) => {
+  const startDraft = (file: ChangedFile, anchor: ReviewAnchor, mode: 'comment' | 'chat' = 'comment') => {
     draftFile.value = file;
     draftAnchor.value = anchor;
+    draftMode.value = mode;
   };
 
   const cancelDraft = () => {
     draftFile.value = undefined;
     draftAnchor.value = undefined;
+    draftMode.value = 'comment';
   };
 
   const createThread = async (body: string) => {
@@ -271,6 +290,8 @@ export const useReviewStore = defineStore('review', () => {
       selection: thread.anchor,
       threadIds: [thread.id],
     };
+    const chatKey = threadChatKey(thread.id);
+    if (pendingAgentChatKeys.value.has(chatKey)) return false;
     const userMessage: ReviewChatMessage = {
       id: createId('chat'),
       sessionId: session.value.id,
@@ -279,19 +300,86 @@ export const useReviewStore = defineStore('review', () => {
       createdAt: new Date().toISOString(),
       context,
     };
+    const pendingMessage: ReviewChatMessage = {
+      id: createId('chat'),
+      sessionId: session.value.id,
+      role: 'assistant',
+      body: 'Thinking...',
+      createdAt: new Date().toISOString(),
+      provider: 'opencode',
+      context,
+    };
 
     loading.value = true;
     error.value = undefined;
+    pendingAgentChatKeys.value = new Set([...pendingAgentChatKeys.value, chatKey]);
     try {
       const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
-      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== savedUser.id), savedUser].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
-      const assistant = await client.chatWithReviewAgent(repo.repository.root, session.value.id, thread, text, chatMessages.value, savedUser.id);
+      const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
+      chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
+      const assistant = await client.chatWithReviewAgent(repo.repository.root, session.value.id, thread, text, chatMessages.value, savedUser.id, savedPending.id);
       chatMessages.value = [...chatMessages.value.filter((item) => item.id !== assistant.id), assistant].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
       return true;
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     } finally {
+      const nextPending = new Set(pendingAgentChatKeys.value);
+      nextPending.delete(chatKey);
+      pendingAgentChatKeys.value = nextPending;
+      loading.value = false;
+    }
+  };
+
+  const askAgentAtDraft = async (body: string) => {
+    if (!repo.repository) return false;
+    if (!session.value) await ensureSession();
+    if (!session.value || !draftFile.value || !draftAnchor.value) return false;
+    const text = body.trim();
+    if (!text) return false;
+
+    const chatThreadId = selectionChatThreadId(draftFile.value.id, draftAnchor.value);
+    const context: ReviewChatMessage['context'] = {
+      fileId: draftFile.value.id,
+      selection: draftAnchor.value,
+      threadIds: [chatThreadId],
+    };
+    if (pendingAgentChatKeys.value.has(chatThreadId)) return false;
+
+    const now = new Date().toISOString();
+    const pseudoThread: ReviewThread = {
+      id: chatThreadId,
+      sessionId: session.value.id,
+      fileId: draftFile.value.id,
+      oldPath: draftFile.value.oldPath ?? undefined,
+      newPath: draftFile.value.newPath ?? undefined,
+      anchor: draftAnchor.value,
+      status: 'open',
+      createdAt: now,
+      updatedAt: now,
+      messages: [{ id: createId('msg'), authorId: humanParticipantId, body: text, createdAt: now }],
+    };
+    const userMessage: ReviewChatMessage = { id: createId('chat'), sessionId: session.value.id, role: 'user', body: text, createdAt: now, context };
+    const pendingMessage: ReviewChatMessage = { id: createId('chat'), sessionId: session.value.id, role: 'assistant', body: 'Thinking...', createdAt: new Date().toISOString(), provider: 'opencode', context };
+
+    loading.value = true;
+    error.value = undefined;
+    pendingAgentChatKeys.value = new Set([...pendingAgentChatKeys.value, chatThreadId]);
+    try {
+      const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
+      const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
+      chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
+      cancelDraft();
+      const assistant = await client.chatWithReviewAgent(repo.repository.root, session.value.id, pseudoThread, text, chatMessages.value, savedUser.id, savedPending.id);
+      chatMessages.value = upsertChatMessages(chatMessages.value, [assistant]);
+      return true;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      return false;
+    } finally {
+      const nextPending = new Set(pendingAgentChatKeys.value);
+      nextPending.delete(chatThreadId);
+      pendingAgentChatKeys.value = nextPending;
       loading.value = false;
     }
   };
@@ -307,8 +395,10 @@ export const useReviewStore = defineStore('review', () => {
     sessions.value = [];
     progress.value = null;
     runs.value = [];
+    agentStates.value = [];
     threads.value = [];
     chatMessages.value = [];
+    pendingAgentChatKeys.value = new Set();
     error.value = undefined;
     cancelDraft();
   };
@@ -318,6 +408,8 @@ export const useReviewStore = defineStore('review', () => {
     sessions,
     progress,
     runs,
+    agentStates,
+    activeAgentState,
     chatMessages,
     activeRun,
     threads,
@@ -326,10 +418,13 @@ export const useReviewStore = defineStore('review', () => {
     error,
     draftAnchor,
     draftFile,
+    draftMode,
+    pendingAgentChatKeys,
     ensureSession,
     loadSessions,
     loadProgress,
     loadRuns,
+    loadAgentStates,
     loadChatMessages,
     refreshReviewState,
     startAgentReview,
@@ -343,6 +438,7 @@ export const useReviewStore = defineStore('review', () => {
     reopenThread,
     saveChatMessage,
     askAgentInThread,
+    askAgentAtDraft,
     threadCountForAnchor,
     clear,
   };
@@ -361,6 +457,18 @@ const newSession = (repositoryRoot: string, headAtCreation: string, target: Diff
     status: 'active',
     participants: [{ id: humanParticipantId, kind: 'human', displayName: 'You' }],
   };
+};
+
+const threadChatKey = (threadId: string) => threadId;
+
+const selectionChatThreadId = (fileId: string, anchor: ReviewAnchor) => {
+  return `chat:${fileId}:${anchor.side}:${anchor.startLine}:${anchor.endLine}:${anchor.startColumn ?? ''}:${anchor.endColumn ?? ''}`;
+};
+
+const upsertChatMessages = (current: ReviewChatMessage[], messages: ReviewChatMessage[]) => {
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of messages) byId.set(message.id, message);
+  return [...byId.values()].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
 };
 
 const createId = (prefix: string) => {

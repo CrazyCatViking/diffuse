@@ -55,7 +55,7 @@
               />
               <div v-else-if="entry.reviewRow" class="inline-review-row synced-split" :class="entry.reviewRow.anchor.side">
                 <div class="review-cell">
-                  <InlineReviewBox :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+                  <InlineReviewBox :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :agent-responding="agentRespondingForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @submit-chat-draft="submitChatDraft" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
                 </div>
               </div>
             </template>
@@ -74,13 +74,16 @@
                 @comment="startLineComment(entry.fileId, $event)"
                 @toggle-comments="toggleComments"
               />
-              <InlineReviewBox v-else-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
+              <InlineReviewBox v-else-if="entry.reviewRow" :entry="entry.reviewRow" v-model:draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry.reviewRow)" :agent-responding="agentRespondingForEntry(entry.reviewRow)" :error="review.error" @submit="submitComment" @submit-chat-draft="submitChatDraft" @cancel="cancelDraft" @reply="addReply" @chat="askAiInThread" @collapse="collapseThread" @resolve="resolveThread" @reopen="reopenThread" />
             </template>
           </div>
         </div>
         <div v-if="selectionDraft" class="selection-toolbar" :style="selectionBubbleStyle">
           <button type="button" title="Comment on selection" aria-label="Comment on selection" @pointerdown.prevent.stop="startSelectionComment">
             <span class="comment-icon" aria-hidden="true" />
+          </button>
+          <button type="button" title="Ask AI about selection" aria-label="Ask AI about selection" @pointerdown.prevent.stop="startSelectionChat">
+            <span class="ai-icon" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -275,6 +278,7 @@ const estimateFolderItemSize = (item?: FolderVirtualItem) => {
   if (!item.item) return 24;
   if (item.item.kind === 'draft') return 220;
   if (item.item.kind === 'thread') return 150;
+  if (item.item.kind === 'chat') return 150;
   return item.item.row.kind === 'hunk' ? 28 : 24;
 };
 
@@ -544,8 +548,10 @@ const reviewEntriesByEndLine = (fileId: string) => {
     addEntry({ kind: 'thread', key: `thread:${thread.id}`, anchor: thread.anchor, thread });
   }
 
+  for (const chat of selectionChatEntries(fileId)) addEntry(chat);
+
   if (review.draftAnchor && review.draftFile?.id === fileId) {
-    addEntry({ kind: 'draft', key: `draft:${review.draftAnchor.side}:${review.draftAnchor.startLine}:${review.draftAnchor.endLine}`, anchor: review.draftAnchor });
+    addEntry({ kind: 'draft', key: `draft:${review.draftMode}:${review.draftAnchor.side}:${review.draftAnchor.startLine}:${review.draftAnchor.endLine}`, anchor: review.draftAnchor, mode: review.draftMode });
   }
 
   return entries;
@@ -556,9 +562,30 @@ const displayDiffRow = (item?: DisplayRow) => item?.kind === 'diff' ? item.row :
 const displayReviewRow = (item?: DisplayRow): InlineReviewEntry | undefined => item && item.kind !== 'diff' ? item : undefined;
 
 const chatMessagesForEntry = (entry: InlineReviewEntry) => {
-  if (entry.kind !== 'thread') return [];
-  return review.chatMessages.filter((message) => message.context?.threadIds?.includes(entry.thread.id));
+  if (entry.kind === 'draft') return [];
+  const threadId = entry.kind === 'thread' ? entry.thread.id : entry.chatThreadId;
+  return review.chatMessages.filter((message) => message.context?.threadIds?.includes(threadId));
 };
+
+const agentRespondingForEntry = (entry: InlineReviewEntry) => {
+  if (entry.kind === 'draft') return entry.mode === 'chat' && Boolean(review.draftFile && review.draftAnchor && review.pendingAgentChatKeys.has(selectionChatThreadId(review.draftFile.id, review.draftAnchor)));
+  return review.pendingAgentChatKeys.has(entry.kind === 'thread' ? entry.thread.id : entry.chatThreadId);
+};
+
+const selectionChatEntries = (fileId: string): InlineReviewEntry[] => {
+  const seen = new Set<string>();
+  const result: InlineReviewEntry[] = [];
+  for (const message of review.chatMessages) {
+    const threadId = message.context?.threadIds?.[0];
+    const anchor = message.context?.selection;
+    if (!threadId?.startsWith('chat:') || !anchor || message.context?.fileId !== fileId || seen.has(threadId)) continue;
+    seen.add(threadId);
+    result.push({ kind: 'chat', key: threadId, anchor, chatThreadId: threadId });
+  }
+  return result;
+};
+
+const selectionChatThreadId = (fileId: string, anchor: ReviewAnchor) => `chat:${fileId}:${anchor.side}:${anchor.startLine}:${anchor.endLine}:${anchor.startColumn ?? ''}:${anchor.endColumn ?? ''}`;
 
 const fileThreads = (fileId: string) => review.threads.filter((thread) => thread.fileId === fileId);
 
@@ -739,12 +766,26 @@ const positionSelectionToolbar = (clientX: number, clientY: number) => {
 const startSelectionComment = () => {
   if (!selectionDraft.value) return;
   draftBody.value = '';
-  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor);
+  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor, 'comment');
+  selectionDraft.value = undefined;
+};
+
+const startSelectionChat = () => {
+  if (!selectionDraft.value) return;
+  draftBody.value = '';
+  review.startDraft(selectionDraft.value.file, selectionDraft.value.anchor, 'chat');
   selectionDraft.value = undefined;
 };
 
 const submitComment = async () => {
   const saved = await review.createThread(draftBody.value);
+  if (!saved) return;
+  draftBody.value = '';
+  clearNativeSelection();
+};
+
+const submitChatDraft = async () => {
+  const saved = await review.askAgentAtDraft(draftBody.value);
   if (!saved) return;
   draftBody.value = '';
   clearNativeSelection();
@@ -1055,6 +1096,40 @@ onBeforeUnmount(() => {
     border-right: 2px solid #f0c36a;
     border-bottom: 2px solid #f0c36a;
     content: "";
+  }
+}
+
+.ai-icon {
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  width: 12px;
+  height: 12px;
+  color: #8fb3ff;
+
+  &::before,
+  &::after {
+    position: absolute;
+    content: "";
+    background: currentColor;
+  }
+
+  &::before {
+    top: 0;
+    left: 5px;
+    width: 2px;
+    height: 12px;
+    border-radius: 999px;
+    box-shadow: 0 0 8px rgba(143, 179, 255, 0.55);
+  }
+
+  &::after {
+    top: 5px;
+    left: 0;
+    width: 12px;
+    height: 2px;
+    border-radius: 999px;
+    transform: rotate(45deg);
   }
 }
 
