@@ -33,19 +33,47 @@ const enable_direct_highlighter = true;
 var temp_file_counter: usize = 0;
 
 const Registry = struct {
-    source: []const u8,
-    sourceLicense: []const u8,
-    snapshotDate: []const u8,
+    schemaVersion: ?u32 = null,
+    generatedAt: ?[]const u8 = null,
+    source: ?std.json.Value = null,
+    sourceLicense: ?[]const u8 = null,
+    snapshotDate: ?[]const u8 = null,
     languages: []const RegistryLanguage,
+};
+
+const RegistryBuild = struct {
+    generate: bool = false,
+    generateRequiresNpm: bool = false,
+    useMakefile: bool = false,
+    cxxStandard: ?[]const u8 = null,
+    files: ?[]const []const u8 = null,
+};
+
+const RegistryQueryFile = struct {
+    path: []const u8,
+    sha256: ?[]const u8 = null,
+};
+
+const RegistryQueries = struct {
+    highlights: ?RegistryQueryFile = null,
+    injections: ?RegistryQueryFile = null,
 };
 
 const RegistryLanguage = struct {
     id: []const u8,
     url: ?[]const u8 = null,
     revision: ?[]const u8 = null,
+    branch: ?[]const u8 = null,
     location: ?[]const u8 = null,
+    filetypes: ?[]const []const u8 = null,
+    filenames: ?[]const []const u8 = null,
+    aliases: ?[]const []const u8 = null,
+    symbol: ?[]const u8 = null,
     queryOnly: bool = false,
+    experimental: bool = false,
     generate: bool = false,
+    build: ?RegistryBuild = null,
+    queries: ?RegistryQueries = null,
     requires: ?[]const []const u8 = null,
 };
 
@@ -53,7 +81,14 @@ const OwnedRegistryLanguage = struct {
     id: []const u8,
     url: ?[]const u8 = null,
     revision: ?[]const u8 = null,
+    branch: ?[]const u8 = null,
     location: ?[]const u8 = null,
+    filetypes: []const []const u8 = &.{},
+    filenames: []const []const u8 = &.{},
+    aliases: []const []const u8 = &.{},
+    symbol: ?[]const u8 = null,
+    highlights_query_source: ?[]const u8 = null,
+    injections_query_source: ?[]const u8 = null,
     requires: []const []const u8 = &.{},
     queryOnly: bool = false,
     generate: bool = false,
@@ -62,7 +97,17 @@ const OwnedRegistryLanguage = struct {
         allocator.free(self.id);
         if (self.url) |value| allocator.free(value);
         if (self.revision) |value| allocator.free(value);
+        if (self.branch) |value| allocator.free(value);
         if (self.location) |value| allocator.free(value);
+        for (self.filetypes) |value| allocator.free(value);
+        allocator.free(self.filetypes);
+        for (self.filenames) |value| allocator.free(value);
+        allocator.free(self.filenames);
+        for (self.aliases) |value| allocator.free(value);
+        allocator.free(self.aliases);
+        if (self.symbol) |value| allocator.free(value);
+        if (self.highlights_query_source) |value| allocator.free(value);
+        if (self.injections_query_source) |value| allocator.free(value);
         for (self.requires) |value| allocator.free(value);
         allocator.free(self.requires);
     }
@@ -73,6 +118,7 @@ pub const InstallResult = struct {
     installed: bool,
     grammarPath: ?[]const u8 = null,
     highlightsQueryPath: ?[]const u8 = null,
+    highlightsInstalled: bool = false,
     message: ?[]const u8 = null,
 
     pub fn deinit(self: *InstallResult, allocator: std.mem.Allocator) void {
@@ -94,6 +140,17 @@ pub const UninstallResult = struct {
     }
 };
 
+pub const RegistrySyncResult = struct {
+    path: []const u8,
+    synced: bool,
+    message: ?[]const u8 = null,
+
+    pub fn deinit(self: *RegistrySyncResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        if (self.message) |value| allocator.free(value);
+    }
+};
+
 pub const GrammarInfo = struct {
     id: []const u8,
     url: ?[]const u8 = null,
@@ -102,6 +159,7 @@ pub const GrammarInfo = struct {
     installed: bool,
     grammarPath: ?[]const u8 = null,
     highlightsQueryPath: ?[]const u8 = null,
+    highlightsInstalled: bool = false,
 
     pub fn deinit(self: *GrammarInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -119,6 +177,7 @@ pub const SyntaxStatus = struct {
     grammarInstalled: bool = false,
     grammarPath: ?[]const u8 = null,
     highlightsQueryPath: ?[]const u8 = null,
+    highlightsInstalled: bool = false,
     missingReason: ?[]const u8 = null,
 
     pub fn deinit(self: *SyntaxStatus, allocator: std.mem.Allocator) void {
@@ -311,7 +370,7 @@ pub fn hasInjections(language: []const u8) bool {
 
 pub fn installGrammar(allocator: std.mem.Allocator, io: std.Io, language: []const u8, configured_grammar_root: ?[]const u8, progress: anytype) !InstallResult {
     try progress.emit("Resolving grammar metadata");
-    var entry = try registryEntry(allocator, language) orelse {
+    var entry = try registryEntry(allocator, io, configured_grammar_root, language) orelse {
         return .{
             .language = try allocator.dupe(u8, language),
             .installed = false,
@@ -357,7 +416,8 @@ pub fn installGrammar(allocator: std.mem.Allocator, io: std.Io, language: []cons
         return failedInstall(allocator, language, message);
     }
     try progress.emit("Checking out grammar revision");
-    if (try run(allocator, io, "checkout grammar revision", &.{ "git", "-C", source_dir, "checkout", "--detach", entry.revision.? })) |message| {
+    const checkout_ref = entry.revision orelse entry.branch orelse "HEAD";
+    if (try run(allocator, io, "checkout grammar revision", &.{ "git", "-C", source_dir, "checkout", "--detach", checkout_ref })) |message| {
         allocator.free(parser_path);
         allocator.free(query_path);
         return failedInstall(allocator, language, message);
@@ -380,26 +440,24 @@ pub fn installGrammar(allocator: std.mem.Allocator, io: std.Io, language: []cons
         return failedInstall(allocator, language, message);
     }
     try progress.emit("Installing highlight query");
-    installHighlightsQuery(io, allocator, source_dir, parser_dir, language, query_path) catch |err| {
-        allocator.free(parser_path);
-        allocator.free(query_path);
-        return failedInstallFmt(allocator, language, "install highlights query failed: {s}", .{@errorName(err)});
-    };
+    const highlights_installed = installHighlightsQuery(io, allocator, source_dir, parser_dir, language, entry.highlights_query_source, query_path) catch false;
+    if (!highlights_installed) allocator.free(query_path);
     try progress.emit("Installing injection query");
-    try installInjectionsQuery(io, allocator, language, injections_query_path);
+    try installInjectionsQuery(io, allocator, language, entry.injections_query_source, injections_query_path);
     try progress.emit("Grammar installed");
 
     return .{
         .language = try allocator.dupe(u8, language),
         .installed = true,
         .grammarPath = parser_path,
-        .highlightsQueryPath = query_path,
-        .message = try allocator.dupe(u8, "installed"),
+        .highlightsQueryPath = if (highlights_installed) query_path else null,
+        .highlightsInstalled = highlights_installed,
+        .message = try allocator.dupe(u8, if (highlights_installed) "installed" else "installed-without-highlights"),
     };
 }
 
 pub fn uninstallGrammar(allocator: std.mem.Allocator, io: std.Io, language: []const u8, configured_grammar_root: ?[]const u8) !UninstallResult {
-    var entry = try registryEntry(allocator, language) orelse {
+    var entry = try registryEntry(allocator, io, configured_grammar_root, language) orelse {
         return .{
             .language = try allocator.dupe(u8, language),
             .uninstalled = false,
@@ -438,7 +496,9 @@ pub fn uninstallGrammar(allocator: std.mem.Allocator, io: std.Io, language: []co
 }
 
 pub fn listGrammars(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8) ![]GrammarInfo {
-    var parsed = try std.json.parseFromSlice(Registry, allocator, registry_json, .{ .ignore_unknown_fields = true });
+    const registry_source = try registryJsonSource(allocator, io, configured_grammar_root);
+    defer if (registry_source.owned) |value| allocator.free(value);
+    var parsed = try std.json.parseFromSlice(Registry, allocator, registry_source.source, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     const root = try grammarRoot(allocator, configured_grammar_root);
@@ -469,16 +529,21 @@ pub fn listGrammars(allocator: std.mem.Allocator, io: std.Io, configured_grammar
         var query_path: ?[]u8 = try std.fs.path.join(allocator, &.{ language_dir, "highlights.scm" });
         errdefer if (query_path) |path| allocator.free(path);
 
-        if (fileExists(io, parser_path.?) and fileExists(io, query_path.?)) {
+        if (fileExists(io, parser_path.?)) {
             grammar.installed = true;
             grammar.grammarPath = parser_path.?;
-            grammar.highlightsQueryPath = query_path.?;
+            if (fileExists(io, query_path.?)) {
+                grammar.highlightsQueryPath = query_path.?;
+                grammar.highlightsInstalled = true;
+                query_path = null;
+            }
             parser_path = null;
-            query_path = null;
         } else {
             allocator.free(parser_path.?);
-            allocator.free(query_path.?);
             parser_path = null;
+        }
+        if (query_path) |path_value| {
+            allocator.free(path_value);
             query_path = null;
         }
 
@@ -486,6 +551,37 @@ pub fn listGrammars(allocator: std.mem.Allocator, io: std.Io, configured_grammar
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+pub fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8, git_url: ?[]const u8) !RegistrySyncResult {
+    const root = try treeSitterRegistryRoot(allocator, configured_grammar_root);
+    errdefer allocator.free(root);
+    const registry_path = try std.fs.path.join(allocator, &.{ root, "registry.json" });
+    defer allocator.free(registry_path);
+    if (git_url == null) {
+        if (fileExists(io, registry_path)) {
+            return .{ .path = root, .synced = true, .message = try allocator.dupe(u8, "using-local-registry") };
+        }
+        return .{ .path = root, .synced = false, .message = try allocator.dupe(u8, "registry-git-url-required") };
+    }
+
+    const parent = std.fs.path.dirname(root) orelse root;
+    try std.Io.Dir.createDirPath(.cwd(), io, parent);
+
+    const git_dir = try std.fs.path.join(allocator, &.{ root, ".git" });
+    defer allocator.free(git_dir);
+    if (fileExists(io, git_dir)) {
+        if (try run(allocator, io, "update tree-sitter registry", &.{ "git", "-C", root, "pull", "--ff-only" })) |message| {
+            return .{ .path = root, .synced = false, .message = message };
+        }
+    } else {
+        if (fileExists(io, root)) try std.Io.Dir.deleteTree(.cwd(), io, root);
+        if (try run(allocator, io, "clone tree-sitter registry", &.{ "git", "clone", "--depth", "1", git_url.?, root })) |message| {
+            return .{ .path = root, .synced = false, .message = message };
+        }
+    }
+
+    return .{ .path = root, .synced = true, .message = try allocator.dupe(u8, "synced") };
 }
 
 fn buildSourceMap(allocator: std.mem.Allocator, rows: anytype, side: Side) !SourceMap {
@@ -690,7 +786,9 @@ fn highlightSourceCli(allocator: std.mem.Allocator, io: std.Io, language: []cons
 
 fn highlightInjectionsDirect(allocator: std.mem.Allocator, io: std.Io, cache: ?*Cache, parent_language: []const u8, grammar_path: []const u8, ts_language: *const ts.Language, root_node: ts.Node, source_map: SourceMap, depth: u8) ![]LineSpan {
     _ = ts_language;
-    const cached = try directQuery(allocator, io, cache, parent_language, grammar_path, "", .injections);
+    const injections_query_path = try installedQueryPath(allocator, grammar_path, "injections.scm");
+    defer allocator.free(injections_query_path);
+    const cached = try directQuery(allocator, io, cache, parent_language, grammar_path, injections_query_path, .injections);
     const query = cached.query;
     defer if (cache == null) query.destroy();
 
@@ -943,7 +1041,9 @@ fn asciiIsUpper(char: u8) bool {
 }
 
 fn highlightInjections(allocator: std.mem.Allocator, io: std.Io, language: []const u8, grammar_path: []const u8, source_map: SourceMap, source_path: []const u8, depth: u8) anyerror![]LineSpan {
-    if (vendoredInjectionsQuery(language) == null) return allocator.alloc(LineSpan, 0);
+    const installed_injections_path = try installedQueryPath(allocator, grammar_path, "injections.scm");
+    defer allocator.free(installed_injections_path);
+    if (vendoredInjectionsQuery(language) == null and !fileExists(io, installed_injections_path)) return allocator.alloc(LineSpan, 0);
     const grammar_root = try grammarRootFromParserPath(allocator, grammar_path);
     defer allocator.free(grammar_root);
 
@@ -952,10 +1052,9 @@ fn highlightInjections(allocator: std.mem.Allocator, io: std.Io, language: []con
     defer allocator.free(query_path);
     defer std.Io.Dir.deleteFile(.cwd(), io, query_path) catch {};
 
-    var resolved_query = std.ArrayList(u8).empty;
-    defer resolved_query.deinit(allocator);
-    try appendVendoredInjectionQuery(&resolved_query, allocator, language, 0);
-    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = query_path, .data = resolved_query.items });
+    const resolved_query = try resolvedRuntimeQuery(allocator, io, language, installed_injections_path, .injections);
+    defer allocator.free(resolved_query);
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = query_path, .data = resolved_query });
 
     const output = try runOutput(allocator, io, &.{ "tree-sitter", "query", "--captures", "--lib-path", grammar_path, "--lang-name", language, query_path, source_path });
     defer allocator.free(output);
@@ -1407,9 +1506,10 @@ fn failedInstallFmt(allocator: std.mem.Allocator, language: []const u8, comptime
 }
 
 pub fn detectStatus(allocator: std.mem.Allocator, io: std.Io, path: []const u8, configured_grammar_root: ?[]const u8) !SyntaxStatus {
-    const language = detectLanguage(path) orelse {
+    const language = try detectLanguage(allocator, io, path, configured_grammar_root) orelse {
         return .{ .missingReason = try allocator.dupe(u8, "unsupported-language") };
     };
+    defer allocator.free(language);
 
     var status = SyntaxStatus{ .language = try allocator.dupe(u8, language) };
     errdefer status.deinit(allocator);
@@ -1432,20 +1532,44 @@ pub fn detectStatus(allocator: std.mem.Allocator, io: std.Io, path: []const u8, 
         return status;
     }
 
-    if (!fileExists(io, query_path)) {
-        allocator.free(parser_path);
-        allocator.free(query_path);
-        status.missingReason = try allocator.dupe(u8, "highlights-query-not-installed");
-        return status;
-    }
-
     status.grammarInstalled = true;
     status.grammarPath = parser_path;
-    status.highlightsQueryPath = query_path;
+    if (fileExists(io, query_path)) {
+        status.highlightsQueryPath = query_path;
+        status.highlightsInstalled = true;
+    } else {
+        allocator.free(query_path);
+        status.missingReason = try allocator.dupe(u8, "highlights-query-not-installed");
+    }
     return status;
 }
 
-fn detectLanguage(path: []const u8) ?[]const u8 {
+fn detectLanguage(allocator: std.mem.Allocator, io: std.Io, path: []const u8, configured_grammar_root: ?[]const u8) !?[]u8 {
+    if (try detectLanguageFromRegistry(allocator, io, path, configured_grammar_root)) |language| return language;
+    if (detectLanguageFallback(path)) |language| return try allocator.dupe(u8, language);
+    return null;
+}
+
+fn detectLanguageFromRegistry(allocator: std.mem.Allocator, io: std.Io, path: []const u8, configured_grammar_root: ?[]const u8) !?[]u8 {
+    const registry_source = try registryJsonSource(allocator, io, configured_grammar_root);
+    defer if (registry_source.owned) |value| allocator.free(value);
+    var parsed = std.json.parseFromSlice(Registry, allocator, registry_source.source, .{ .ignore_unknown_fields = true }) catch return null;
+    defer parsed.deinit();
+
+    const basename = std.fs.path.basename(path);
+    const ext = std.fs.path.extension(path);
+    const filetype = if (ext.len > 0) ext[1..] else "";
+
+    for (parsed.value.languages) |entry| {
+        if (matchesStringSlice(entry.filenames orelse &.{}, basename) or
+            matchesStringSlice(entry.filetypes orelse &.{}, filetype) or
+            matchesStringSlice(entry.aliases orelse &.{}, filetype) or
+            std.mem.eql(u8, entry.id, filetype)) return try allocator.dupe(u8, entry.id);
+    }
+    return null;
+}
+
+fn detectLanguageFallback(path: []const u8) ?[]const u8 {
     const basename = std.fs.path.basename(path);
     if (std.mem.eql(u8, basename, "Dockerfile")) return "dockerfile";
     if (std.mem.eql(u8, basename, "Makefile")) return "make";
@@ -1475,6 +1599,11 @@ fn detectLanguage(path: []const u8) ?[]const u8 {
     return null;
 }
 
+fn matchesStringSlice(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| if (std.mem.eql(u8, value, needle)) return true;
+    return false;
+}
+
 fn grammarRoot(allocator: std.mem.Allocator, configured_grammar_root: ?[]const u8) ![]u8 {
     const root = configured_grammar_root orelse ".diffuse/grammars";
     return allocator.dupe(u8, root);
@@ -1494,46 +1623,130 @@ fn sourcesRoot(allocator: std.mem.Allocator, grammar_root: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &.{ parent, "sources" });
 }
 
-fn registryEntry(allocator: std.mem.Allocator, language: []const u8) !?OwnedRegistryLanguage {
-    var parsed = try std.json.parseFromSlice(Registry, allocator, registry_json, .{ .ignore_unknown_fields = true });
+const RegistryJsonSource = struct {
+    source: []const u8,
+    owned: ?[]u8 = null,
+};
+
+fn registryEntry(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8, language: []const u8) !?OwnedRegistryLanguage {
+    const registry_source = try registryJsonSource(allocator, io, configured_grammar_root);
+    defer if (registry_source.owned) |value| allocator.free(value);
+    var parsed = try std.json.parseFromSlice(Registry, allocator, registry_source.source, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     for (parsed.value.languages) |entry| {
         if (std.mem.eql(u8, entry.id, language)) {
-            return .{
-                .id = try allocator.dupe(u8, entry.id),
-                .url = if (entry.url) |value| try allocator.dupe(u8, value) else null,
-                .revision = if (entry.revision) |value| try allocator.dupe(u8, value) else null,
-                .location = if (entry.location) |value| try allocator.dupe(u8, value) else null,
-                .requires = try dupeStringSlice(allocator, entry.requires orelse &.{}),
-                .queryOnly = entry.queryOnly,
-                .generate = entry.generate,
-            };
+            return try ownedRegistryLanguage(allocator, io, configured_grammar_root, entry);
         }
     }
     return null;
 }
 
-fn installHighlightsQuery(io: std.Io, allocator: std.mem.Allocator, source_dir: []const u8, parser_dir: []const u8, language: []const u8, dest_path: []const u8) !void {
+fn registryJsonSource(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8) !RegistryJsonSource {
+    const root = try treeSitterRegistryRoot(allocator, configured_grammar_root);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "registry.json" });
+    defer allocator.free(path);
+    if (fileExists(io, path)) {
+        const source = try std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(20 * 1024 * 1024));
+        return .{ .source = source, .owned = source };
+    }
+    return .{ .source = registry_json };
+}
+
+fn treeSitterRegistryRoot(allocator: std.mem.Allocator, configured_grammar_root: ?[]const u8) ![]u8 {
+    if (std.c.getenv("DIFFUSE_TREE_SITTER_REGISTRY_DIR")) |value| return try allocator.dupe(u8, std.mem.span(value));
+    const grammar_root = try grammarRoot(allocator, configured_grammar_root);
+    defer allocator.free(grammar_root);
+    const parent = std.fs.path.dirname(grammar_root) orelse grammar_root;
+    return std.fs.path.join(allocator, &.{ parent, "tree-sitter" });
+}
+
+fn ownedRegistryLanguage(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8, entry: RegistryLanguage) !OwnedRegistryLanguage {
+    const build_generate = if (entry.build) |build| build.generate else false;
+    return .{
+        .id = try allocator.dupe(u8, entry.id),
+        .url = if (entry.url) |value| try allocator.dupe(u8, value) else null,
+        .revision = if (entry.revision) |value| try allocator.dupe(u8, value) else null,
+        .branch = if (entry.branch) |value| try allocator.dupe(u8, value) else null,
+        .location = if (entry.location) |value| try allocator.dupe(u8, value) else null,
+        .filetypes = try dupeStringSlice(allocator, entry.filetypes orelse &.{}),
+        .filenames = try dupeStringSlice(allocator, entry.filenames orelse &.{}),
+        .aliases = try dupeStringSlice(allocator, entry.aliases orelse &.{}),
+        .symbol = if (entry.symbol) |value| try allocator.dupe(u8, value) else null,
+        .highlights_query_source = try registryQuerySourcePath(allocator, io, configured_grammar_root, entry, .highlights),
+        .injections_query_source = try registryQuerySourcePath(allocator, io, configured_grammar_root, entry, .injections),
+        .requires = try dupeStringSlice(allocator, entry.requires orelse &.{}),
+        .queryOnly = entry.queryOnly,
+        .generate = entry.generate or build_generate,
+    };
+}
+
+fn registryQuerySourcePath(allocator: std.mem.Allocator, io: std.Io, configured_grammar_root: ?[]const u8, entry: RegistryLanguage, kind: QueryKind) !?[]u8 {
+    const queries = entry.queries orelse return null;
+    const query_file = switch (kind) {
+        .highlights => queries.highlights,
+        .injections => queries.injections,
+    } orelse return null;
+    const root = try treeSitterRegistryRoot(allocator, configured_grammar_root);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, query_file.path });
+    errdefer allocator.free(path);
+    if (!fileExists(io, path)) {
+        allocator.free(path);
+        return null;
+    }
+    if (query_file.sha256) |expected| {
+        const valid = try verifyFileSha256(allocator, io, path, expected);
+        if (!valid) {
+            allocator.free(path);
+            return null;
+        }
+    }
+    return path;
+}
+
+fn verifyFileSha256(allocator: std.mem.Allocator, io: std.Io, path: []const u8, expected: []const u8) !bool {
+    if (expected.len != 64) return false;
+    const source = try std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024));
+    defer allocator.free(source);
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(source, &digest, .{});
+    const actual = std.fmt.bytesToHex(digest, .lower);
+    return std.mem.eql(u8, actual[0..], expected);
+}
+
+fn installHighlightsQuery(io: std.Io, allocator: std.mem.Allocator, source_dir: []const u8, parser_dir: []const u8, language: []const u8, registry_query_source: ?[]const u8, dest_path: []const u8) !bool {
     var query = std.ArrayList(u8).empty;
     defer query.deinit(allocator);
 
-    if (vendoredHighlightsQuery(language) != null) {
+    if (registry_query_source) |path| {
+        const source = try std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(source);
+        try appendQuery(&query, allocator, language, source);
+    } else if (vendoredHighlightsQuery(language) != null) {
         try appendVendoredQuery(&query, allocator, language, 0);
     } else {
-        const language_query = try readSourceQuery(allocator, io, source_dir, parser_dir, language) orelse return error.HighlightsQueryNotFound;
+        const language_query = try readSourceQuery(allocator, io, source_dir, parser_dir, language) orelse return false;
         defer allocator.free(language_query);
         try appendQuery(&query, allocator, language, language_query);
     }
 
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = dest_path, .data = query.items });
+    return true;
 }
 
-fn installInjectionsQuery(io: std.Io, allocator: std.mem.Allocator, language: []const u8, dest_path: []const u8) !void {
-    if (vendoredInjectionsQuery(language) == null) return;
+fn installInjectionsQuery(io: std.Io, allocator: std.mem.Allocator, language: []const u8, registry_query_source: ?[]const u8, dest_path: []const u8) !void {
+    if (registry_query_source == null and vendoredInjectionsQuery(language) == null) return;
     var query = std.ArrayList(u8).empty;
     defer query.deinit(allocator);
-    try appendVendoredInjectionQuery(&query, allocator, language, 0);
+    if (registry_query_source) |path| {
+        const source = try std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(source);
+        try appendQuery(&query, allocator, language, source);
+    } else {
+        try appendVendoredInjectionQuery(&query, allocator, language, 0);
+    }
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = dest_path, .data = query.items });
 }
 
@@ -1692,9 +1905,18 @@ fn resolvedRuntimeQuery(allocator: std.mem.Allocator, io: std.Io, language: []co
         },
         .injections => if (vendoredInjectionsQuery(language) != null) {
             try appendVendoredInjectionQuery(&query, allocator, language, 0);
+        } else if (query_path.len > 0 and fileExists(io, query_path)) {
+            const source = try std.Io.Dir.readFileAlloc(.cwd(), io, query_path, allocator, .limited(1024 * 1024));
+            defer allocator.free(source);
+            try appendSanitizedQuerySource(&query, allocator, source);
         },
     }
     return query.toOwnedSlice(allocator);
+}
+
+fn installedQueryPath(allocator: std.mem.Allocator, grammar_path: []const u8, filename: []const u8) ![]u8 {
+    const language_dir = std.fs.path.dirname(grammar_path) orelse return error.InvalidParserPath;
+    return std.fs.path.join(allocator, &.{ language_dir, filename });
 }
 
 fn treeSitterSymbolName(allocator: std.mem.Allocator, language: []const u8) ![:0]u8 {

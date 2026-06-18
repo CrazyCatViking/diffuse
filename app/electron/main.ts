@@ -37,6 +37,7 @@ const allowedCoreMethods = new Set([
   'addReviewComment',
   'saveReviewThread',
   'listTreeSitterGrammars',
+  'syncTreeSitterRegistry',
   'installTreeSitterGrammar',
   'uninstallTreeSitterGrammar'
 ]);
@@ -56,6 +57,7 @@ function getCore(): CoreRpcClient {
 
 function requestTimeoutMs(method: string): number {
   if (method === 'installTreeSitterGrammar') return 5 * 60_000;
+  if (method === 'syncTreeSitterRegistry') return 2 * 60_000;
   if (method === 'getSyntaxSpans') return 10_000;
   return 30_000;
 }

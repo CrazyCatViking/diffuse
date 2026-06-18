@@ -435,7 +435,7 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
   });
 };
 
-const emptyModel = (): DiffRenderModel => ({ fileId: '', mode: props.viewMode, context: props.contextMode, syntax: { grammarInstalled: false }, rows: [] });
+const emptyModel = (): DiffRenderModel => ({ fileId: '', mode: props.viewMode, context: props.contextMode, syntax: { grammarInstalled: false, highlightsInstalled: false }, rows: [] });
 
 const fileSideKey = (fileId: string, side: SyntaxSide) => `${fileId}:${side}`;
 

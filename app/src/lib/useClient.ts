@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -138,6 +138,10 @@ export const useClient = () => {
     return window.diffuse.coreRequest('listTreeSitterGrammars');
   };
 
+  const syncTreeSitterRegistry = async (gitUrl?: string): Promise<SyncTreeSitterRegistryResult> => {
+    return window.diffuse.coreRequest('syncTreeSitterRegistry', { gitUrl });
+  };
+
   const uninstallTreeSitterGrammar = async (language: string): Promise<UninstallTreeSitterGrammarResult> => {
     return window.diffuse.coreRequest('uninstallTreeSitterGrammar', { language });
   };
@@ -173,6 +177,7 @@ export const useClient = () => {
     chatWithReviewAgent,
     installTreeSitterGrammar,
     listTreeSitterGrammars,
+    syncTreeSitterRegistry,
     uninstallTreeSitterGrammar
   };
 };

@@ -60,6 +60,7 @@ pub const SyntaxStatus = struct {
     grammarInstalled: bool,
     grammarPath: ?[]const u8 = null,
     highlightsQueryPath: ?[]const u8 = null,
+    highlightsInstalled: bool = false,
     missingReason: ?[]const u8 = null,
 };
 
@@ -75,12 +76,19 @@ pub const InstallTreeSitterGrammarResult = struct {
     installed: bool,
     grammarPath: ?[]const u8 = null,
     highlightsQueryPath: ?[]const u8 = null,
+    highlightsInstalled: bool = false,
     message: ?[]const u8 = null,
 };
 
 pub const UninstallTreeSitterGrammarResult = struct {
     language: []const u8,
     uninstalled: bool,
+    message: ?[]const u8 = null,
+};
+
+pub const SyncTreeSitterRegistryResult = struct {
+    path: []const u8,
+    synced: bool,
     message: ?[]const u8 = null,
 };
 
@@ -92,6 +100,7 @@ pub const TreeSitterGrammar = struct {
     installed: bool,
     grammarPath: ?[]const u8 = null,
     highlightsQueryPath: ?[]const u8 = null,
+    highlightsInstalled: bool = false,
 };
 
 pub const DiffRow = struct {
@@ -166,6 +175,7 @@ pub fn syntaxStatus(status: diff.syntax.SyntaxStatus) SyntaxStatus {
         .grammarInstalled = status.grammarInstalled,
         .grammarPath = status.grammarPath,
         .highlightsQueryPath = status.highlightsQueryPath,
+        .highlightsInstalled = status.highlightsInstalled,
         .missingReason = status.missingReason,
     };
 }
@@ -176,6 +186,7 @@ pub fn installTreeSitterGrammarResult(result: diff.syntax.InstallResult) Install
         .installed = result.installed,
         .grammarPath = result.grammarPath,
         .highlightsQueryPath = result.highlightsQueryPath,
+        .highlightsInstalled = result.highlightsInstalled,
         .message = result.message,
     };
 }
@@ -184,6 +195,14 @@ pub fn uninstallTreeSitterGrammarResult(result: diff.syntax.UninstallResult) Uni
     return .{
         .language = result.language,
         .uninstalled = result.uninstalled,
+        .message = result.message,
+    };
+}
+
+pub fn syncTreeSitterRegistryResult(result: diff.syntax.RegistrySyncResult) SyncTreeSitterRegistryResult {
+    return .{
+        .path = result.path,
+        .synced = result.synced,
         .message = result.message,
     };
 }
@@ -197,6 +216,7 @@ pub fn treeSitterGrammar(grammar: diff.syntax.GrammarInfo) TreeSitterGrammar {
         .installed = grammar.installed,
         .grammarPath = grammar.grammarPath,
         .highlightsQueryPath = grammar.highlightsQueryPath,
+        .highlightsInstalled = grammar.highlightsInstalled,
     };
 }
 

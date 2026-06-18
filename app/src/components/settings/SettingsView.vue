@@ -74,6 +74,7 @@
       <div v-else class="installed-list">
         <div v-for="grammar in installedGrammars" :key="grammar.id" class="installed-card">
           <span class="grammar-name">{{ grammar.id }}</span>
+          <span v-if="!grammar.highlightsInstalled" class="badge warning">Highlights missing</span>
           <span class="grammar-path" :title="grammar.grammarPath">{{ grammar.grammarPath }}</span>
           <Button :disabled="operationInProgress" @click="uninstallGrammar(grammar.id)">
             {{ uninstallButtonText(grammar.id) }}
@@ -89,6 +90,10 @@
           <p>{{ filteredGrammars.length }} matching grammar{{ filteredGrammars.length === 1 ? '' : 's' }}</p>
         </div>
 
+        <Button :disabled="loading || syncingRegistry || operationInProgress" @click="syncRegistry">
+          {{ syncingRegistry ? 'Syncing...' : 'Sync Registry' }}
+        </Button>
+
         <label class="search-label">
           <span>Search</span>
           <input v-model="search" type="search" placeholder="Search languages..." />
@@ -102,6 +107,7 @@
               <span class="grammar-name">{{ grammar.id }}</span>
               <span v-if="grammar.installed" class="badge installed">Installed</span>
               <span v-else class="badge">Available</span>
+              <span v-if="grammar.installed && !grammar.highlightsInstalled" class="badge warning">No highlights</span>
             </div>
             <div class="grammar-details">
               <span v-if="grammar.requires.length > 0">Requires {{ grammar.requires.join(', ') }}</span>
@@ -144,6 +150,7 @@ const search = ref('');
 const installingLanguage = ref<string>();
 const uninstallingLanguage = ref<string>();
 const installStep = ref<string>();
+const syncingRegistry = ref(false);
 let removeCoreEventListener: (() => void) | undefined;
 
 const themeOptions = computed(() => [
@@ -260,6 +267,23 @@ const uninstallGrammar = async (language: string) => {
     error.value = err instanceof Error ? err.message : JSON.stringify(err);
   } finally {
     uninstallingLanguage.value = undefined;
+  }
+};
+
+const syncRegistry = async () => {
+  if (syncingRegistry.value) return;
+
+  syncingRegistry.value = true;
+  error.value = undefined;
+
+  try {
+    const result = await client.syncTreeSitterRegistry();
+    if (!result.synced) throw new Error(result.message ?? 'Failed to sync tree-sitter registry');
+    await loadGrammars();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : JSON.stringify(err);
+  } finally {
+    syncingRegistry.value = false;
   }
 };
 
@@ -581,6 +605,10 @@ p {
 
   &.installed {
     color: #8bd5a3;
+  }
+
+  &.warning {
+    color: #f0b86a;
   }
 }
 

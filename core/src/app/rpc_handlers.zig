@@ -39,6 +39,7 @@ pub fn register(server: anytype) !void {
     try server.handle("addReviewComment", addReviewComment);
     try server.handle("saveReviewThread", saveReviewThread);
     try server.handle("listTreeSitterGrammars", listTreeSitterGrammars);
+    try server.handle("syncTreeSitterRegistry", syncTreeSitterRegistry);
     try server.handle("installTreeSitterGrammar", installTreeSitterGrammar);
     try server.handle("uninstallTreeSitterGrammar", uninstallTreeSitterGrammar);
 }
@@ -537,6 +538,17 @@ fn listTreeSitterGrammars(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc
     try types.writeJson(writer, result.items);
 }
 
+fn syncTreeSitterRegistry(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const git_url = getOptionalStringParam(request, "gitUrl") orelse runtime.environ_map.get("DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL");
+    const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
+    defer if (grammar_root) |path| runtime.allocator.free(path);
+
+    var result = try diff.syntax.syncRegistry(runtime.allocator, runtime.io, grammar_root, git_url);
+    defer result.deinit(runtime.allocator);
+
+    try types.writeJson(writer, types.syncTreeSitterRegistryResult(result));
+}
+
 fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
     const side_text = try json_rpc.getStringParam(request, "side");
@@ -606,6 +618,15 @@ fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
         .string => |text| text,
         else => null,
     };
+}
+
+fn getOptionalStringParam(request: json_rpc.Request, name: []const u8) ?[]const u8 {
+    const params = request.value.value.object.get("params") orelse return null;
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return null,
+    };
+    return getOptionalString(params_object, name);
 }
 
 fn getObjectParam(request: json_rpc.Request, name: []const u8) !std.json.Value {

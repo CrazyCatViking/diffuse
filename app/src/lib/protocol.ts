@@ -56,6 +56,7 @@ export type SyntaxStatus = {
   grammarInstalled: boolean;
   grammarPath?: string;
   highlightsQueryPath?: string;
+  highlightsInstalled: boolean;
   missingReason?: string;
 };
 
@@ -204,12 +205,19 @@ export type InstallTreeSitterGrammarResult = {
   installed: boolean;
   grammarPath?: string;
   highlightsQueryPath?: string;
+  highlightsInstalled: boolean;
   message?: string;
 };
 
 export type UninstallTreeSitterGrammarResult = {
   language: string;
   uninstalled: boolean;
+  message?: string;
+};
+
+export type SyncTreeSitterRegistryResult = {
+  path: string;
+  synced: boolean;
   message?: string;
 };
 
@@ -221,6 +229,7 @@ export type TreeSitterGrammar = {
   installed: boolean;
   grammarPath?: string;
   highlightsQueryPath?: string;
+  highlightsInstalled: boolean;
 };
 
 export type DiffRow = {

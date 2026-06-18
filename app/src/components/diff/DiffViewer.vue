@@ -391,7 +391,10 @@ type RenderedRow = {
 const syntaxMessage = computed(() => {
   const syntax = props.model?.syntax;
   if (!syntax?.language) return undefined;
-  if (syntax.grammarInstalled) return undefined;
+  if (syntax.grammarInstalled) {
+    if (syntax.missingReason === 'highlights-query-not-installed') return `No ${syntax.language} highlights query installed`;
+    return undefined;
+  }
 
   return `No ${syntax.language} grammar installed`;
 });
