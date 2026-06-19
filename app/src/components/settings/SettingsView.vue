@@ -282,7 +282,6 @@ const filteredGrammars = computed(() => {
     return grammar.id.toLowerCase().includes(query) || grammar.requires.some((dependency) => dependency.toLowerCase().includes(query));
   });
 });
-
 const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
   return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
 };

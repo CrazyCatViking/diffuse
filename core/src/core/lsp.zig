@@ -1087,7 +1087,7 @@ fn installInfoForServer(allocator: std.mem.Allocator, server_id: []const u8, com
             .command = "npm",
             .args = &.{ "install", "-g", "typescript", "typescript-language-server" },
             .description = "Install the TypeScript language server from npm.",
-            .note = "Mason package: typescript-language-server. npm installs remain copy-only in Diffuse for now.",
+            .note = "npm installs remain copy-only in Diffuse for now.",
         },
         .{
             .server_id = "rust-analyzer",
@@ -1095,7 +1095,6 @@ fn installInfoForServer(allocator: std.mem.Allocator, server_id: []const u8, com
             .command = "rustup",
             .args = &.{ "component", "add", "rust-analyzer" },
             .description = "Install rust-analyzer with rustup.",
-            .note = "Mason package: rust-analyzer.",
             .safe_to_run = true,
         },
         .{
@@ -1104,7 +1103,6 @@ fn installInfoForServer(allocator: std.mem.Allocator, server_id: []const u8, com
             .command = "go",
             .args = &.{ "install", "golang.org/x/tools/gopls@latest" },
             .description = "Install the Go language server with go install.",
-            .note = "Mason package: gopls.",
             .safe_to_run = true,
         },
         .{
@@ -1113,7 +1111,7 @@ fn installInfoForServer(allocator: std.mem.Allocator, server_id: []const u8, com
             .command = "npm",
             .args = &.{ "install", "-g", "pyright" },
             .description = "Install Pyright from npm.",
-            .note = "Mason package: pyright. npm installs remain copy-only in Diffuse for now.",
+            .note = "npm installs remain copy-only in Diffuse for now.",
         },
         .{
             .server_id = "zig",
@@ -1121,7 +1119,7 @@ fn installInfoForServer(allocator: std.mem.Allocator, server_id: []const u8, com
             .command = "zls",
             .args = &.{"--version"},
             .description = "Install ZLS, then point ~/.diffuse/lsp.json at the zls executable if it is not on PATH.",
-            .note = "Mason package: zls. If you use Mason, the command is usually ~/.local/share/nvim/mason/bin/zls.",
+            .note = "If zls is not on PATH, add its full path to ~/.diffuse/lsp.json.",
         },
         .{
             .server_id = "zls",
@@ -1129,15 +1127,15 @@ fn installInfoForServer(allocator: std.mem.Allocator, server_id: []const u8, com
             .command = "zls",
             .args = &.{"--version"},
             .description = "Install ZLS, then point ~/.diffuse/lsp.json at the zls executable if it is not on PATH.",
-            .note = "Mason package: zls. If you use Mason, the command is usually ~/.local/share/nvim/mason/bin/zls.",
+            .note = "If zls is not on PATH, add its full path to ~/.diffuse/lsp.json.",
         },
         .{
             .server_id = "lua-language-server",
             .manager = "manual",
             .command = "lua-language-server",
             .args = &.{"--version"},
-            .description = "Install Lua Language Server from your package manager or Mason.",
-            .note = "Mason package: lua-language-server. If the binary is not on PATH, add its full path to ~/.diffuse/lsp.json.",
+            .description = "Install Lua Language Server from your package manager.",
+            .note = "If the binary is not on PATH, add its full path to ~/.diffuse/lsp.json.",
         },
     };
 
@@ -1226,6 +1224,7 @@ fn pathExists(io: std.Io, path: []const u8) bool {
     file.close(io);
     return true;
 }
+
 
 fn fileUri(allocator: std.mem.Allocator, repo_root: []const u8, path: []const u8) ![]u8 {
     const full_path = try std.fs.path.join(allocator, &.{ repo_root, path });

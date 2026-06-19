@@ -6,13 +6,13 @@ Diffuse uses language servers for hover information and diagnostics in diffs.
 
 User LSP configuration lives at `~/.diffuse/lsp.json`.
 
-Each server entry can override the built-in command and args:
+Each server entry can override a built-in command or add a server command you installed yourself:
 
 ```json
 {
   "servers": {
     "zig": {
-      "command": "/home/user/.local/share/nvim/mason/bin/zls",
+      "command": "/home/user/bin/zls",
       "args": []
     }
   }
@@ -36,15 +36,22 @@ Diagnostics are shown only for the new side of a diff. Old-side hover is support
 
 Diffuse supports both LSP publish diagnostics and pull diagnostics. Pull diagnostics are only requested if the server advertises `diagnosticProvider`.
 
-## Mason
+## Manual Servers
 
-If you install servers with Mason, set the command path in `~/.diffuse/lsp.json` when the server binary is not on `PATH`.
+If you install a server outside Diffuse and the binary is not on `PATH`, set the full command path in `~/.diffuse/lsp.json`.
 
-Common Mason binary paths:
+Example:
 
-- `~/.local/share/nvim/mason/bin/zls`
-- `~/.local/share/nvim/mason/bin/lua-language-server`
-- `~/.local/share/nvim/mason/bin/pyright-langserver`
+```json
+{
+  "servers": {
+    "lua": {
+      "command": "/opt/lua-language-server/bin/lua-language-server",
+      "args": []
+    }
+  }
+}
+```
 
 ## Install Actions
 
@@ -55,7 +62,7 @@ Diffuse currently runs only curated non-shell installers marked safe by core:
 - `rustup component add rust-analyzer`
 - `go install golang.org/x/tools/gopls@latest`
 
-Other installers remain copy-only for now, including global npm installs and manual/Mason installs.
+Other installers remain copy-only for now, including global npm installs and manual installs.
 
 ## Server Lifecycle
 
