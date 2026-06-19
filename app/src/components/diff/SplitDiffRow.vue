@@ -11,6 +11,7 @@
       <button v-if="row.oldLine && oldCommentCount === 0" class="comment-bubble" type="button" title="Add old-side comment" aria-label="Add old-side comment" @click="emitOldComment">
         <span class="comment-icon" aria-hidden="true" />
       </button>
+      <DiagnosticMarker :diagnostics="oldDiagnostics" />
     </div>
     <HighlightedCode class="old" :text="row.oldText ?? ''" :spans="oldSyntaxSpans ?? row.oldSyntaxSpans" :review-highlights="oldReviewHighlights" data-review-side="old" :data-review-line="row.oldLine" :data-review-file-id="fileId" :data-review-text="row.oldText ?? ''" />
     <div class="line-number new">
@@ -21,6 +22,7 @@
       <button v-if="row.newLine && newCommentCount === 0" class="comment-bubble" type="button" title="Add new-side comment" aria-label="Add new-side comment" @click="emitNewComment">
         <span class="comment-icon" aria-hidden="true" />
       </button>
+      <DiagnosticMarker :diagnostics="newDiagnostics" />
     </div>
     <HighlightedCode class="new" :text="row.newText ?? ''" :spans="newSyntaxSpans ?? row.newSyntaxSpans" :review-highlights="newReviewHighlights" data-review-side="new" :data-review-line="row.newLine" :data-review-file-id="fileId" :data-review-text="row.newText ?? ''" />
   </div>
@@ -28,7 +30,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { DiffRow, SyntaxSpan } from '../../lib/protocol';
+import type { DiffRow, LspDiagnostic, SyntaxSpan } from '../../lib/protocol';
+import DiagnosticMarker from './DiagnosticMarker.vue';
 import HighlightedCode, { type ReviewTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
@@ -42,6 +45,8 @@ const props = defineProps<{
   newCommentsExpanded?: boolean
   oldReviewHighlights?: ReviewTextHighlight[]
   newReviewHighlights?: ReviewTextHighlight[]
+  oldDiagnostics?: LspDiagnostic[]
+  newDiagnostics?: LspDiagnostic[]
   commentHoverDisabled?: boolean
 }>();
 
@@ -55,7 +60,6 @@ const newCommentCount = computed(() => props.newCommentCount ?? 0);
 const oldCommentsExpanded = computed(() => props.oldCommentsExpanded ?? false);
 const newCommentsExpanded = computed(() => props.newCommentsExpanded ?? false);
 const commentHoverDisabled = computed(() => props.commentHoverDisabled ?? false);
-
 const emitOldComment = (event: MouseEvent) => {
   if (!props.row.oldLine) return;
   emit('comment', { side: 'old', line: props.row.oldLine, text: props.row.oldText ?? '', clientX: event.clientX, clientY: event.clientY });

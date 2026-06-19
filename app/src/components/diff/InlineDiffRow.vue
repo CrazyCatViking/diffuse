@@ -11,6 +11,7 @@
       <button v-if="row.oldLine && oldCount === 0" class="comment-bubble" type="button" title="Add old-side comment" aria-label="Add old-side comment" @click="emitOldComment">
         <span class="comment-icon" aria-hidden="true" />
       </button>
+      <DiagnosticMarker :diagnostics="oldDiagnostics" />
     </div>
     <div class="line-number new">
       <span>{{ row.newLine ?? '' }}</span>
@@ -20,6 +21,7 @@
       <button v-if="row.newLine && newCount === 0" class="comment-bubble" type="button" title="Add new-side comment" aria-label="Add new-side comment" @click="emitNewComment">
         <span class="comment-icon" aria-hidden="true" />
       </button>
+      <DiagnosticMarker :diagnostics="newDiagnostics" />
     </div>
     <HighlightedCode
       :text="text"
@@ -35,7 +37,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { DiffRow, SyntaxSpan } from '../../lib/protocol';
+import type { DiffRow, LspDiagnostic, SyntaxSpan } from '../../lib/protocol';
+import DiagnosticMarker from './DiagnosticMarker.vue';
 import HighlightedCode, { type ReviewTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
@@ -47,6 +50,8 @@ const props = defineProps<{
   oldCommentsExpanded?: boolean
   newCommentsExpanded?: boolean
   reviewHighlights?: ReviewTextHighlight[]
+  oldDiagnostics?: LspDiagnostic[]
+  newDiagnostics?: LspDiagnostic[]
   commentHoverDisabled?: boolean
 }>();
 
@@ -65,7 +70,6 @@ const newCount = computed(() => props.newCommentCount ?? 0);
 const oldCommentsExpanded = computed(() => props.oldCommentsExpanded ?? false);
 const newCommentsExpanded = computed(() => props.newCommentsExpanded ?? false);
 const commentHoverDisabled = computed(() => props.commentHoverDisabled ?? false);
-
 const emitOldComment = (event: MouseEvent) => {
   if (!props.row.oldLine) return;
   emit('comment', { side: 'old', line: props.row.oldLine, text: props.row.oldText ?? text.value, clientX: event.clientX, clientY: event.clientY });

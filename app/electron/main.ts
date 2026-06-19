@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
-import { join } from 'node:path';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { startCoreProcess } from './coreProcess';
 import { CoreRequestTimeoutError, type CoreEvent, type CoreRpcClient } from './coreRpcClient';
 import { ReviewAgentRunner } from './reviewAgentRunner';
@@ -16,6 +17,13 @@ const allowedCoreMethods = new Set([
   'listChangedFiles',
   'getDiffRenderModel',
   'getSyntaxSpans',
+  'getLspConfigInfo',
+  'getLspInstallInfo',
+  'installLspServer',
+  'restartLspServer',
+  'getLspStatus',
+  'getLspHover',
+  'getLspDiagnostics',
   'getReviewConfig',
   'saveReviewConfig',
   'getActiveReviewSession',
@@ -59,11 +67,13 @@ function requestTimeoutMs(method: string): number {
   if (method === 'installTreeSitterGrammar') return 5 * 60_000;
   if (method === 'syncTreeSitterRegistry') return 2 * 60_000;
   if (method === 'getSyntaxSpans') return 10_000;
+  if (method === 'getLspHover') return 10_000;
+  if (method === 'getLspDiagnostics') return 10_000;
   return 30_000;
 }
 
 function shouldKillCoreOnTimeout(method: string): boolean {
-  return method !== 'getSyntaxSpans';
+  return method !== 'getSyntaxSpans' && method !== 'getLspHover' && method !== 'getLspDiagnostics';
 }
 
 async function coreRequest<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -129,6 +139,20 @@ app.on('before-quit', () => {
   core?.dispose();
 });
 
+function ensureLspConfigFile(configPath: string): void {
+  mkdirSync(dirname(configPath), { recursive: true });
+  if (existsSync(configPath)) return;
+
+  writeFileSync(configPath, `${JSON.stringify({
+    lsp: {
+      zig: {
+        command: 'zls',
+        args: []
+      }
+    }
+  }, null, 2)}\n`);
+}
+
 ipcMain.handle('repo:pickDirectory', async () => {
   if (!mainWindow) return null;
 
@@ -147,6 +171,15 @@ ipcMain.handle('core:request', async (_event, request: { method: string; params?
   }
 
   return coreRequest(request.method, request.params ?? {});
+});
+
+ipcMain.handle('lsp:openConfig', async (_event, request: { configPath?: string }) => {
+  const configPath = request.configPath;
+  if (!configPath) throw new Error('LSP config path is not available');
+  ensureLspConfigFile(configPath);
+  const error = await shell.openPath(configPath);
+  if (error) throw new Error(error);
+  return configPath;
 });
 
 ipcMain.handle('review-agent:start', async (_event, request: { repositoryRoot: string; sessionId: string; files: unknown[] }) => {

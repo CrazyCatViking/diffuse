@@ -133,7 +133,7 @@ pub fn freeSyntaxLineSpans(allocator: std.mem.Allocator, values: []SyntaxLineSpa
     allocator.free(values);
 }
 
-fn sourceForSide(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, side: SyntaxSide, target: repository.DiffTarget) ![]u8 {
+pub fn sourceForSide(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, side: SyntaxSide, target: repository.DiffTarget) ![]u8 {
     if (target.compare) |compare| {
         return switch (side) {
             .old => sourceFromRef(allocator, io, repo_root, target.base orelse "HEAD", path) catch allocator.dupe(u8, ""),

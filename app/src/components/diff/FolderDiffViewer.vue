@@ -19,7 +19,7 @@
     <div v-else-if="error" class="message error">{{ error }}</div>
     <div v-else-if="models.length === 0" class="message">No diffs in this folder.</div>
     <div v-else class="folder-diffs-shell" :class="{ 'has-diff-scroll': hasFolderScroll }">
-      <div ref="folderScrollRef" class="folder-diffs" @scroll="onFolderScroll" @mouseup="captureSelectionComment">
+      <div ref="folderScrollRef" class="folder-diffs" @scroll="onFolderScroll" @pointermove="queueLspHover" @mouseleave="clearLspHover" @mouseup="captureSelectionComment">
         <div class="folder-spacer" :style="{ height: `${folderTotalSize}px` }">
           <div
             v-for="entry in folderRenderedRows"
@@ -32,7 +32,10 @@
             <template v-if="entry.item.kind === 'file'">
               <header class="file-header">
                 <span>{{ entry.model.fileId }}</span>
-                <span>{{ entry.model.rows.length }} rows</span>
+                <span class="file-row-count">{{ entry.model.rows.length }} rows</span>
+                <span v-if="diagnosticSummary(entry.model.fileId)" class="diagnostic-summary" :class="diagnosticSummary(entry.model.fileId)?.className">
+                  {{ diagnosticSummary(entry.model.fileId)?.label }}
+                </span>
               </header>
             </template>
             <div v-else-if="entry.item.kind === 'empty'" class="empty-file">No diff for this file.</div>
@@ -49,6 +52,8 @@
                 :new-comments-expanded="entry.newCommentsExpanded"
                 :old-review-highlights="entry.oldReviewHighlights"
                 :new-review-highlights="entry.newReviewHighlights"
+                :old-diagnostics="[]"
+                :new-diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment(entry.fileId, $event)"
                 @toggle-comments="toggleComments"
@@ -70,6 +75,8 @@
                 :old-comments-expanded="entry.oldCommentsExpanded"
                 :new-comments-expanded="entry.newCommentsExpanded"
                 :review-highlights="entry.inlineReviewHighlights"
+                :old-diagnostics="[]"
+                :new-diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment(entry.fileId, $event)"
                 @toggle-comments="toggleComments"
@@ -85,6 +92,10 @@
           <button type="button" title="Ask AI about selection" aria-label="Ask AI about selection" @pointerdown.prevent.stop="startSelectionChat">
             <span class="ai-icon" aria-hidden="true" />
           </button>
+        </div>
+        <div v-if="lspHover.visible" class="lsp-hover" :class="{ loading: lspHover.loading }" :style="lspHoverStyle">
+          <div v-if="lspHover.loading">Loading hover...</div>
+          <pre v-else>{{ lspHover.contents }}</pre>
         </div>
       </div>
       <div v-if="hasFolderScroll" class="diff-scrollbar" @pointerdown="onScrollbarTrackPointerDown">
@@ -104,7 +115,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, LspDiagnostic, LspHover, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
 import { useReviewStore } from '../../stores/review';
 import InlineReviewBox, { type InlineReviewEntry } from './InlineReviewBox.vue';
@@ -131,6 +142,7 @@ const models = ref<DiffRenderModel[]>([]);
 const loading = ref(false);
 const error = ref<string>();
 const syntaxSpans = ref<Record<string, SyntaxSpan[]>>({});
+const diagnosticsByFile = ref<Record<string, LspDiagnostic[]>>({});
 const draftBody = ref('');
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
@@ -144,6 +156,17 @@ let paneResizeObserver: ResizeObserver | undefined;
 let observedFolderScroll: HTMLElement | undefined;
 let scrollbarDrag: { startY: number; startScrollTop: number; trackHeight: number } | undefined;
 let paneScrollStateFrame: number | undefined;
+let lspHoverTimer: number | undefined;
+let lspHoverRequestId = 0;
+const lspHoverDelayMs = 420;
+const lspHoverCache = new Map<string, LspHover>();
+const lspHover = ref({
+  visible: false,
+  loading: false,
+  contents: '',
+  left: 0,
+  top: 0,
+});
 
 type DisplayRow = {
   kind: 'diff';
@@ -182,6 +205,7 @@ type FolderRenderedRow = {
   oldReviewHighlights: ReviewTextHighlight[];
   newReviewHighlights: ReviewTextHighlight[];
   inlineReviewHighlights: ReviewTextHighlight[];
+  newDiagnostics: LspDiagnostic[];
 };
 
 type DiffScrollMarker = {
@@ -431,8 +455,30 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
       oldReviewHighlights,
       newReviewHighlights,
       inlineReviewHighlights: diffRow?.kind === 'deleted' ? oldReviewHighlights : newReviewHighlights,
+      newDiagnostics: diagnosticsForLine(fileId, newLine),
     };
   });
+};
+
+const diagnosticsForLine = (fileId: string, line?: number): LspDiagnostic[] => {
+  if (!line) return [];
+  return (diagnosticsByFile.value[fileId] ?? []).filter((diagnostic) => diagnostic.line === line);
+};
+
+const diagnosticSummary = (fileId: string) => {
+  const diagnostics = diagnosticsByFile.value[fileId] ?? [];
+  if (diagnostics.length === 0) return undefined;
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
+  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length;
+  const other = diagnostics.length - errors - warnings;
+  const parts = [];
+  if (errors > 0) parts.push(`${errors} error${errors === 1 ? '' : 's'}`);
+  if (warnings > 0) parts.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);
+  if (other > 0) parts.push(`${other} info`);
+  return {
+    label: parts.join(', '),
+    className: errors > 0 ? 'error' : warnings > 0 ? 'warning' : 'info',
+  };
 };
 
 const emptyModel = (): DiffRenderModel => ({ fileId: '', mode: props.viewMode, context: props.contextMode, syntax: { grammarInstalled: false, highlightsInstalled: false }, rows: [] });
@@ -455,6 +501,112 @@ const selectionBubbleStyle = computed(() => ({
   left: `${selectionBubblePosition.value.left}px`,
   top: `${selectionBubblePosition.value.top}px`,
 }));
+const lspHoverStyle = computed(() => ({
+  left: `${lspHover.value.left}px`,
+  top: `${lspHover.value.top}px`,
+}));
+
+const queueLspHover = (event: PointerEvent) => {
+  const target = event.target instanceof Node ? event.target : null;
+  const element = target ? reviewElementForNode(target) : null;
+  if (!element) {
+    clearLspHover();
+    return;
+  }
+
+  const fileId = element.dataset.reviewFileId;
+  const side = element.dataset.reviewSide;
+  const line = Number(element.dataset.reviewLine);
+  if (!fileId || (side !== 'old' && side !== 'new') || !Number.isFinite(line) || line <= 0) {
+    clearLspHover();
+    return;
+  }
+
+  const column = columnAtPoint(element, event.clientX, event.clientY);
+  const cacheKey = lspHoverKey(fileId, side, line, column);
+  if (lspHoverTimer !== undefined) window.clearTimeout(lspHoverTimer);
+  lspHoverTimer = window.setTimeout(() => {
+    void loadLspHover({ fileId, side, line, column, cacheKey, clientX: event.clientX, clientY: event.clientY });
+  }, lspHoverDelayMs);
+};
+
+const clearLspHover = () => {
+  if (lspHoverTimer !== undefined) {
+    window.clearTimeout(lspHoverTimer);
+    lspHoverTimer = undefined;
+  }
+  lspHoverRequestId += 1;
+  lspHover.value = { ...lspHover.value, visible: false, loading: false };
+};
+
+const loadLspHover = async (request: { fileId: string; side: SyntaxSide; line: number; column: number; cacheKey: string; clientX: number; clientY: number }) => {
+  const requestId = ++lspHoverRequestId;
+  const cached = lspHoverCache.get(request.cacheKey);
+  if (cached) {
+    showLspHover(cached, request.clientX, request.clientY, false);
+    return;
+  }
+
+  lspHover.value = { visible: true, loading: true, contents: '', left: request.clientX + 14, top: request.clientY + 16 };
+  try {
+    const hover = await client.getLspHover(request.fileId, request.side, request.line, request.column, props.target);
+    lspHoverCache.set(request.cacheKey, hover);
+    if (requestId !== lspHoverRequestId) return;
+    showLspHover(hover, request.clientX, request.clientY, false);
+  } catch (error) {
+    if (requestId !== lspHoverRequestId) return;
+    showLspHover({ status: 'request-failed', message: error instanceof Error ? error.message : String(error) }, request.clientX, request.clientY, false);
+  }
+};
+
+const showLspHover = (hover: LspHover, clientX: number, clientY: number, loading: boolean) => {
+  const contents = hover.status === 'ok' ? hover.contents ?? '' : '';
+  if (!contents.trim()) {
+    lspHover.value = { ...lspHover.value, visible: false, loading: false };
+    return;
+  }
+  lspHover.value = {
+    visible: true,
+    loading,
+    contents,
+    left: Math.min(clientX + 14, window.innerWidth - 360),
+    top: Math.min(clientY + 16, window.innerHeight - 220),
+  };
+};
+
+const lspHoverKey = (fileId: string, side: SyntaxSide, line: number, column: number) => {
+  return `${fileId}:${diffTargetFingerprint()}:${side}:${line}:${column}`;
+};
+
+const columnAtPoint = (element: HTMLElement, clientX: number, clientY: number) => {
+  const text = element.dataset.reviewText ?? element.textContent ?? '';
+  const range = rangeAtPoint(clientX, clientY);
+  if (range && element.contains(range.startContainer)) {
+    return Math.max(0, Math.min(text.length, textOffsetWithinElement(element, range.startContainer, range.startOffset)));
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  const fontSize = Number.parseFloat(style.fontSize) || 12;
+  const charWidth = fontSize * 0.62;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  return Math.max(0, Math.min(text.length, Math.round((clientX - rect.left - paddingLeft) / charWidth)));
+};
+
+const rangeAtPoint = (clientX: number, clientY: number): Range | undefined => {
+  const documentWithCaret = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const position = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
+  if (position) {
+    const range = document.createRange();
+    range.setStart(position.offsetNode, position.offset);
+    range.collapse(true);
+    return range;
+  }
+  return documentWithCaret.caretRangeFromPoint?.(clientX, clientY) ?? undefined;
+};
 
 const loadFolderDiff = async () => {
   const generation = ++loadGeneration;
@@ -462,6 +614,7 @@ const loadFolderDiff = async () => {
   error.value = undefined;
   models.value = [];
   syntaxSpans.value = {};
+  diagnosticsByFile.value = {};
 
   try {
     const loaded: DiffRenderModel[] = [];
@@ -471,11 +624,30 @@ const loadFolderDiff = async () => {
       loaded.push(model);
       models.value = [...loaded];
       void loadSyntaxForModel(model, generation);
+      void loadDiagnosticsForModel(model, generation);
     }
   } catch (err) {
     if (generation === loadGeneration) error.value = err instanceof Error ? err.message : JSON.stringify(err);
   } finally {
     if (generation === loadGeneration) loading.value = false;
+  }
+};
+
+const loadDiagnosticsForModel = async (model: DiffRenderModel, generation: number) => {
+  try {
+    const diagnostics = await client.getLspDiagnostics(model.fileId, 'new', props.target);
+    if (generation !== loadGeneration) return;
+
+    diagnosticsByFile.value = {
+      ...diagnosticsByFile.value,
+      [model.fileId]: diagnostics.status === 'ok' ? diagnostics.diagnostics : [],
+    };
+  } catch {
+    if (generation !== loadGeneration) return;
+    diagnosticsByFile.value = {
+      ...diagnosticsByFile.value,
+      [model.fileId]: [],
+    };
   }
 };
 
@@ -875,6 +1047,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
   window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
   window.removeEventListener('pointerup', stopScrollbarThumbDrag);
+  if (lspHoverTimer !== undefined) window.clearTimeout(lspHoverTimer);
   if (paneScrollStateFrame !== undefined) cancelAnimationFrame(paneScrollStateFrame);
   paneResizeObserver?.disconnect();
 });
@@ -913,10 +1086,20 @@ onBeforeUnmount(() => {
 }
 
 .file-count,
-.file-header span:last-child {
+.file-row-count {
   color: #7e8aa0;
   font-size: 12px;
   font-weight: 500;
+}
+
+.diagnostic-summary {
+  margin-left: auto;
+  color: #8fb3ff;
+  font-size: 12px;
+  font-weight: 700;
+
+  &.error { color: #ff8d8d; }
+  &.warning { color: #f0b86a; }
 }
 
 .controls {
@@ -1075,6 +1258,33 @@ onBeforeUnmount(() => {
   &:hover {
     background: rgba(240, 195, 106, 0.12);
     border-radius: 5px;
+  }
+}
+
+.lsp-hover {
+  position: fixed;
+  z-index: 20;
+  max-width: 420px;
+  max-height: 260px;
+  padding: 10px 12px;
+  overflow: auto;
+  color: #e9eef8;
+  background: rgba(12, 16, 24, 0.98);
+  border: 1px solid #344159;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+
+  &.loading {
+    color: #98a2b3;
+  }
+
+  pre {
+    margin: 0;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
   }
 }
 

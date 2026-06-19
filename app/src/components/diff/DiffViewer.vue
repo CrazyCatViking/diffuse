@@ -17,6 +17,12 @@
           </button>
           <span v-if="grammarInstallStep" class="install-step">{{ grammarInstallStep }}</span>
         </span>
+        <span v-if="lspStatusMessage" class="lsp-status" :class="lspStatusClass" :title="lspStatusTitle">
+          {{ lspStatusMessage }}
+        </span>
+        <span v-if="lspDiagnosticsMessage" class="lsp-diagnostics" :class="lspDiagnosticsClass">
+          {{ lspDiagnosticsMessage }}
+        </span>
       </div>
       <div class="controls">
         <button
@@ -61,7 +67,7 @@
     <div v-else-if="rows.length === 0" class="message">No unstaged diff for this file.</div>
     <div v-else-if="initialSyntaxGateActive" class="syntax-gate" />
     <div v-else-if="viewMode === 'split' && syncScroll" class="pane-shell" :class="{ 'has-diff-scroll': hasSyncedSplitScroll }">
-      <div ref="syncedSplitRef" class="pane synced-split-view" @scroll="onSyncedSplitScroll" @mouseup="captureSelectionComment">
+      <div ref="syncedSplitRef" class="pane synced-split-view" @scroll="onSyncedSplitScroll" @pointermove="queueLspHover" @mouseleave="clearLspHover" @mouseup="captureSelectionComment">
         <div class="spacer synced-split-spacer" :style="{ height: `${syncedSplitTotalSize}px` }">
           <div
             v-for="entry in syncedSplitRenderedRows"
@@ -74,6 +80,7 @@
             <template v-if="entry.diffRow">
               <SplitDiffRow
                 :row="entry.diffRow"
+                :file-id="model.fileId"
                 :old-syntax-spans="entry.oldSyntaxSpans"
                 :new-syntax-spans="entry.newSyntaxSpans"
                 :old-comment-count="entry.oldCommentCount"
@@ -82,6 +89,8 @@
                 :new-comments-expanded="entry.newCommentsExpanded"
                 :old-review-highlights="entry.oldReviewHighlights"
                 :new-review-highlights="entry.newReviewHighlights"
+                :old-diagnostics="[]"
+                :new-diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment"
                 @toggle-comments="toggleComments"
@@ -108,7 +117,7 @@
     </div>
     <div v-else-if="viewMode === 'split'" class="split-view">
       <div class="pane-shell old-pane-shell" :class="{ 'has-diff-scroll': hasLeftScroll }">
-        <div ref="leftRef" class="pane old-pane" @scroll="onLeftScroll" @mouseup="captureSelectionComment">
+          <div ref="leftRef" class="pane old-pane" @scroll="onLeftScroll" @pointermove="queueLspHover" @mouseleave="clearLspHover" @mouseup="captureSelectionComment">
           <div class="spacer" :style="{ height: `${leftTotalSize}px` }">
             <div
               v-for="entry in leftRenderedRows"
@@ -122,10 +131,12 @@
               <SplitDiffPaneRow
                 :row="entry.diffRow"
                 side="old"
+                :file-id="model.fileId"
                 :syntax-spans="entry.oldSyntaxSpans"
                 :comment-count="entry.oldCommentCount"
                 :comments-expanded="entry.oldCommentsExpanded"
                 :review-highlights="entry.oldReviewHighlights"
+                :diagnostics="[]"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment"
                 @toggle-comments="toggleComments"
@@ -149,7 +160,7 @@
         </div>
       </div>
       <div class="pane-shell" :class="{ 'has-diff-scroll': hasRightScroll }">
-        <div ref="rightRef" class="pane new-pane" @scroll="onRightScroll" @mouseup="captureSelectionComment">
+          <div ref="rightRef" class="pane new-pane" @scroll="onRightScroll" @pointermove="queueLspHover" @mouseleave="clearLspHover" @mouseup="captureSelectionComment">
           <div class="spacer" :style="{ height: `${rightTotalSize}px` }">
             <div
               v-for="entry in rightRenderedRows"
@@ -163,10 +174,12 @@
               <SplitDiffPaneRow
                 :row="entry.diffRow"
                 side="new"
+                :file-id="model.fileId"
                 :syntax-spans="entry.newSyntaxSpans"
                 :comment-count="entry.newCommentCount"
                 :comments-expanded="entry.newCommentsExpanded"
                 :review-highlights="entry.newReviewHighlights"
+                :diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment"
                 @toggle-comments="toggleComments"
@@ -191,7 +204,7 @@
       </div>
     </div>
     <div v-else class="pane-shell" :class="{ 'has-diff-scroll': hasInlineScroll }">
-      <div ref="inlineRef" class="pane inline-view" @scroll="onInlineScroll" @mouseup="captureSelectionComment">
+      <div ref="inlineRef" class="pane inline-view" @scroll="onInlineScroll" @pointermove="queueLspHover" @mouseleave="clearLspHover" @mouseup="captureSelectionComment">
         <div class="spacer inline-spacer" :style="{ height: `${inlineTotalSize}px` }">
           <div
             v-for="entry in inlineRenderedRows"
@@ -204,12 +217,15 @@
             <template v-if="entry.diffRow">
               <InlineDiffRow
                 :row="entry.diffRow"
+                :file-id="model.fileId"
                 :syntax-spans="entry.inlineSyntaxSpans"
                 :old-comment-count="entry.oldCommentCount"
                 :new-comment-count="entry.newCommentCount"
                 :old-comments-expanded="entry.oldCommentsExpanded"
                 :new-comments-expanded="entry.newCommentsExpanded"
                 :review-highlights="entry.inlineReviewHighlights"
+                :old-diagnostics="[]"
+                :new-diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment"
                 @toggle-comments="toggleComments"
@@ -244,6 +260,10 @@
         <span class="ai-icon" aria-hidden="true" />
       </button>
     </div>
+    <div v-if="lspHover.visible" class="lsp-hover" :class="{ loading: lspHover.loading }" :style="lspHoverStyle">
+      <div v-if="lspHover.loading">Loading hover...</div>
+      <pre v-else>{{ lspHover.contents }}</pre>
+    </div>
   </section>
 </template>
 
@@ -251,7 +271,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useClient } from '../../lib/useClient';
-import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, LspDiagnostic, LspHover, LspStatus, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { ReviewTextHighlight } from './HighlightedCode.vue';
@@ -308,12 +328,15 @@ let syncScrollFrame: number | undefined;
 let pendingScrollSync: { target: HTMLElement; top: number; left: number } | undefined;
 let syntaxPrefetchTimer: number | undefined;
 let initialSyntaxGateTimer: number | undefined;
+let lspHoverTimer: number | undefined;
+let lspHoverRequestId = 0;
 let initialSyntaxGeneration = 0;
 let syntaxRequestGeneration = 0;
 const syntaxPageSize = 256;
 const syntaxPageLookaround = 2;
 const virtualRowOverscan = 40;
 const syntaxPrefetchDelayMs = 120;
+const lspHoverDelayMs = 420;
 const maxConcurrentSyntaxRequests = 2;
 const initialSyntaxGateMs = 80;
 const hasLeftScroll = ref(false);
@@ -386,6 +409,7 @@ type RenderedRow = {
   oldReviewHighlights: ReviewTextHighlight[];
   newReviewHighlights: ReviewTextHighlight[];
   inlineReviewHighlights: ReviewTextHighlight[];
+  newDiagnostics: LspDiagnostic[];
 };
 
 const syntaxMessage = computed(() => {
@@ -413,6 +437,20 @@ const leftScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
 const rightScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
 const syncedSplitScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
 const inlineScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
+const lspHoverCache = new Map<string, LspHover>();
+const lspStatus = ref<LspStatus>();
+const lspStatusLoading = ref(false);
+const lspDiagnostics = ref<LspDiagnostic[]>([]);
+const lspDiagnosticsLoading = ref(false);
+let lspStatusGeneration = 0;
+let lspDiagnosticsGeneration = 0;
+const lspHover = ref({
+  visible: false,
+  loading: false,
+  contents: '',
+  left: 0,
+  top: 0,
+});
 const leftThumbStyle = computed(() => scrollThumbStyle(leftScrollMetrics.value));
 const rightThumbStyle = computed(() => scrollThumbStyle(rightScrollMetrics.value));
 const syncedSplitThumbStyle = computed(() => scrollThumbStyle(syncedSplitScrollMetrics.value));
@@ -457,6 +495,230 @@ const selectionBubbleStyle = computed(() => ({
   left: `${selectionBubblePosition.value.left}px`,
   top: `${selectionBubblePosition.value.top}px`,
 }));
+const lspHoverStyle = computed(() => ({
+  left: `${lspHover.value.left}px`,
+  top: `${lspHover.value.top}px`,
+}));
+const lspStatusMessage = computed(() => {
+  if (!props.model) return undefined;
+  if (lspStatusLoading.value) return 'LSP: checking';
+  const status = lspStatus.value;
+  if (!status) return undefined;
+  if (!status.language) return 'LSP: unavailable';
+  if (status.lastError) return `LSP: ${status.serverId ?? status.language} error`;
+  if (status.starting) return `LSP: ${status.serverId ?? status.language} starting`;
+  if (status.running) return `LSP: ${status.serverId ?? status.language} running`;
+  if (status.installed) return `LSP: ${status.serverId ?? status.language} ready`;
+  if (status.configured) return `LSP: ${status.command ?? status.serverId ?? status.language} missing`;
+  return `LSP: ${status.language} not configured`;
+});
+const lspStatusClass = computed(() => ({
+  ready: Boolean(lspStatus.value?.installed && !lspStatus.value?.lastError),
+  missing: Boolean(lspStatus.value && (!lspStatus.value.installed || lspStatus.value.lastError)),
+  loading: lspStatusLoading.value,
+}));
+const lspStatusTitle = computed(() => {
+  const status = lspStatus.value;
+  if (lspStatusLoading.value) return 'Checking configured language server';
+  if (!status) return undefined;
+  return [
+    status.message,
+    status.command ? `Command: ${status.command}` : undefined,
+    status.configSource ? `Config: ${status.configSource}` : undefined,
+    status.running ? 'Session: running' : status.starting ? 'Session: starting' : 'Session: not started',
+    status.lastError ? `Last error: ${status.lastError}` : undefined,
+  ].filter(Boolean).join('\n');
+});
+const lspDiagnosticsSummary = computed(() => {
+  const diagnostics = lspDiagnostics.value;
+  return {
+    errors: diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length,
+    warnings: diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length,
+    total: diagnostics.length,
+  };
+});
+const lspDiagnosticsMessage = computed(() => {
+  if (!props.model) return undefined;
+  if (lspDiagnosticsLoading.value) return 'Diagnostics: checking';
+  const summary = lspDiagnosticsSummary.value;
+  if (summary.total === 0) return undefined;
+  const parts = [];
+  if (summary.errors > 0) parts.push(`${summary.errors} error${summary.errors === 1 ? '' : 's'}`);
+  if (summary.warnings > 0) parts.push(`${summary.warnings} warning${summary.warnings === 1 ? '' : 's'}`);
+  const other = summary.total - summary.errors - summary.warnings;
+  if (other > 0) parts.push(`${other} info`);
+  return `Diagnostics: ${parts.join(', ')}`;
+});
+const lspDiagnosticsClass = computed(() => ({
+  error: lspDiagnosticsSummary.value.errors > 0,
+  warning: lspDiagnosticsSummary.value.errors === 0 && lspDiagnosticsSummary.value.warnings > 0,
+  loading: lspDiagnosticsLoading.value,
+}));
+
+const loadLspStatus = async () => {
+  const model = props.model;
+  const generation = ++lspStatusGeneration;
+  if (!model) {
+    lspStatus.value = undefined;
+    lspStatusLoading.value = false;
+    return;
+  }
+
+  lspStatusLoading.value = true;
+  try {
+    const status = await client.getLspStatus(model.fileId, lspStatusSide(), props.target);
+    if (generation !== lspStatusGeneration) return;
+    lspStatus.value = status;
+  } catch (error) {
+    if (generation !== lspStatusGeneration) return;
+    lspStatus.value = {
+      configured: false,
+      installed: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (generation === lspStatusGeneration) lspStatusLoading.value = false;
+  }
+};
+
+const loadLspDiagnostics = async () => {
+  const model = props.model;
+  const generation = ++lspDiagnosticsGeneration;
+  lspDiagnostics.value = [];
+  if (!model) {
+    lspDiagnosticsLoading.value = false;
+    return;
+  }
+
+  lspDiagnosticsLoading.value = true;
+  try {
+    const diagnostics = await client.getLspDiagnostics(model.fileId, 'new', props.target);
+    if (generation !== lspDiagnosticsGeneration) return;
+    lspDiagnostics.value = diagnostics.status === 'ok' ? diagnostics.diagnostics : [];
+  } catch {
+    if (generation !== lspDiagnosticsGeneration) return;
+    lspDiagnostics.value = [];
+  } finally {
+    if (generation === lspDiagnosticsGeneration) {
+      lspDiagnosticsLoading.value = false;
+      void loadLspStatus();
+    }
+  }
+};
+
+const lspStatusSide = (): SyntaxSide => {
+  return rows.value.some((row) => row.newLine) ? 'new' : 'old';
+};
+
+const diagnosticsForLine = (side: SyntaxSide, line?: number): LspDiagnostic[] => {
+  if (side !== 'new' || !line) return [];
+  return lspDiagnostics.value.filter((diagnostic) => diagnostic.line === line);
+};
+
+const queueLspHover = (event: PointerEvent) => {
+  if (!props.model) return;
+  const target = event.target instanceof Node ? event.target : null;
+  const element = target ? reviewElementForNode(target) : null;
+  if (!element) {
+    clearLspHover();
+    return;
+  }
+
+  const fileId = element.dataset.reviewFileId ?? props.model.fileId;
+  const side = element.dataset.reviewSide;
+  const line = Number(element.dataset.reviewLine);
+  if ((side !== 'old' && side !== 'new') || !Number.isFinite(line) || line <= 0) {
+    clearLspHover();
+    return;
+  }
+
+  const column = columnAtPoint(element, event.clientX, event.clientY);
+  const cacheKey = lspHoverKey(fileId, side, line, column);
+  if (lspHoverTimer !== undefined) window.clearTimeout(lspHoverTimer);
+  lspHoverTimer = window.setTimeout(() => {
+    void loadLspHover({ fileId, side, line, column, cacheKey, clientX: event.clientX, clientY: event.clientY });
+  }, lspHoverDelayMs);
+};
+
+const clearLspHover = () => {
+  if (lspHoverTimer !== undefined) {
+    window.clearTimeout(lspHoverTimer);
+    lspHoverTimer = undefined;
+  }
+  lspHoverRequestId += 1;
+  lspHover.value = { ...lspHover.value, visible: false, loading: false };
+};
+
+const loadLspHover = async (request: { fileId: string; side: SyntaxSide; line: number; column: number; cacheKey: string; clientX: number; clientY: number }) => {
+  const requestId = ++lspHoverRequestId;
+  const cached = lspHoverCache.get(request.cacheKey);
+  if (cached) {
+    showLspHover(cached, request.clientX, request.clientY, false);
+    return;
+  }
+
+  lspHover.value = { visible: true, loading: true, contents: '', left: request.clientX + 14, top: request.clientY + 16 };
+  try {
+    const hover = await client.getLspHover(request.fileId, request.side, request.line, request.column, props.target);
+    lspHoverCache.set(request.cacheKey, hover);
+    if (requestId !== lspHoverRequestId) return;
+    showLspHover(hover, request.clientX, request.clientY, false);
+  } catch (error) {
+    if (requestId !== lspHoverRequestId) return;
+    showLspHover({ status: 'request-failed', message: error instanceof Error ? error.message : String(error) }, request.clientX, request.clientY, false);
+  } finally {
+    if (requestId === lspHoverRequestId) void loadLspStatus();
+  }
+};
+
+const showLspHover = (hover: LspHover, clientX: number, clientY: number, loading: boolean) => {
+  const contents = hover.status === 'ok' ? hover.contents ?? '' : '';
+  if (!contents.trim()) {
+    lspHover.value = { ...lspHover.value, visible: false, loading: false };
+    return;
+  }
+  lspHover.value = {
+    visible: true,
+    loading,
+    contents,
+    left: Math.min(clientX + 14, window.innerWidth - 360),
+    top: Math.min(clientY + 16, window.innerHeight - 220),
+  };
+};
+
+const lspHoverKey = (fileId: string, side: SyntaxSide, line: number, column: number) => {
+  return `${fileId}:${diffTargetFingerprint()}:${side}:${line}:${column}`;
+};
+
+const columnAtPoint = (element: HTMLElement, clientX: number, clientY: number) => {
+  const text = element.dataset.reviewText ?? element.textContent ?? '';
+  const range = rangeAtPoint(clientX, clientY);
+  if (range && element.contains(range.startContainer)) {
+    return Math.max(0, Math.min(text.length, textOffsetWithinElement(element, range.startContainer, range.startOffset)));
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  const fontSize = Number.parseFloat(style.fontSize) || 12;
+  const charWidth = fontSize * 0.62;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  return Math.max(0, Math.min(text.length, Math.round((clientX - rect.left - paddingLeft) / charWidth)));
+};
+
+const rangeAtPoint = (clientX: number, clientY: number): Range | undefined => {
+  const documentWithCaret = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const position = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
+  if (position) {
+    const range = document.createRange();
+    range.setStart(position.offsetNode, position.offset);
+    range.collapse(true);
+    return range;
+  }
+  return documentWithCaret.caretRangeFromPoint?.(clientX, clientY) ?? undefined;
+};
 
 const toggleComments = (payload: { side: 'old' | 'new'; line: number }) => {
   const key = commentStartKey(payload.side, payload.line);
@@ -558,6 +820,7 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
       oldReviewHighlights,
       newReviewHighlights,
       inlineReviewHighlights: diffRow?.kind === 'deleted' ? oldReviewHighlights : newReviewHighlights,
+      newDiagnostics: diagnosticsForLine('new', newLine),
     };
   });
 };
@@ -790,6 +1053,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
   window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
   window.removeEventListener('pointerup', stopScrollbarThumbDrag);
+  if (lspHoverTimer !== undefined) window.clearTimeout(lspHoverTimer);
   if (paneScrollStateFrame !== undefined) cancelAnimationFrame(paneScrollStateFrame);
   paneResizeObserver?.disconnect();
 });
@@ -1279,6 +1543,15 @@ watch(
 );
 
 watch(
+  [() => props.model, () => diffTargetFingerprint()],
+  () => {
+    void loadLspStatus();
+    void loadLspDiagnostics();
+  },
+  { immediate: true }
+);
+
+watch(
   [leftVirtualRows, rightVirtualRows, syncedSplitVirtualRows, inlineVirtualRows, () => props.model?.syntax.grammarInstalled, () => props.viewMode, () => props.syncScroll],
   () => {
     if (props.viewMode === 'split' && props.syncScroll) {
@@ -1354,6 +1627,61 @@ watch(
   background: rgba(211, 164, 95, 0.12);
   border: 1px solid rgba(211, 164, 95, 0.2);
   border-radius: 999px;
+}
+
+.lsp-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  color: #aeb7c6;
+  background: rgba(143, 151, 166, 0.1);
+  border: 1px solid rgba(143, 151, 166, 0.18);
+  border-radius: 999px;
+
+  &.ready {
+    color: #a8e6c1;
+    background: rgba(94, 192, 127, 0.12);
+    border-color: rgba(94, 192, 127, 0.25);
+  }
+
+  &.missing {
+    color: #f3c98b;
+    background: rgba(211, 164, 95, 0.12);
+    border-color: rgba(211, 164, 95, 0.22);
+  }
+
+  &.loading {
+    color: #98a2b3;
+  }
+}
+
+.lsp-diagnostics {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  color: #aeb7c6;
+  background: rgba(143, 151, 166, 0.1);
+  border: 1px solid rgba(143, 151, 166, 0.18);
+  border-radius: 999px;
+
+  &.error {
+    color: #ffb4b4;
+    background: rgba(255, 107, 107, 0.12);
+    border-color: rgba(255, 107, 107, 0.25);
+  }
+
+  &.warning {
+    color: #f3c98b;
+    background: rgba(211, 164, 95, 0.12);
+    border-color: rgba(211, 164, 95, 0.22);
+  }
+
+  &.loading {
+    color: #98a2b3;
+  }
 }
 
 .update-status {
@@ -1654,6 +1982,33 @@ watch(
     height: 2px;
     border-radius: 999px;
     transform: rotate(45deg);
+  }
+}
+
+.lsp-hover {
+  position: fixed;
+  z-index: 20;
+  max-width: 420px;
+  max-height: 260px;
+  padding: 10px 12px;
+  overflow: auto;
+  color: #e9eef8;
+  background: rgba(12, 16, 24, 0.98);
+  border: 1px solid #344159;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+
+  &.loading {
+    color: #98a2b3;
+  }
+
+  pre {
+    margin: 0;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
   }
 }
 

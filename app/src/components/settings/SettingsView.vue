@@ -62,6 +62,63 @@
     <section class="settings-panel">
       <div class="panel-header">
         <div>
+          <h2>Language Servers</h2>
+          <p>Configure LSP servers used for hover information and diagnostics in diffs.</p>
+        </div>
+        <div class="panel-actions">
+          <Button :disabled="!lspConfigInfo?.configPath" @click="openLspConfig">Open Config</Button>
+          <Button :disabled="lspLoading" @click="loadLspConfigInfo">{{ lspLoading ? 'Refreshing...' : 'Refresh' }}</Button>
+        </div>
+      </div>
+
+      <div v-if="lspError" class="message error">{{ lspError }}</div>
+      <div v-else-if="lspLoading && !lspConfigInfo" class="message">Loading language servers...</div>
+      <template v-else-if="lspConfigInfo">
+        <div class="config-path-row">
+          <span>Config file</span>
+          <code>{{ lspConfigInfo.configPath ?? 'No home directory available' }}</code>
+        </div>
+
+        <div class="lsp-list">
+          <article v-for="server in lspConfigInfo.servers" :key="server.language" class="lsp-row">
+            <div class="lsp-meta">
+              <div class="lsp-title">
+                <span class="grammar-name">{{ server.language }}</span>
+                <span class="badge" :class="server.installed ? 'installed' : 'warning'">{{ server.installed ? 'Ready' : 'Missing' }}</span>
+                <span class="badge" :class="lspSessionBadgeClass(server)">{{ lspSessionLabel(server) }}</span>
+                <span class="badge">{{ server.configSource }}</span>
+              </div>
+              <div class="grammar-details">
+                <span>{{ server.serverId }}</span>
+                <span :title="lspCommand(server)">{{ lspCommand(server) }}</span>
+              </div>
+              <div v-if="server.lastError" class="lsp-error" :title="server.lastError">Last error: {{ server.lastError }}</div>
+              <div v-if="server.running || server.lastError" class="lsp-session-actions">
+                <Button type="button" :disabled="restartingLspServer === server.serverId" @click="restartLspServer(server)">
+                  {{ restartingLspServer === server.serverId ? 'Restarting...' : 'Restart Server' }}
+                </Button>
+              </div>
+              <div v-if="!server.installed && server.install" class="lsp-install-guide">
+                <div class="install-summary">{{ server.install.description }}</div>
+                <div class="install-command">
+                  <code>{{ lspInstallCommand(server) }}</code>
+                  <Button type="button" @click="copyLspInstallCommand(server)">{{ copiedLspLanguage === server.language ? 'Copied' : 'Copy' }}</Button>
+                  <Button v-if="server.install.safeToRun" type="button" :disabled="installingLspServer === server.serverId" @click="installLspServer(server)">
+                    {{ installingLspServer === server.serverId ? 'Installing...' : 'Install' }}
+                  </Button>
+                </div>
+                <div v-if="server.install.note" class="install-note">{{ server.install.note }}</div>
+                <div v-if="installingLspServer === server.serverId && lspInstallStep" class="install-step">{{ lspInstallStep }}</div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </template>
+    </section>
+
+    <section class="settings-panel">
+      <div class="panel-header">
+        <div>
           <h2>Installed</h2>
           <p>{{ installedGrammars.length }} installed grammar{{ installedGrammars.length === 1 ? '' : 's' }}</p>
         </div>
@@ -131,7 +188,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import type { TreeSitterGrammar } from '../../lib/protocol';
+import type { LspConfigInfo, LspServerInfo, TreeSitterGrammar } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
 import { builtInSyntaxThemes, useSettingsStore, type SyntaxThemeColors } from '../../stores/settings';
 import Button from '../Button.vue';
@@ -144,14 +201,22 @@ defineEmits<{
 const client = useClient();
 const settings = useSettingsStore();
 const grammars = ref<TreeSitterGrammar[]>([]);
+const lspConfigInfo = ref<LspConfigInfo>();
 const loading = ref(false);
+const lspLoading = ref(false);
 const error = ref<string>();
+const lspError = ref<string>();
 const search = ref('');
 const installingLanguage = ref<string>();
 const uninstallingLanguage = ref<string>();
+const installingLspServer = ref<string>();
+const restartingLspServer = ref<string>();
+const copiedLspLanguage = ref<string>();
 const installStep = ref<string>();
+const lspInstallStep = ref<string>();
 const syncingRegistry = ref(false);
 let removeCoreEventListener: (() => void) | undefined;
+let copiedLspTimer: number | undefined;
 
 const themeOptions = computed(() => [
   ...builtInSyntaxThemes,
@@ -234,6 +299,30 @@ const loadGrammars = async () => {
   }
 };
 
+const loadLspConfigInfo = async () => {
+  lspLoading.value = true;
+  lspError.value = undefined;
+  try {
+    lspConfigInfo.value = await client.getLspConfigInfo();
+  } catch (err) {
+    lspError.value = err instanceof Error ? err.message : JSON.stringify(err);
+  } finally {
+    lspLoading.value = false;
+  }
+};
+
+const openLspConfig = async () => {
+  const configPath = lspConfigInfo.value?.configPath;
+  if (!configPath) return;
+  lspError.value = undefined;
+  try {
+    await window.diffuse.openLspConfig(configPath);
+    await loadLspConfigInfo();
+  } catch (err) {
+    lspError.value = err instanceof Error ? err.message : JSON.stringify(err);
+  }
+};
+
 const installGrammar = async (language: string) => {
   if (operationInProgress.value) return;
 
@@ -301,6 +390,77 @@ const swatchColors = (colors: SyntaxThemeColors) => {
   return [colors.keyword, colors.string, colors.function, colors.type, colors.comment];
 };
 
+const lspCommand = (server: LspServerInfo) => {
+  return [server.command, ...server.args].join(' ');
+};
+
+const lspInstallCommand = (server: LspServerInfo) => {
+  if (!server.install) return '';
+  return [server.install.command, ...server.install.args].join(' ');
+};
+
+const copyLspInstallCommand = async (server: LspServerInfo) => {
+  const command = lspInstallCommand(server);
+  if (!command) return;
+  lspError.value = undefined;
+  try {
+    await navigator.clipboard.writeText(command);
+    copiedLspLanguage.value = server.language;
+    if (copiedLspTimer !== undefined) window.clearTimeout(copiedLspTimer);
+    copiedLspTimer = window.setTimeout(() => {
+      copiedLspLanguage.value = undefined;
+      copiedLspTimer = undefined;
+    }, 1400);
+  } catch (err) {
+    lspError.value = err instanceof Error ? err.message : JSON.stringify(err);
+  }
+};
+
+const installLspServer = async (server: LspServerInfo) => {
+  if (!server.install?.safeToRun || installingLspServer.value) return;
+  installingLspServer.value = server.serverId;
+  lspInstallStep.value = 'Starting install';
+  lspError.value = undefined;
+
+  try {
+    const result = await client.installLspServer(server.serverId, server.command);
+    if (!result.installed) throw new Error(result.message ?? `Failed to install ${server.serverId}`);
+    await loadLspConfigInfo();
+  } catch (err) {
+    lspError.value = err instanceof Error ? err.message : JSON.stringify(err);
+  } finally {
+    installingLspServer.value = undefined;
+    lspInstallStep.value = undefined;
+  }
+};
+
+const restartLspServer = async (server: LspServerInfo) => {
+  if (restartingLspServer.value) return;
+  restartingLspServer.value = server.serverId;
+  lspError.value = undefined;
+  try {
+    await client.restartLspServer(server.serverId);
+    await loadLspConfigInfo();
+  } catch (err) {
+    lspError.value = err instanceof Error ? err.message : JSON.stringify(err);
+  } finally {
+    restartingLspServer.value = undefined;
+  }
+};
+
+const lspSessionLabel = (server: LspServerInfo) => {
+  if (server.lastError) return 'Error';
+  if (server.starting) return 'Starting';
+  if (server.running) return 'Running';
+  return 'Not started';
+};
+
+const lspSessionBadgeClass = (server: LspServerInfo) => {
+  if (server.lastError) return 'warning';
+  if (server.running) return 'installed';
+  return '';
+};
+
 const setCustomSyntaxColor = (key: keyof SyntaxThemeColors, event: Event) => {
   const input = event.target as HTMLInputElement;
   settings.setCustomSyntaxColor(key, input.value);
@@ -335,19 +495,30 @@ const normalizeHexColor = (value: string) => {
 
 onMounted(() => {
   removeCoreEventListener = window.diffuse.onCoreEvent((event) => {
-    if (!isCoreEvent(event) || event.method !== 'treeSitter/installProgress') return;
+    if (!isCoreEvent(event)) return;
     if (!event.params || typeof event.params !== 'object') return;
 
-    const params = event.params as { language?: unknown; step?: unknown };
-    if (params.language !== installingLanguage.value) return;
-    if (typeof params.step === 'string') installStep.value = params.step;
+    if (event.method === 'treeSitter/installProgress') {
+      const params = event.params as { language?: unknown; step?: unknown };
+      if (params.language !== installingLanguage.value) return;
+      if (typeof params.step === 'string') installStep.value = params.step;
+      return;
+    }
+
+    if (event.method === 'lsp/installProgress') {
+      const params = event.params as { serverId?: unknown; step?: unknown };
+      if (params.serverId !== installingLspServer.value) return;
+      if (typeof params.step === 'string') lspInstallStep.value = params.step;
+    }
   });
 
   void loadGrammars();
+  void loadLspConfigInfo();
 });
 
 onBeforeUnmount(() => {
   removeCoreEventListener?.();
+  if (copiedLspTimer !== undefined) window.clearTimeout(copiedLspTimer);
 });
 </script>
 
@@ -414,7 +585,14 @@ p {
   margin-bottom: 14px;
 }
 
+.panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .installed-list,
+.lsp-list,
 .grammar-list,
 .theme-grid,
 .custom-theme {
@@ -547,6 +725,7 @@ p {
 }
 
 .installed-card,
+.lsp-row,
 .grammar-row {
   display: grid;
   gap: 12px;
@@ -565,15 +744,44 @@ p {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.lsp-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.lsp-meta,
 .grammar-meta {
   min-width: 0;
 }
 
+.lsp-title,
 .grammar-title {
   display: flex;
   gap: 8px;
   align-items: center;
   min-width: 0;
+}
+
+.config-path-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  color: #98a2b3;
+  background: #111722;
+  border: 1px solid #252d3d;
+  border-radius: 10px;
+  font-size: 12px;
+
+  code {
+    min-width: 0;
+    overflow: hidden;
+    color: #d7deea;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .grammar-name {
@@ -595,6 +803,60 @@ p {
   display: flex;
   gap: 12px;
   margin-top: 5px;
+}
+
+.lsp-error {
+  margin-top: 6px;
+  overflow: hidden;
+  color: #ff8d8d;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lsp-session-actions {
+  margin-top: 10px;
+}
+
+.lsp-install-guide {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px;
+  background: rgba(240, 184, 106, 0.08);
+  border: 1px solid rgba(240, 184, 106, 0.16);
+  border-radius: 10px;
+}
+
+.install-summary,
+.install-note {
+  color: #aeb7c6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.install-note {
+  color: #7e8aa0;
+}
+
+.install-command {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+
+  code {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    padding: 7px 9px;
+    color: #d7deea;
+    background: rgba(17, 19, 24, 0.72);
+    border: 1px solid #2a3140;
+    border-radius: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .badge {

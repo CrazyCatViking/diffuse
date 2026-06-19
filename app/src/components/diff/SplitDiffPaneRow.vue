@@ -8,6 +8,7 @@
       <button v-if="commentCount > 0 && !commentsExpanded" class="collapsed-comment-indicator" type="button" title="Show collapsed comment" aria-label="Show collapsed comment" @click="emit('toggleComments', { side, line: line! })">
         <span class="comment-icon" aria-hidden="true" />
       </button>
+      <DiagnosticMarker :diagnostics="diagnostics" />
     </div>
     <button v-if="line && commentCount === 0" class="comment-bubble" type="button" title="Add comment" aria-label="Add comment" @click="emitComment">
       <span class="comment-icon" aria-hidden="true" />
@@ -18,6 +19,7 @@
       :review-highlights="reviewHighlights"
       :data-review-side="side"
       :data-review-line="line"
+      :data-review-file-id="fileId"
       :data-review-text="text"
     />
   </div>
@@ -25,16 +27,19 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { DiffRow, SyntaxSpan } from '../../lib/protocol';
+import type { DiffRow, LspDiagnostic, SyntaxSpan } from '../../lib/protocol';
+import DiagnosticMarker from './DiagnosticMarker.vue';
 import HighlightedCode, { type ReviewTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
   row: DiffRow
   side: 'old' | 'new'
+  fileId?: string
   syntaxSpans?: SyntaxSpan[]
   commentCount?: number
   commentsExpanded?: boolean
   reviewHighlights?: ReviewTextHighlight[]
+  diagnostics?: LspDiagnostic[]
   commentHoverDisabled?: boolean
 }>();
 
@@ -46,10 +51,12 @@ const emit = defineEmits<{
 const line = computed(() => props.side === 'old' ? props.row.oldLine : props.row.newLine);
 const lineNumber = computed(() => line.value ?? '');
 const text = computed(() => props.side === 'old' ? props.row.oldText ?? '' : props.row.newText ?? '');
+const fileId = computed(() => props.fileId);
 const rowSpans = computed(() => props.side === 'old' ? props.row.oldSyntaxSpans : props.row.newSyntaxSpans);
 const commentCount = computed(() => props.commentCount ?? 0);
 const commentsExpanded = computed(() => props.commentsExpanded ?? false);
 const commentHoverDisabled = computed(() => props.commentHoverDisabled ?? false);
+const diagnostics = computed(() => props.diagnostics ?? []);
 
 const emitComment = (event: MouseEvent) => {
   if (!line.value) return;

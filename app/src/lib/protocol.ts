@@ -73,6 +73,86 @@ export type SyntaxLineSpans = {
   spans: SyntaxSpan[];
 };
 
+export type LspStatus = {
+  language?: string;
+  serverId?: string;
+  command?: string;
+  configured: boolean;
+  installed: boolean;
+  starting?: boolean;
+  running?: boolean;
+  configSource?: string;
+  lastError?: string;
+  message?: string;
+};
+
+export type LspHover = {
+  status: 'ok' | 'language-unknown' | 'server-not-configured' | 'server-not-installed' | 'hover-unavailable' | 'request-failed' | string;
+  language?: string;
+  serverId?: string;
+  contents?: string;
+  message?: string;
+};
+
+export type LspDiagnostic = {
+  line: number;
+  startColumn: number;
+  endColumn: number;
+  severity: 'error' | 'warning' | 'info' | 'hint' | string;
+  message: string;
+  source?: string;
+  code?: string;
+};
+
+export type LspDiagnostics = {
+  status: 'ok' | 'language-unknown' | 'server-not-configured' | 'server-not-installed' | 'request-failed' | string;
+  language?: string;
+  serverId?: string;
+  diagnostics: LspDiagnostic[];
+  message?: string;
+};
+
+export type LspConfigInfo = {
+  configPath?: string;
+  servers: LspServerInfo[];
+};
+
+export type LspServerInfo = {
+  language: string;
+  serverId: string;
+  command: string;
+  args: string[];
+  configSource: string;
+  installed: boolean;
+  starting?: boolean;
+  running?: boolean;
+  lastError?: string;
+  install?: LspInstallInfo;
+};
+
+export type LspInstallInfo = {
+  manager: string;
+  command: string;
+  args: string[];
+  description: string;
+  requiresShell: boolean;
+  safeToRun: boolean;
+  note?: string;
+};
+
+export type InstallLspServerResult = {
+  serverId: string;
+  command: string;
+  installed: boolean;
+  message?: string;
+};
+
+export type RestartLspServerResult = {
+  serverId: string;
+  restarted: boolean;
+  message?: string;
+};
+
 export type ReviewSide = 'old' | 'new';
 
 export type ReviewParticipant = {

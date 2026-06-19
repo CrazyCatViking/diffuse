@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallTreeSitterGrammarResult, OpenRepositoryResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -40,6 +40,34 @@ export const useClient = () => {
 
   const getSyntaxSpans = async (fileId: string, side: SyntaxSide, startLine: number, endLine: number, options: Pick<DiffRenderOptions, 'context'>, target: DiffTarget): Promise<SyntaxLineSpans[]> => {
     return window.diffuse.coreRequest('getSyntaxSpans', { fileId, side, startLine, endLine, options, target: plainDiffTarget(target) });
+  };
+
+  const getLspStatus = async (fileId: string, side: SyntaxSide, target: DiffTarget): Promise<LspStatus> => {
+    return window.diffuse.coreRequest('getLspStatus', { fileId, side, target: plainDiffTarget(target) });
+  };
+
+  const getLspConfigInfo = async (): Promise<LspConfigInfo> => {
+    return window.diffuse.coreRequest('getLspConfigInfo');
+  };
+
+  const getLspInstallInfo = async (serverId: string, command: string): Promise<LspInstallInfo> => {
+    return window.diffuse.coreRequest('getLspInstallInfo', { serverId, command });
+  };
+
+  const installLspServer = async (serverId: string, command: string): Promise<InstallLspServerResult> => {
+    return window.diffuse.coreRequest('installLspServer', { serverId, command });
+  };
+
+  const restartLspServer = async (serverId: string): Promise<RestartLspServerResult> => {
+    return window.diffuse.coreRequest('restartLspServer', { serverId });
+  };
+
+  const getLspHover = async (fileId: string, side: SyntaxSide, line: number, column: number, target: DiffTarget): Promise<LspHover> => {
+    return window.diffuse.coreRequest('getLspHover', { fileId, side, line, column, target: plainDiffTarget(target) });
+  };
+
+  const getLspDiagnostics = async (fileId: string, side: SyntaxSide, target: DiffTarget): Promise<LspDiagnostics> => {
+    return window.diffuse.coreRequest('getLspDiagnostics', { fileId, side, target: plainDiffTarget(target) });
   };
 
   const installTreeSitterGrammar = async (language: string): Promise<InstallTreeSitterGrammarResult> => {
@@ -155,6 +183,13 @@ export const useClient = () => {
     listChangedFiles,
     getDiffRenderModel,
     getSyntaxSpans,
+    getLspConfigInfo,
+    getLspInstallInfo,
+    installLspServer,
+    restartLspServer,
+    getLspStatus,
+    getLspHover,
+    getLspDiagnostics,
     getReviewConfig,
     saveReviewConfig,
     getActiveReviewSession,
