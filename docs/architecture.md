@@ -33,7 +33,7 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 
 - `DIFFUSE_CORE_EXECUTABLE` when set and pointing at an existing file.
 - Development build paths such as `core/zig-out/bin/diffuse`.
-- Packaged app resources under `process.resourcesPath`.
+- Native Electron package resources under `process.resourcesPath`.
 - Installed core under `DIFFUSE_INSTALL_ROOT` or `~/.local/share/diffuse/core/diffuse`.
 
 It also resolves the Tree-sitter registry directory from `DIFFUSE_TREE_SITTER_REGISTRY_DIR`, nearby development checkouts named `diffuse-tree-sitter`, or `~/.diffuse/tree-sitter`.
@@ -245,3 +245,11 @@ cd app && pnpm build
 ```
 
 For development, build the core first so `app/electron/coreProcess.ts` can find `core/zig-out/bin/diffuse`.
+
+Prebuilt release packaging is separate from source installation. `just install` continues to build from source and run `scripts/install.sh` or `scripts/install.ps1`. The native release path runs `app/scripts/prepare-electron-package.mjs` after the app build, copies the already-built Zig core into Electron resources, and then runs `electron-builder` through `pnpm dist`. Release artifacts are archives only: Linux `tar.gz`, macOS `zip`, and Windows `zip`.
+
+Release installers in `scripts/install-release.sh` and `scripts/install-release.ps1` do not clone the repository. They resolve the requested GitHub Release, download the platform artifact, install the packaged app into the user environment, and create a command shim. The shim launches the Electron app for normal desktop usage and calls the bundled Zig core for CLI subcommands.
+
+The built-in Zig CLI update/install commands also use GitHub Releases. `list-versions` reads release tags from the GitHub Releases API, `update` selects the newest release, and `install <version>` refuses versions that are not releases. Installing a non-release commit or branch is intentionally only available from a checked-out source tree through `just install`.
+
+`just publish` updates version files, commits, tags, and pushes the tag. `.github/workflows/release.yml` is triggered by `v*` tags, builds the Zig core and Electron app on Linux, macOS, and Windows runners, uploads the archive artifacts, and creates the GitHub Release.

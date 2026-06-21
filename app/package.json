@@ -7,7 +7,50 @@
   "scripts": {
     "dev": "electron-vite dev -- --ozone-platform=wayland",
     "build": "vue-tsc --noEmit && electron-vite build",
+    "package": "pnpm build && node scripts/prepare-electron-package.mjs && electron-builder --dir",
+    "dist": "pnpm build && node scripts/prepare-electron-package.mjs && electron-builder",
     "preview": "electron-vite preview"
+  },
+  "build": {
+    "appId": "dev.diffuse.app",
+    "productName": "Diffuse",
+    "executableName": "diffuse",
+    "artifactName": "diffuse-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/resources",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "linux": {
+      "target": [
+        "tar.gz"
+      ],
+      "category": "Development"
+    },
+    "mac": {
+      "target": [
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "zip"
+      ]
+    }
   },
   "dependencies": {
     "@opencode-ai/sdk": "1.17.7",
@@ -21,6 +64,7 @@
   "devDependencies": {
     "@types/node": "^22.15.21",
     "electron": "^36.3.2",
+    "electron-builder": "^26.0.12",
     "typescript": "^5.8.3",
     "vite": "^7.0.0",
     "vue-tsc": "^2.2.10"
