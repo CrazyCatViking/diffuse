@@ -21,4 +21,5 @@ Use this directory for durable docs:
 - Add or update user-facing docs when commands, settings, UI behavior, environment variables, install steps, or workflows change.
 - Update [`architecture.md`](architecture.md) when process boundaries, app/core responsibilities, persistence, JSON-RPC flow, or build wiring changes.
 - Update specs like [`review-spec-v1.md`](review-spec-v1.md) when persisted formats or integration contracts change.
+- Update [`lsp.md`](lsp.md) when LSP configuration, server lifecycle, diagnostics, hover behavior, or install actions change.
 - Keep links relative so docs work in GitHub, local editors, and checked-out source trees.

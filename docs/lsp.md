@@ -6,11 +6,11 @@ Diffuse uses language servers for hover information and diagnostics in diffs.
 
 User LSP configuration lives at `~/.diffuse/lsp.json`.
 
-Each server entry can override a built-in command or add a server command you installed yourself:
+Each server entry can override a built-in command or add a server command you installed yourself. The top-level key is `lsp`:
 
 ```json
 {
-  "servers": {
+  "lsp": {
     "zig": {
       "command": "/home/user/bin/zls",
       "args": []
@@ -36,6 +36,13 @@ Diagnostics are shown only for the new side of a diff. Old-side hover is support
 
 Diffuse supports both LSP publish diagnostics and pull diagnostics. Pull diagnostics are only requested if the server advertises `diagnosticProvider`.
 
+Hover and diagnostics use the same source side as the active diff target:
+
+- Branch/ref comparisons read old-side source from the target ref and new-side source from the source ref.
+- Staged-only comparisons read old-side source from the base ref and new-side source from the Git index.
+- Unstaged-only comparisons read old-side source from the Git index and new-side source from the working tree.
+- Working-tree comparisons read old-side source from the base ref and new-side source from the working tree.
+
 ## Manual Servers
 
 If you install a server outside Diffuse and the binary is not on `PATH`, set the full command path in `~/.diffuse/lsp.json`.
@@ -44,7 +51,7 @@ Example:
 
 ```json
 {
-  "servers": {
+  "lsp": {
     "lua": {
       "command": "/opt/lua-language-server/bin/lua-language-server",
       "args": []
@@ -64,6 +71,23 @@ Diffuse currently runs only curated non-shell installers marked safe by core:
 
 Other installers remain copy-only for now, including global npm installs and manual installs.
 
+Settings can open `~/.diffuse/lsp.json`. If the file does not exist, Diffuse creates a starter file:
+
+```json
+{
+  "lsp": {
+    "zig": {
+      "command": "zls",
+      "args": []
+    }
+  }
+}
+```
+
 ## Server Lifecycle
 
 Language servers are persistent per repository/language/server. Settings shows whether a session is running and exposes a restart action for running or errored sessions.
+
+Restarting a server stops matching sessions. The next hover or diagnostics request starts a fresh process.
+
+LSP is currently unavailable on Windows in the core implementation.

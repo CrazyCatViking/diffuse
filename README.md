@@ -29,6 +29,7 @@ It is designed around a simple idea: code review should work well before a pull 
 | Local Git review | Opens a repository and lists added, modified, deleted, and renamed files. |
 | Flexible diff targets | Review working tree changes, staged changes, unstaged changes, or branch/ref comparisons. |
 | Readable diffs | Supports split and inline diff views with diff-only or full-file context. |
+| Folder review | Select a folder in the changed-file tree to review all changed files under that folder together. |
 | Syntax awareness | Uses Tree-sitter grammars for highlighting where available. |
 | LSP support | Shows hover information and diagnostics from language servers. |
 | Review state | Stores review sessions, threads, progress, and chat as plain files under `.diffuse/reviews`. |
@@ -127,6 +128,8 @@ Open a specific repository:
 diffuse /path/to/repository
 ```
 
+The desktop app also accepts the packaged-app launch argument `--open-repository <path>`.
+
 Useful CLI commands:
 
 ```sh
@@ -134,8 +137,13 @@ diffuse --version
 diffuse update
 diffuse install <version>
 diffuse list-versions
+diffuse list-versions --cached
 diffuse completion <bash|zsh|fish|powershell>
 ```
+
+`diffuse update` resolves the newest Git tag from GitHub and runs the source installer for that tag. `diffuse install <version>` accepts versions with or without a leading `v` and prints the closest/latest available version when the requested tag cannot be found. Version discovery is cached under the platform cache directory and `diffuse list-versions --cached` reads only that cache.
+
+Update/install source is cloned into a cache directory before running `just install` from that checkout. The GitHub repository defaults to `CrazyCatViking/diffuse` and can be overridden with `DIFFUSE_GITHUB_REPO=owner/repo`.
 
 Developer/debug commands:
 
@@ -144,6 +152,21 @@ diffuse rpc
 diffuse files --repo /path/to/repository
 diffuse diff --repo /path/to/repository --file src/example.ts
 ```
+
+## Reviewing Changes
+
+After opening a repository, Diffuse shows changed files in a collapsible folder tree. Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder.
+
+The compare bar supports two main modes:
+
+1. `Working tree against <target>` compares local staged and unstaged changes against a target ref, usually `HEAD`.
+2. `<source ref> against <target ref>` compares two Git refs or branches without including working tree changes.
+
+Diffuse chooses defaults from repository state. Dirty repositories default to working tree changes against `HEAD`. Clean repositories default to `HEAD` against the configured upstream when available, falling back to `origin/main`, `origin/master`, or `HEAD`.
+
+The diff viewer supports split or inline layout, diff-only or full-file context, synchronized split scrolling, lazy syntax highlighting, LSP hover and diagnostics, and a stale-diff notice when the currently displayed file changes on disk.
+
+Review comments can be anchored to old-side or new-side lines. Selecting text in a diff shows actions for adding a comment or asking AI about the selected code. Threads can be replied to, resolved, reopened, and used as context for AI chat.
 
 ## Development
 
@@ -169,6 +192,8 @@ The Electron app looks for the core binary in `core/zig-out/bin/diffuse`. You ca
 ```sh
 DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse pnpm dev
 ```
+
+When no explicit executable is configured, the Electron app checks development paths, packaged resources, and then the installed core under `DIFFUSE_INSTALL_ROOT` or `~/.local/share/diffuse/core/diffuse`.
 
 Build only the app:
 
@@ -196,7 +221,7 @@ Example:
 
 ```json
 {
-  "servers": {
+  "lsp": {
     "zig": {
       "command": "/home/user/bin/zls",
       "args": []
@@ -211,6 +236,18 @@ Built-in defaults exist for TypeScript/JavaScript, Rust, Python, Go, Zig, and Lu
 
 Diffuse includes an experimental opencode review runner. When started from the review bar, the Electron app creates opencode sessions for the opened repository, sends review prompts, and persists findings through the Diffuse core.
 
+The review bar also shows recent review sessions and agent runs. Agent progress, run state, comments, and chat are persisted under `.diffuse/reviews` so the UI can recover state after refreshes or restarts.
+
+Agent behavior can be configured per repository in `.diffuse/reviews/config.json`. If the file does not exist, Diffuse uses this default:
+
+```json
+{
+  "provider": "opencode",
+  "maxParallelAgents": 1,
+  "promptInstructions": "Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations."
+}
+```
+
 Optional overrides:
 
 ```sh
@@ -224,12 +261,17 @@ This workflow is still evolving. Treat AI findings as review assistance, not as 
 
 Diffuse uses Tree-sitter for syntax-aware diff rendering. Installed grammars are resolved from `~/.diffuse/grammars` by default, and the app can install missing grammars where supported.
 
+Settings includes syntax theme selection, custom syntax colors stored in browser local storage, language server status and install guidance, installed grammar management, available grammar search, registry sync, install actions, and uninstall actions.
+
 Useful environment variables:
 
 ```sh
 DIFFUSE_GRAMMARS_DIR=/path/to/grammars
 DIFFUSE_TREE_SITTER_REGISTRY_DIR=/path/to/registry
+DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL=https://example.com/tree-sitter-registry.git
 ```
+
+`DIFFUSE_GRAMMARS_DIR` controls where installed parsers and queries live. `DIFFUSE_TREE_SITTER_REGISTRY_DIR` controls where the external registry checkout is stored. `DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL` overrides the registry source used by sync.
 
 ## Uninstall
 

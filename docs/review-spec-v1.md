@@ -9,6 +9,7 @@ This directory is intentionally plain JSON and Markdown so external agent harnes
 ```text
 .diffuse/
   reviews/
+    config.json
     active-session
     sessions/
       <session-id>/
@@ -40,6 +41,20 @@ rename <path>.tmp -> <path>
 Diffuse watches `.diffuse/reviews` and emits live UI updates when files change.
 
 ## Session
+
+`config.json` stores repository-local review agent configuration. If it is missing, Diffuse uses built-in defaults.
+
+```json
+{
+  "provider": "opencode",
+  "model": "provider/model",
+  "agent": "agent-name",
+  "maxParallelAgents": 1,
+  "promptInstructions": "Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations."
+}
+```
+
+`provider` currently defaults to `opencode`. `maxParallelAgents` controls how many file shards the built-in runner starts. Environment variables can still override `model` and `agent` at runtime.
 
 `review.json` describes the review target and participants.
 
@@ -121,6 +136,10 @@ Each file in `threads/` is a review thread. Agent findings and human comments sh
 }
 ```
 
+Human-created threads use `authorId: "local-human"` in their first message. Agent-created threads should include `source.kind: "agent"`, `source.provider`, and `source.agentRunId` when available.
+
+Threads can be `open` or `resolved`. Replies append to `messages`; resolving or reopening a thread updates `status` and `updatedAt`.
+
 ## Agent State
 
 Files in `runs/` are the canonical source of truth for managed review run lifecycle. Electron provider adapters may own external process handles, but they must report lifecycle state back to core by updating these run records.
@@ -173,6 +192,14 @@ Files in `chat/messages/` are persisted user/assistant/system messages for chat 
 }
 ```
 
+Selection-only AI chat may use a synthetic thread id in `context.threadIds` with this shape:
+
+```text
+chat:<file-id>:<side>:<start-line>:<end-line>:<start-column>:<end-column>
+```
+
+Assistant responses from the built-in provider include `provider: "opencode"` and may include `runId`.
+
 ## Built-In Tool Calls
 
 Built-in providers should use Diffuse RPC/tool calls instead of writing JSON directly when possible:
@@ -181,19 +208,47 @@ Built-in providers should use Diffuse RPC/tool calls instead of writing JSON dir
 listReviewSessions
 getActiveReviewSession
 createReviewSession
+getReviewConfig
+saveReviewConfig
 getReviewProgress
 saveReviewProgress
+getReviewAgentStates
 saveReviewAgentState
 getReviewRuns
 saveReviewRun
+createReviewRun
+updateReviewRun
+finishReviewRun
 getReviewThreads
 getReviewChatMessages
 saveReviewChatMessage
 addReviewComment
+addReviewCommentPayload
 saveReviewThread
+recoverStaleReviewRuns
 ```
 
 `addReviewComment` accepts a complete thread object as `comment` and persists it under `threads/<id>.json`.
+
+`addReviewCommentPayload` accepts the compact tool payload used by the built-in opencode bridge:
+
+```json
+{
+  "filePath": "src/auth.ts",
+  "side": "new",
+  "startLine": 42,
+  "endLine": 42,
+  "body": "This accepts expired tokens because the expiry claim is not checked.",
+  "severity": "high",
+  "category": "security",
+  "confidence": "high",
+  "selectedText": "validateToken(token)"
+}
+```
+
+The core expands that payload into a normal thread, anchors it to the active diff target, and records the current agent run as the source.
+
+`recoverStaleReviewRuns` marks active runs as failed when Diffuse restarts without an attached provider process.
 
 ## Built-In opencode Runner
 
@@ -209,3 +264,13 @@ DIFFUSE_OPENCODE_AGENT=agent-name
 ```
 
 The runner generates opencode custom tools that call back into Diffuse for validated comments, progress, agent state, assigned changed files, and diff access. Future chat provider sessions should preserve the same persisted file contract in `chat/messages/`.
+
+The generated tools are written under the reviewed repository's `.opencode/tools/diffuse_review.ts`. If `.opencode/package.json` is missing, Diffuse creates a minimal package file with `@opencode-ai/plugin` as a dependency.
+
+The local tool bridge listens on `127.0.0.1` for the active run and requires a bearer token passed through `DIFFUSE_REVIEW_BRIDGE_URL` and `DIFFUSE_REVIEW_BRIDGE_TOKEN`. The bridge exposes these endpoints to the generated tools:
+
+- `/changed-files`
+- `/diff`
+- `/add-comment`
+- `/set-progress`
+- `/set-agent-state`
