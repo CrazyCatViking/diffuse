@@ -43,7 +43,7 @@ Diffuse has two main parts:
 diffuse/
   core/   Zig core: Git, diff rendering, syntax, LSP, review persistence, JSON-RPC
   app/    Electron + Vue app: desktop UI, settings, review agent bridge
-  docs/   Implementation notes and data-format specs
+  docs/   GitHub-readable docs, architecture notes, and data-format specs
 ```
 
 The desktop app starts the Zig core as a child process using `diffuse rpc`. The UI talks to that process over JSON-RPC. The core owns repository operations, diff generation, Tree-sitter integration, LSP sessions, and persisted review data.
@@ -65,7 +65,7 @@ your-repo/
           chat/
 ```
 
-See [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for the review file format and [`docs/lsp.md`](docs/lsp.md) for language server details.
+See [`docs/`](docs/) for the documentation index, [`docs/architecture.md`](docs/architecture.md) for internal architecture notes, [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for the review file format, and [`docs/lsp.md`](docs/lsp.md) for language server details.
 
 ## Requirements
 
