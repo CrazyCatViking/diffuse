@@ -8,6 +8,7 @@ import { ReviewAgentRunner } from './reviewAgentRunner';
 let mainWindow: BrowserWindow | null = null;
 let core: CoreRpcClient | null = null;
 let reviewAgentRunner: ReviewAgentRunner | null = null;
+const launchRepository = parseLaunchRepository(process.argv);
 
 const allowedCoreMethods = new Set([
   'getVersion',
@@ -121,6 +122,12 @@ function createWindow(): void {
   }
 }
 
+function parseLaunchRepository(args: string[]): string | undefined {
+  const index = args.indexOf('--open-repository');
+  if (index === -1 || index + 1 >= args.length) return undefined;
+  return args[index + 1];
+}
+
 app.whenReady().then(() => {
   getCore();
   createWindow();
@@ -163,6 +170,10 @@ ipcMain.handle('repo:pickDirectory', async () => {
 
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle('app:getLaunchRepository', async () => {
+  return launchRepository ?? null;
 });
 
 ipcMain.handle('core:request', async (_event, request: { method: string; params?: Record<string, unknown> }) => {

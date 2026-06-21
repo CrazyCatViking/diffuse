@@ -552,7 +552,7 @@ fn listTreeSitterGrammars(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc
 }
 
 fn syncTreeSitterRegistry(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
-    const git_url = getOptionalStringParam(request, "gitUrl") orelse runtime.environ_map.get("DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL");
+    const git_url = getOptionalStringParam(request, "gitUrl") orelse runtime.environ_map.get("DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL") orelse "https://github.com/CrazyCatViking/diffuse-tree-sitter.git";
     const grammar_root = try resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
 

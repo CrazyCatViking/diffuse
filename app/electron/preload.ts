@@ -18,6 +18,10 @@ const pickRepository = () => {
   return ipcRenderer.invoke('repo:pickDirectory');
 };
 
+const getLaunchRepository = () => {
+  return ipcRenderer.invoke('app:getLaunchRepository');
+};
+
 const openLspConfig = (configPath?: string) => {
   return ipcRenderer.invoke('lsp:openConfig', { configPath });
 };
@@ -36,6 +40,7 @@ const chatWithReviewAgent = (request: unknown) => {
 
 const bridge = {
   pickRepository,
+  getLaunchRepository,
   openLspConfig,
   coreRequest,
   onCoreEvent,

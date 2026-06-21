@@ -207,6 +207,8 @@ const compareSidebarPaths = (firstPath: string, secondPath: string) => {
 onMounted(async () => {
   try {
     await repo.loadVersion();
+    const launchRepository = await window.diffuse.getLaunchRepository();
+    if (launchRepository) await repo.openRepository(launchRepository);
   } catch (error) {
     repo.error = error instanceof Error ? error.message : String(error);
   }

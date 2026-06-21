@@ -1,5 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CoreRpcClient } from './coreRpcClient';
@@ -22,6 +22,9 @@ export function startCoreProcess(): CoreRpcClient {
 }
 
 function resolveCoreExecutable(): string {
+  const configured = process.env.DIFFUSE_CORE_EXECUTABLE;
+  if (configured && existsSync(configured)) return configured;
+
   const devCandidates = [
     resolve(__dirname, '../../../core/zig-out/bin/diffuse'),
     resolve(process.cwd(), '../core/zig-out/bin/diffuse'),
@@ -33,6 +36,10 @@ function resolveCoreExecutable(): string {
 
   const packagedPath = join(process.resourcesPath, 'diffuse');
   if (existsSync(packagedPath)) return packagedPath;
+
+  const installRoot = process.env.DIFFUSE_INSTALL_ROOT ?? join(resolveHomeDir(), '.local', 'share', 'diffuse');
+  const installedPath = join(installRoot, 'core', 'diffuse');
+  if (existsSync(installedPath)) return installedPath;
 
   return devCandidates[0];
 }
@@ -52,21 +59,7 @@ function resolveTreeSitterRegistryDir(): string {
   }
 
   const cacheDir = join(resolveHomeDir(), '.diffuse', 'tree-sitter');
-  syncTreeSitterRegistry(cacheDir);
   return cacheDir;
-}
-
-function syncTreeSitterRegistry(cacheDir: string): void {
-  const gitUrl = process.env.DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL;
-  if (!gitUrl) return;
-
-  mkdirSync(dirname(cacheDir), { recursive: true });
-  if (existsSync(join(cacheDir, '.git'))) {
-    spawnSync('git', ['-C', cacheDir, 'pull', '--ff-only'], { stdio: 'ignore' });
-    return;
-  }
-
-  spawnSync('git', ['clone', '--depth', '1', gitUrl, cacheDir], { stdio: 'ignore' });
 }
 
 function resolveHomeDir(): string {
