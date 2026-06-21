@@ -19,9 +19,6 @@ jobs:
           - platform: linux-x64
             runner: ubuntu-latest
             artifact_pattern: app/dist/*.tar.gz
-          - platform: mac-x64
-            runner: macos-13
-            artifact_pattern: app/dist/*.zip
           - platform: mac-arm64
             runner: macos-latest
             artifact_pattern: app/dist/*.zip
