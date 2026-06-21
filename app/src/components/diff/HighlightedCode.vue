@@ -11,11 +11,16 @@ const props = defineProps<{
   text: string;
   spans?: SyntaxSpan[];
   reviewHighlights?: ReviewTextHighlight[];
+  searchHighlights?: SearchTextHighlight[];
 }>();
 
 export type ReviewTextHighlight = {
   startColumn: number;
   endColumn: number;
+};
+
+export type SearchTextHighlight = ReviewTextHighlight & {
+  active?: boolean;
 };
 
 type Fragment = {
@@ -92,13 +97,21 @@ const fragments = computed<Fragment[]>(() => {
       endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
     }))
     .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
-  if (spans.length === 0 && highlights.length === 0) return [{ text: props.text }];
+  const searchHighlights = props.searchHighlights
+    ?.map((highlight) => ({
+      startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
+      endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
+      active: highlight.active,
+    }))
+    .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
+  if (spans.length === 0 && highlights.length === 0 && searchHighlights.length === 0) return [{ text: props.text }];
 
   const boundaries = [...new Set([
     0,
     props.text.length,
     ...spans.flatMap((span) => [span.startColumn, span.endColumn]),
     ...highlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
+    ...searchHighlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
   ])].sort((a, b) => a - b);
   for (let index = 0; index + 1 < boundaries.length; index += 1) {
     const start = boundaries[index];
@@ -110,6 +123,12 @@ const fragments = computed<Fragment[]>(() => {
     if (isReviewHighlighted(highlights, start, end)) {
       style.background = 'rgba(240, 195, 106, 0.32)';
     }
+    const searchHighlight = searchHighlightForRange(searchHighlights, start, end);
+    if (searchHighlight) {
+      style.background = searchHighlight.active ? 'rgba(255, 214, 102, 0.78)' : 'rgba(255, 214, 102, 0.34)';
+      style.color = '#101318';
+      if (searchHighlight.active) style.outline = '1px solid rgba(255, 241, 184, 0.95)';
+    }
     result.push({ text: props.text.slice(start, end), style: Object.keys(style).length > 0 ? style : undefined });
   }
 
@@ -118,6 +137,11 @@ const fragments = computed<Fragment[]>(() => {
 
 const isReviewHighlighted = (highlights: ReviewTextHighlight[], start: number, end: number) => {
   return highlights.some((highlight) => highlight.startColumn < end && highlight.endColumn > start);
+};
+
+const searchHighlightForRange = (highlights: SearchTextHighlight[], start: number, end: number) => {
+  return highlights.find((highlight) => highlight.startColumn < end && highlight.endColumn > start && highlight.active)
+    ?? highlights.find((highlight) => highlight.startColumn < end && highlight.endColumn > start);
 };
 
 const bestScopeForRange = (spans: SyntaxSpan[], start: number, end: number): string | undefined => {

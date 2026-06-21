@@ -27,6 +27,7 @@
       :text="text"
       :spans="syntaxSpans ?? rowSpans"
       :review-highlights="reviewHighlights"
+      :search-highlights="searchHighlights"
       :data-review-side="selectionSide"
       :data-review-line="selectionLine"
       :data-review-file-id="fileId"
@@ -39,7 +40,7 @@
 import { computed } from 'vue';
 import type { DiffRow, LspDiagnostic, SyntaxSpan } from '../../lib/protocol';
 import DiagnosticMarker from './DiagnosticMarker.vue';
-import HighlightedCode, { type ReviewTextHighlight } from './HighlightedCode.vue';
+import HighlightedCode, { type ReviewTextHighlight, type SearchTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
   row: DiffRow
@@ -50,6 +51,7 @@ const props = defineProps<{
   oldCommentsExpanded?: boolean
   newCommentsExpanded?: boolean
   reviewHighlights?: ReviewTextHighlight[]
+  searchHighlights?: SearchTextHighlight[]
   oldDiagnostics?: LspDiagnostic[]
   newDiagnostics?: LspDiagnostic[]
   commentHoverDisabled?: boolean

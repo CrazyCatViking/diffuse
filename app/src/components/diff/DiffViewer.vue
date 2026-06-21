@@ -25,6 +25,21 @@
         </span>
       </div>
       <div class="controls">
+        <div v-if="searchOpen" class="search-box">
+          <input
+            ref="searchInputRef"
+            v-model="searchQuery"
+            class="search-input"
+            type="search"
+            placeholder="Search file"
+            @keydown.enter.prevent="moveSearch($event.shiftKey ? -1 : 1)"
+            @keydown.esc.prevent="closeSearch"
+          />
+          <span class="search-count">{{ searchStatus }}</span>
+          <button class="search-button" type="button" :disabled="searchMatches.length === 0" title="Previous match" @click="moveSearch(-1)">Prev</button>
+          <button class="search-button" type="button" :disabled="searchMatches.length === 0" title="Next match" @click="moveSearch(1)">Next</button>
+        </div>
+        <button v-else class="control" type="button" title="Search file (Ctrl+F or /)" @click="openSearch">Search</button>
         <button
           class="control"
           :class="{ active: viewMode === 'split' }"
@@ -89,6 +104,8 @@
                 :new-comments-expanded="entry.newCommentsExpanded"
                 :old-review-highlights="entry.oldReviewHighlights"
                 :new-review-highlights="entry.newReviewHighlights"
+                :old-search-highlights="entry.oldSearchHighlights"
+                :new-search-highlights="entry.newSearchHighlights"
                 :old-diagnostics="[]"
                 :new-diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
@@ -136,6 +153,7 @@
                 :comment-count="entry.oldCommentCount"
                 :comments-expanded="entry.oldCommentsExpanded"
                 :review-highlights="entry.oldReviewHighlights"
+                :search-highlights="entry.oldSearchHighlights"
                 :diagnostics="[]"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment"
@@ -179,6 +197,7 @@
                 :comment-count="entry.newCommentCount"
                 :comments-expanded="entry.newCommentsExpanded"
                 :review-highlights="entry.newReviewHighlights"
+                :search-highlights="entry.newSearchHighlights"
                 :diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
                 @comment="startLineComment"
@@ -224,6 +243,7 @@
                 :old-comments-expanded="entry.oldCommentsExpanded"
                 :new-comments-expanded="entry.newCommentsExpanded"
                 :review-highlights="entry.inlineReviewHighlights"
+                :search-highlights="entry.inlineSearchHighlights"
                 :old-diagnostics="[]"
                 :new-diagnostics="entry.newDiagnostics"
                 :comment-hover-disabled="commentHoverDisabled"
@@ -274,7 +294,7 @@ import { useClient } from '../../lib/useClient';
 import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, LspDiagnostic, LspHover, LspStatus, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
-import type { ReviewTextHighlight } from './HighlightedCode.vue';
+import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
 import InlineReviewBox, { type InlineReviewEntry } from './InlineReviewBox.vue';
 import InlineDiffRow from './InlineDiffRow.vue';
 import SplitDiffRow from './SplitDiffRow.vue';
@@ -302,6 +322,7 @@ const emit = defineEmits<{
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
+const searchInputRef = ref<HTMLInputElement | null>(null);
 const syncedSplitRef = ref<HTMLElement | null>(null);
 const leftRef = ref<HTMLElement | null>(null);
 const rightRef = ref<HTMLElement | null>(null);
@@ -311,6 +332,9 @@ const client = useClient();
 const repo = useRepoStore();
 const review = useReviewStore();
 const draftBody = ref('');
+const searchOpen = ref(false);
+const searchQuery = ref('');
+const activeSearchIndex = ref(0);
 const selectionBubblePosition = ref({ left: 18, top: 52 });
 const selectionDraft = ref<{ file: ChangedFile; anchor: ReviewAnchor }>();
 const nativeSelectionRange = ref<Range>();
@@ -409,7 +433,18 @@ type RenderedRow = {
   oldReviewHighlights: ReviewTextHighlight[];
   newReviewHighlights: ReviewTextHighlight[];
   inlineReviewHighlights: ReviewTextHighlight[];
+  oldSearchHighlights: SearchTextHighlight[];
+  newSearchHighlights: SearchTextHighlight[];
+  inlineSearchHighlights: SearchTextHighlight[];
   newDiagnostics: LspDiagnostic[];
+};
+
+type SearchMatch = {
+  rowIndex: number;
+  side: SyntaxSide;
+  line: number;
+  startColumn: number;
+  endColumn: number;
 };
 
 const syntaxMessage = computed(() => {
@@ -437,6 +472,29 @@ const leftScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
 const rightScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
 const syncedSplitScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
 const inlineScrollMetrics = ref<PaneScrollMetrics>(emptyScrollMetrics());
+const normalizedSearchQuery = computed(() => searchQuery.value.trim().toLowerCase());
+const searchMatches = computed<SearchMatch[]>(() => {
+  const query = normalizedSearchQuery.value;
+  if (!query) return [];
+
+  const matches: SearchMatch[] = [];
+  rows.value.forEach((row, rowIndex) => {
+    if (props.viewMode === 'inline') {
+      const side = row.kind === 'deleted' ? 'old' : 'new';
+      collectSearchMatches(matches, rowIndex, side, side === 'old' ? row.oldLine : row.newLine, side === 'old' ? row.oldText : row.newText, query);
+    } else {
+      collectSearchMatches(matches, rowIndex, 'old', row.oldLine, row.oldText, query);
+      collectSearchMatches(matches, rowIndex, 'new', row.newLine, row.newText, query);
+    }
+  });
+  return matches;
+});
+const activeSearchMatch = computed(() => searchMatches.value[activeSearchIndex.value]);
+const searchStatus = computed(() => {
+  if (!searchQuery.value.trim()) return '0/0';
+  if (searchMatches.value.length === 0) return 'No results';
+  return `${activeSearchIndex.value + 1}/${searchMatches.value.length}`;
+});
 const lspHoverCache = new Map<string, LspHover>();
 const lspStatus = ref<LspStatus>();
 const lspStatusLoading = ref(false);
@@ -755,6 +813,36 @@ const reviewHighlightForLine = (anchor: ReviewAnchor, line: number, textLength: 
   return { startColumn, endColumn };
 };
 
+const collectSearchMatches = (matches: SearchMatch[], rowIndex: number, side: SyntaxSide, line: number | undefined, text: string | undefined, query: string) => {
+  if (!line || !text) return;
+  const lowerText = text.toLowerCase();
+  let startColumn = lowerText.indexOf(query);
+  while (startColumn !== -1) {
+    matches.push({ rowIndex, side, line, startColumn, endColumn: startColumn + query.length });
+    startColumn = lowerText.indexOf(query, startColumn + Math.max(query.length, 1));
+  }
+};
+
+const searchHighlightsForLine = (side: SyntaxSide, line: number | undefined): SearchTextHighlight[] => {
+  if (!line || !normalizedSearchQuery.value) return [];
+  const active = activeSearchMatch.value;
+  return searchMatches.value
+    .filter((match) => match.side === side && match.line === line)
+    .map((match) => ({
+      startColumn: match.startColumn,
+      endColumn: match.endColumn,
+      active: Boolean(active && sameSearchMatch(match, active)),
+    }));
+};
+
+const sameSearchMatch = (first: SearchMatch, second: SearchMatch) => {
+  return first.rowIndex === second.rowIndex
+    && first.side === second.side
+    && first.line === second.line
+    && first.startColumn === second.startColumn
+    && first.endColumn === second.endColumn;
+};
+
 const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
   const result: DisplayRow[] = [];
   const reviewEntries = reviewEntriesByEndLine(side);
@@ -803,6 +891,8 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
     const newText = diffRow?.newText ?? '';
     const oldReviewHighlights = diffRow && oldLine && oldText.length > 0 ? reviewHighlightsForLine('old', oldLine, oldText.length) : [];
     const newReviewHighlights = diffRow && newLine && newText.length > 0 ? reviewHighlightsForLine('new', newLine, newText.length) : [];
+    const oldSearchHighlights = diffRow ? searchHighlightsForLine('old', oldLine) : [];
+    const newSearchHighlights = diffRow ? searchHighlightsForLine('new', newLine) : [];
     return {
       virtualRow,
       item,
@@ -820,6 +910,9 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
       oldReviewHighlights,
       newReviewHighlights,
       inlineReviewHighlights: diffRow?.kind === 'deleted' ? oldReviewHighlights : newReviewHighlights,
+      oldSearchHighlights,
+      newSearchHighlights,
+      inlineSearchHighlights: diffRow?.kind === 'deleted' ? oldSearchHighlights : newSearchHighlights,
       newDiagnostics: diagnosticsForLine('new', newLine),
     };
   });
@@ -1042,7 +1135,52 @@ const clearSelectionDraftWhenSelectionEnds = () => {
   nativeSelectionRange.value = undefined;
 };
 
+const openSearch = () => {
+  searchOpen.value = true;
+  void nextTick(() => {
+    searchInputRef.value?.focus();
+    searchInputRef.value?.select();
+  });
+};
+
+const closeSearch = () => {
+  searchOpen.value = false;
+  searchInputRef.value?.blur();
+};
+
+const moveSearch = (direction: number) => {
+  if (searchMatches.value.length === 0) return;
+  const step = direction < 0 ? -1 : 1;
+  activeSearchIndex.value = (activeSearchIndex.value + step + searchMatches.value.length) % searchMatches.value.length;
+  scrollToActiveSearchMatch();
+};
+
+const onDocumentKeyDown = (event: KeyboardEvent) => {
+  const target = event.target instanceof HTMLElement ? event.target : undefined;
+  const isTextInput = Boolean(target?.closest('input, textarea, [contenteditable="true"]'));
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    openSearch();
+    return;
+  }
+  if (!isTextInput && event.key === '/') {
+    event.preventDefault();
+    openSearch();
+    return;
+  }
+  if (!isTextInput && searchMatches.value.length > 0 && event.key === 'n') {
+    event.preventDefault();
+    moveSearch(1);
+    return;
+  }
+  if (!isTextInput && searchMatches.value.length > 0 && event.key === 'N') {
+    event.preventDefault();
+    moveSearch(-1);
+  }
+};
+
 onMounted(() => {
+  document.addEventListener('keydown', onDocumentKeyDown);
   document.addEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
   paneResizeObserver = new ResizeObserver(updatePaneScrollStates);
   if (rootRef.value) paneResizeObserver.observe(rootRef.value);
@@ -1050,6 +1188,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDocumentKeyDown);
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
   window.removeEventListener('pointermove', onScrollbarThumbPointerMove);
   window.removeEventListener('pointerup', stopScrollbarThumbDrag);
@@ -1245,6 +1384,27 @@ const measureSyncedSplitElement = (element: unknown) => {
 
 const measureInlineElement = (element: unknown) => {
   inlineVirtualizer.value.measureElement(element instanceof Element ? element : null);
+};
+
+const scrollToActiveSearchMatch = () => {
+  const match = activeSearchMatch.value;
+  if (!match) return;
+  if (props.viewMode === 'split' && props.syncScroll) {
+    scrollVirtualizerToMatch(syncedSplitVirtualizer.value, syncedSplitDisplayRows.value, match);
+  } else if (props.viewMode === 'split' && match.side === 'old') {
+    scrollVirtualizerToMatch(leftVirtualizer.value, leftDisplayRows.value, match);
+  } else if (props.viewMode === 'split') {
+    scrollVirtualizerToMatch(rightVirtualizer.value, rightDisplayRows.value, match);
+  } else {
+    scrollVirtualizerToMatch(inlineVirtualizer.value, inlineDisplayRows.value, match);
+  }
+  updatePaneScrollStatesAfterRender();
+};
+
+const scrollVirtualizerToMatch = (virtualizer: { scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void }, displayRows: DisplayRow[], match: SearchMatch) => {
+  const displayIndex = displayRows.findIndex((item) => item.kind === 'diff' && item.key === `diff:${match.rowIndex}`);
+  if (displayIndex === -1) return;
+  virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
 
 const syntaxKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
@@ -1526,6 +1686,7 @@ watch(
 watch(
   () => `${props.model?.fileId ?? ''}:${props.model?.context ?? ''}`,
   () => {
+    activeSearchIndex.value = 0;
     syntaxRequestGeneration += 1;
     syntaxCache.clear();
     syntaxPageStates.clear();
@@ -1539,6 +1700,23 @@ watch(
     initialSyntaxGateActive.value = false;
     syntaxVersion.value += 1;
     startInitialSyntaxGate();
+  }
+);
+
+watch(
+  [normalizedSearchQuery, () => props.model?.fileId, () => props.model?.context, () => props.viewMode, () => props.syncScroll],
+  () => {
+    activeSearchIndex.value = 0;
+    if (searchMatches.value.length > 0) {
+      void nextTick(() => scrollToActiveSearchMatch());
+    }
+  }
+);
+
+watch(
+  searchMatches,
+  (matches) => {
+    if (activeSearchIndex.value >= matches.length) activeSearchIndex.value = Math.max(0, matches.length - 1);
   }
 );
 
@@ -1747,6 +1925,55 @@ watch(
     color: #f5f7fb;
     background: #24406f;
     border-color: #3865ad;
+  }
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px;
+  background: #0f141d;
+  border: 1px solid #2a3140;
+  border-radius: 8px;
+}
+
+.search-input {
+  width: 190px;
+  height: 22px;
+  padding: 0 8px;
+  color: #f5f7fb;
+  background: #111722;
+  border: 1px solid #30394b;
+  border-radius: 6px;
+  font: inherit;
+  outline: none;
+
+  &:focus {
+    border-color: #5c83c7;
+    box-shadow: 0 0 0 2px rgba(92, 131, 199, 0.18);
+  }
+}
+
+.search-count {
+  min-width: 54px;
+  color: #98a2b3;
+  text-align: center;
+}
+
+.search-button {
+  height: 22px;
+  padding: 0 8px;
+  color: #d7e6ff;
+  background: #162238;
+  border: 1px solid #334765;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.5;
   }
 }
 
