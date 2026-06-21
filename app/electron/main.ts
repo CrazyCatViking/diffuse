@@ -34,6 +34,7 @@ const allowedCoreMethods = new Set([
   'saveReviewProgress',
   'getReviewedFiles',
   'saveReviewedFiles',
+  'updateReviewedFiles',
   'getReviewAgentStates',
   'saveReviewAgentState',
   'getReviewRuns',

@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewedFilesState, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewedFilesState, ReviewedFilesUpdate, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -110,6 +110,10 @@ export const useClient = () => {
     return window.diffuse.coreRequest('saveReviewedFiles', { sessionId, reviewedFiles: plainJson(reviewedFiles) });
   };
 
+  const updateReviewedFiles = async (sessionId: string, update: ReviewedFilesUpdate): Promise<ReviewedFilesState> => {
+    return window.diffuse.coreRequest('updateReviewedFiles', { sessionId, update: plainJson(update) });
+  };
+
   const saveReviewAgentState = async (sessionId: string, agent: ReviewAgentState): Promise<ReviewAgentState> => {
     return window.diffuse.coreRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
   };
@@ -207,6 +211,7 @@ export const useClient = () => {
     saveReviewProgress,
     getReviewedFiles,
     saveReviewedFiles,
+    updateReviewedFiles,
     getReviewAgentStates,
     saveReviewAgentState,
     getReviewRuns,

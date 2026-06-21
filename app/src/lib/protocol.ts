@@ -203,6 +203,11 @@ export type ReviewedFilesState = {
   files: Record<string, ReviewedFile>;
 };
 
+export type ReviewedFilesUpdate = {
+  files?: Record<string, ReviewedFile>;
+  removeFileIds?: string[];
+};
+
 export type ReviewConfig = {
   provider: 'opencode' | string;
   model?: string;

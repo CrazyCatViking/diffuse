@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewedFilesState, ReviewAgentState, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewedFilesState, ReviewedFilesUpdate, ReviewAgentState, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -23,6 +23,7 @@ export const useReviewStore = defineStore('review', () => {
   const draftFile = ref<ChangedFile>();
   const draftMode = ref<'comment' | 'chat'>('comment');
   const pendingAgentChatKeys = ref(new Set<string>());
+  let reviewedFilesMutation = Promise.resolve();
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
   const activeRun = computed(() => {
@@ -288,68 +289,59 @@ export const useReviewStore = defineStore('review', () => {
     if (!session.value) await ensureSession();
     if (!session.value) return false;
 
-    const next: ReviewedFilesState = {
+    const reviewedAt = new Date().toISOString();
+    return updateReviewedFiles({
       files: {
-        ...reviewedFiles.value.files,
         [file.id]: {
           fileId: file.id,
-          reviewedAt: new Date().toISOString(),
+          reviewedAt,
           reviewedBy: humanParticipantId,
           signature: file.signature,
         },
       },
-    };
-
-    try {
-      reviewedFiles.value = await client.saveReviewedFiles(session.value.id, next);
-      error.value = undefined;
-      return true;
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : JSON.stringify(err);
-      return false;
-    }
+    });
   };
 
   const unmarkFileReviewed = async (file: ChangedFile) => {
     if (!session.value) return false;
-    const nextFiles = { ...reviewedFiles.value.files };
-    delete nextFiles[file.id];
-
-    try {
-      reviewedFiles.value = await client.saveReviewedFiles(session.value.id, { files: nextFiles });
-      error.value = undefined;
-      return true;
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : JSON.stringify(err);
-      return false;
-    }
+    return updateReviewedFiles({ removeFileIds: [file.id] });
   };
 
   const setFilesReviewed = async (files: ChangedFile[], reviewed: boolean) => {
     if (!session.value) await ensureSession();
     if (!session.value) return false;
 
-    const nextFiles = { ...reviewedFiles.value.files };
     const now = new Date().toISOString();
+    const update: ReviewedFilesUpdate = reviewed ? { files: {} } : { removeFileIds: [] };
     for (const file of files) {
       if (reviewed) {
-        nextFiles[file.id] = {
+        update.files![file.id] = {
           fileId: file.id,
           reviewedAt: now,
           reviewedBy: humanParticipantId,
           signature: file.signature,
         };
       } else {
-        delete nextFiles[file.id];
+        update.removeFileIds!.push(file.id);
       }
     }
 
+    return updateReviewedFiles(update);
+  };
+
+  const updateReviewedFiles = async (update: ReviewedFilesUpdate) => {
+    if (!session.value) return false;
+    const sessionId = session.value.id;
     try {
-      reviewedFiles.value = await client.saveReviewedFiles(session.value.id, { files: nextFiles });
+      reviewedFilesMutation = reviewedFilesMutation.then(async () => {
+        reviewedFiles.value = await client.updateReviewedFiles(sessionId, update);
+      });
+      await reviewedFilesMutation;
       error.value = undefined;
       return true;
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      reviewedFilesMutation = Promise.resolve();
       return false;
     }
   };

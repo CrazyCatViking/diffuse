@@ -6,6 +6,7 @@ const active_file = "active-session";
 const progress_file = "progress.json";
 const reviewed_files_file = "reviewed-files.json";
 const config_file = "config.json";
+const max_reviewed_files_bytes = 16 * 1024 * 1024;
 
 const default_config = "{\"provider\":\"opencode\",\"maxParallelAgents\":1,\"promptInstructions\":\"Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations.\"}";
 
@@ -169,7 +170,7 @@ pub fn writeProgress(allocator: std.mem.Allocator, io: std.Io, repo_root: []cons
 pub fn readReviewedFiles(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) !?[]u8 {
     const path = try reviewedFilesPath(allocator, io, repo_root, session_id);
     defer allocator.free(path);
-    return std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+    return std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(max_reviewed_files_bytes)) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
