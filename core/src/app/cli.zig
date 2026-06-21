@@ -39,14 +39,18 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
         try stdout.writeAll(versions);
         try stdout.flush();
     } else if (std.mem.eql(u8, command, "update")) {
+        try printProgress(io, "Checking for the latest Diffuse version...");
         const versions = try listVersions(allocator, io, environ_map, false);
         defer allocator.free(versions);
         const latest = firstLine(versions) orelse return error.NoVersionsFound;
+        try printProgressFmt(io, "Latest Diffuse version is {s}.", .{latest});
         try installVersion(allocator, io, environ_map, latest);
     } else if (std.mem.eql(u8, command, "install")) {
         if (args.len < 3) return error.MissingOption;
+        try printProgressFmt(io, "Resolving Diffuse version {s}...", .{args[2]});
         const version = try resolveInstallVersion(allocator, io, environ_map, args[2]);
         defer allocator.free(version);
+        try printProgressFmt(io, "Installing Diffuse {s}.", .{version});
         try installVersion(allocator, io, environ_map, version);
     } else if (std.mem.eql(u8, command, "rpc")) {
         try rpc_server.run(allocator, io, environ_map);
@@ -268,9 +272,31 @@ fn installVersion(allocator: std.mem.Allocator, io: std.Io, environ_map: *const 
     try std.Io.Dir.createDirPath(.cwd(), io, parent);
     const source_dir = try std.fs.path.join(allocator, &.{ parent, "source" });
     defer allocator.free(source_dir);
-    if (fileExists(io, source_dir)) try std.Io.Dir.deleteTree(.cwd(), io, source_dir);
+    if (fileExists(io, source_dir)) {
+        try printProgressFmt(io, "Removing previous update source at {s}...", .{source_dir});
+        try std.Io.Dir.deleteTree(.cwd(), io, source_dir);
+    }
+    try printProgressFmt(io, "Cloning {s} tag {s} into {s}...", .{ repo_url, tag, source_dir });
     try runChecked(allocator, io, "clone diffuse source", &.{ "git", "clone", "--depth", "1", "--branch", tag, repo_url, source_dir });
+    try printProgress(io, "Building and installing Diffuse from source. This can take a few minutes...");
     try runCheckedCwd(allocator, io, "install diffuse", &.{ "just", "install" }, source_dir);
+    try printProgressFmt(io, "Diffuse {s} installed successfully.", .{tag});
+}
+
+fn printProgress(io: std.Io, message: []const u8) !void {
+    var stderr_buffer: [2048]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    try stderr.print("{s}\n", .{message});
+    try stderr.flush();
+}
+
+fn printProgressFmt(io: std.Io, comptime format: []const u8, args: anytype) !void {
+    var stderr_buffer: [2048]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    try stderr.print(format ++ "\n", args);
+    try stderr.flush();
 }
 
 fn githubRepoUrl(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
