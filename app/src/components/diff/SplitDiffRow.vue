@@ -13,7 +13,7 @@
       </button>
       <DiagnosticMarker :diagnostics="oldDiagnostics" />
     </div>
-    <HighlightedCode class="old" :text="row.oldText ?? ''" :spans="oldSyntaxSpans ?? row.oldSyntaxSpans" :review-highlights="oldReviewHighlights" data-review-side="old" :data-review-line="row.oldLine" :data-review-file-id="fileId" :data-review-text="row.oldText ?? ''" />
+    <HighlightedCode class="old" :text="row.oldText ?? ''" :spans="oldSyntaxSpans ?? row.oldSyntaxSpans" :review-highlights="oldReviewHighlights" :search-highlights="oldSearchHighlights" data-review-side="old" :data-review-line="row.oldLine" :data-review-file-id="fileId" :data-review-text="row.oldText ?? ''" />
     <div class="line-number new">
       <span>{{ row.newLine ?? '' }}</span>
       <button v-if="newCommentCount > 0 && !newCommentsExpanded" class="collapsed-comment-indicator" type="button" title="Show collapsed comment" aria-label="Show collapsed comment" @click="emit('toggleComments', { side: 'new', line: row.newLine! })">
@@ -24,7 +24,7 @@
       </button>
       <DiagnosticMarker :diagnostics="newDiagnostics" />
     </div>
-    <HighlightedCode class="new" :text="row.newText ?? ''" :spans="newSyntaxSpans ?? row.newSyntaxSpans" :review-highlights="newReviewHighlights" data-review-side="new" :data-review-line="row.newLine" :data-review-file-id="fileId" :data-review-text="row.newText ?? ''" />
+    <HighlightedCode class="new" :text="row.newText ?? ''" :spans="newSyntaxSpans ?? row.newSyntaxSpans" :review-highlights="newReviewHighlights" :search-highlights="newSearchHighlights" data-review-side="new" :data-review-line="row.newLine" :data-review-file-id="fileId" :data-review-text="row.newText ?? ''" />
   </div>
 </template>
 
@@ -32,7 +32,7 @@
 import { computed } from 'vue';
 import type { DiffRow, LspDiagnostic, SyntaxSpan } from '../../lib/protocol';
 import DiagnosticMarker from './DiagnosticMarker.vue';
-import HighlightedCode, { type ReviewTextHighlight } from './HighlightedCode.vue';
+import HighlightedCode, { type ReviewTextHighlight, type SearchTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
   row: DiffRow
@@ -45,6 +45,8 @@ const props = defineProps<{
   newCommentsExpanded?: boolean
   oldReviewHighlights?: ReviewTextHighlight[]
   newReviewHighlights?: ReviewTextHighlight[]
+  oldSearchHighlights?: SearchTextHighlight[]
+  newSearchHighlights?: SearchTextHighlight[]
   oldDiagnostics?: LspDiagnostic[]
   newDiagnostics?: LspDiagnostic[]
   commentHoverDisabled?: boolean
