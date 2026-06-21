@@ -68,8 +68,16 @@ if [ "$asset_os" = "linux" ]; then
 #!/usr/bin/env sh
 app="$app"
 core="$core"
+launch_app() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "\$app" "\$@" >/dev/null 2>&1 &
+  else
+    nohup "\$app" "\$@" >/dev/null 2>&1 &
+  fi
+}
 if [ "\$#" -eq 0 ]; then
-  exec "\$app"
+  launch_app
+  exit 0
 fi
 case "\$1" in
   update)
@@ -83,7 +91,8 @@ case "\$1" in
     exec "\$core" "\$@"
     ;;
   *)
-    exec "\$app" --open-repository "\$1"
+    launch_app --open-repository "\$1"
+    exit 0
     ;;
 esac
 EOF
@@ -120,7 +129,8 @@ else
 app="$apps_dir/Diffuse.app"
 core="$apps_dir/Diffuse.app/Contents/Resources/diffuse"
 if [ "\$#" -eq 0 ]; then
-  exec open -a "\$app"
+  open -a "\$app" >/dev/null 2>&1 &
+  exit 0
 fi
 case "\$1" in
   update)
@@ -134,7 +144,8 @@ case "\$1" in
     exec "\$core" "\$@"
     ;;
   *)
-    exec open -a "\$app" --args --open-repository "\$1"
+    open -a "\$app" --args --open-repository "\$1" >/dev/null 2>&1 &
+    exit 0
     ;;
 esac
 EOF
