@@ -102,7 +102,7 @@ pub fn getSyntaxSpans(allocator: std.mem.Allocator, io: std.Io, cache: ?*syntax.
     const source = try sourceForSide(allocator, io, repo_root, path, side, options.target);
     defer allocator.free(source);
 
-    const has_injections = syntax.hasInjections(language);
+    const has_injections = syntax.hasInjections(allocator, io, language, options.grammar_root);
     const context_before: u32 = if (has_injections) 1024 else 0;
     const context_after: u32 = if (has_injections) 128 else 0;
     var chunk = try sourceLineChunk(allocator, source, start_line, end_line, context_before, context_after);

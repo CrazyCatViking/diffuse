@@ -280,7 +280,7 @@ fn runChecked(allocator: std.mem.Allocator, io: std.Io, step: []const u8, argv: 
         const stderr = &stderr_writer.interface;
         try stderr.print("{s}\n", .{message});
         try stderr.flush();
-        return error.CommandFailed;
+        std.process.exit(1);
     }
 }
 
