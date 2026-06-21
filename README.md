@@ -166,7 +166,7 @@ Diffuse chooses defaults from repository state. Dirty repositories default to wo
 
 The diff viewer supports split or inline layout, diff-only or full-file context, synchronized split scrolling, lazy syntax highlighting, LSP hover and diagnostics, and a stale-diff notice when the currently displayed file changes on disk.
 
-Review comments can be anchored to old-side or new-side lines. Selecting text in a diff shows actions for adding a comment or asking AI about the selected code. Threads can be replied to, resolved, reopened, and used as context for AI chat.
+Review comments can be anchored to old-side or new-side lines. Selecting text in a diff shows actions for adding a comment or asking AI about the selected code; in split view, text selection stays on the side where the drag starts. Threads can be replied to, resolved, reopened, and used as context for AI chat.
 
 ## Development
 

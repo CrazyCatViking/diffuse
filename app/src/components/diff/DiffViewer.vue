@@ -1,5 +1,5 @@
 <template>
-  <section ref="rootRef" class="diff-viewer">
+  <section ref="rootRef" class="diff-viewer" :class="selectionSideClass" @pointerdown.capture="lockSelectionSide">
     <div class="diff-header">
       <div class="file-meta">
         <span>{{ model?.fileId ?? 'No file selected' }}</span>
@@ -553,6 +553,11 @@ const selectionBubbleStyle = computed(() => ({
   left: `${selectionBubblePosition.value.left}px`,
   top: `${selectionBubblePosition.value.top}px`,
 }));
+const selectionSideLock = ref<SyntaxSide>();
+const selectionSideClass = computed(() => ({
+  'selecting-old-side': selectionSideLock.value === 'old',
+  'selecting-new-side': selectionSideLock.value === 'new',
+}));
 const lspHoverStyle = computed(() => ({
   left: `${lspHover.value.left}px`,
   top: `${lspHover.value.top}px`,
@@ -993,7 +998,7 @@ const captureSelectionComment = () => {
   const normalizedStartColumn = startLine <= endLine ? startColumn : endColumn;
   const normalizedEndColumn = startLine <= endLine ? endColumn : startColumn;
 
-  const rect = selectionTextRect(range);
+  const rect = selectionTextRect(range, side);
   if (!rect) {
     selectionDraft.value = undefined;
     return;
@@ -1014,6 +1019,17 @@ const captureSelectionComment = () => {
   };
 };
 
+const lockSelectionSide = (event: PointerEvent) => {
+  if (event.button !== 0 || !(event.target instanceof Node)) {
+    selectionSideLock.value = undefined;
+    return;
+  }
+
+  const element = reviewElementForNode(event.target);
+  const side = element?.dataset.reviewSide;
+  selectionSideLock.value = side === 'old' || side === 'new' ? side : undefined;
+};
+
 const reviewElementForNode = (node: Node) => {
   const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentNode instanceof Element ? node.parentNode : null;
   return element?.closest<HTMLElement>('[data-review-side][data-review-line]');
@@ -1026,10 +1042,29 @@ const textOffsetWithinElement = (element: HTMLElement, node: Node, offset: numbe
   return range.toString().length;
 };
 
-const selectionTextRect = (range: Range) => {
-  const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+const selectionTextRect = (range: Range, side?: SyntaxSide) => {
+  const selectableRects = side ? reviewElementRectsForSide(side) : [];
+  const rects = [...range.getClientRects()]
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .filter((rect) => selectableRects.length === 0 || selectableRects.some((selectableRect) => rectsIntersect(rect, selectableRect)));
   if (rects.length === 0) return undefined;
   return rects.sort((first, second) => first.top - second.top || second.right - first.right)[0];
+};
+
+const reviewElementRectsForSide = (side: SyntaxSide) => {
+  const root = rootRef.value;
+  if (!root) return [];
+
+  return [...root.querySelectorAll<HTMLElement>(`[data-review-side="${side}"]`)]
+    .map((element) => element.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+};
+
+const rectsIntersect = (first: DOMRect, second: DOMRect) => {
+  return first.left < second.right
+    && first.right > second.left
+    && first.top < second.bottom
+    && first.bottom > second.top;
 };
 
 const submitComment = async () => {
@@ -2089,6 +2124,11 @@ watch(
 
 .synced-split-view {
   min-width: 0;
+}
+
+.selecting-old-side :deep([data-review-side="new"]),
+.selecting-new-side :deep([data-review-side="old"]) {
+  user-select: none;
 }
 
 .spacer {
