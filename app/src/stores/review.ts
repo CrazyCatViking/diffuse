@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewAgentState, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewedFilesState, ReviewedFilesUpdate, ReviewAgentState, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -12,6 +12,7 @@ export const useReviewStore = defineStore('review', () => {
   const session = ref<ReviewSession | null>(null);
   const sessions = ref<ReviewSession[]>([]);
   const progress = ref<ReviewProgress | null>(null);
+  const reviewedFiles = ref<ReviewedFilesState>({ files: {} });
   const runs = ref<ReviewRun[]>([]);
   const agentStates = ref<ReviewAgentState[]>([]);
   const threads = ref<ReviewThread[]>([]);
@@ -22,6 +23,7 @@ export const useReviewStore = defineStore('review', () => {
   const draftFile = ref<ChangedFile>();
   const draftMode = ref<'comment' | 'chat'>('comment');
   const pendingAgentChatKeys = ref(new Set<string>());
+  let reviewedFilesMutation = Promise.resolve();
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
   const activeRun = computed(() => {
@@ -103,6 +105,15 @@ export const useReviewStore = defineStore('review', () => {
     progress.value = await client.getReviewProgress(session.value.id);
   };
 
+  const loadReviewedFiles = async () => {
+    if (!session.value) {
+      reviewedFiles.value = { files: {} };
+      return;
+    }
+
+    reviewedFiles.value = await client.getReviewedFiles(session.value.id);
+  };
+
   const loadRuns = async () => {
     if (!session.value) {
       runs.value = [];
@@ -122,7 +133,25 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const refreshReviewState = async () => {
-    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadRuns(), loadAgentStates(), loadChatMessages()]);
+    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadReviewedFiles(), loadRuns(), loadAgentStates(), loadChatMessages()]);
+  };
+
+  const startNewSession = async () => {
+    if (!repo.repository) return false;
+    loading.value = true;
+    error.value = undefined;
+
+    try {
+      session.value = await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget));
+      await refreshReviewState();
+      cancelDraft();
+      return true;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      return false;
+    } finally {
+      loading.value = false;
+    }
   };
 
   const startAgentReview = async () => {
@@ -250,6 +279,71 @@ export const useReviewStore = defineStore('review', () => {
     const updated = { ...thread, status: 'open' as const, updatedAt: new Date().toISOString() };
     const saved = await client.saveReviewThread(session.value.id, updated);
     threads.value = threads.value.map((item) => item.id === saved.id ? saved : item);
+  };
+
+  const isFileReviewed = (file: ChangedFile) => {
+    return reviewedFiles.value.files[file.id]?.signature === file.signature;
+  };
+
+  const markFileReviewed = async (file: ChangedFile) => {
+    if (!session.value) await ensureSession();
+    if (!session.value) return false;
+
+    const reviewedAt = new Date().toISOString();
+    return updateReviewedFiles({
+      files: {
+        [file.id]: {
+          fileId: file.id,
+          reviewedAt,
+          reviewedBy: humanParticipantId,
+          signature: file.signature,
+        },
+      },
+    });
+  };
+
+  const unmarkFileReviewed = async (file: ChangedFile) => {
+    if (!session.value) return false;
+    return updateReviewedFiles({ removeFileIds: [file.id] });
+  };
+
+  const setFilesReviewed = async (files: ChangedFile[], reviewed: boolean) => {
+    if (!session.value) await ensureSession();
+    if (!session.value) return false;
+
+    const now = new Date().toISOString();
+    const update: ReviewedFilesUpdate = reviewed ? { files: {} } : { removeFileIds: [] };
+    for (const file of files) {
+      if (reviewed) {
+        update.files![file.id] = {
+          fileId: file.id,
+          reviewedAt: now,
+          reviewedBy: humanParticipantId,
+          signature: file.signature,
+        };
+      } else {
+        update.removeFileIds!.push(file.id);
+      }
+    }
+
+    return updateReviewedFiles(update);
+  };
+
+  const updateReviewedFiles = async (update: ReviewedFilesUpdate) => {
+    if (!session.value) return false;
+    const sessionId = session.value.id;
+    try {
+      reviewedFilesMutation = reviewedFilesMutation.then(async () => {
+        reviewedFiles.value = await client.updateReviewedFiles(sessionId, update);
+      });
+      await reviewedFilesMutation;
+      error.value = undefined;
+      return true;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      reviewedFilesMutation = Promise.resolve();
+      return false;
+    }
   };
 
   const saveChatMessage = async (role: ReviewChatMessage['role'], body: string, context?: ReviewChatMessage['context']) => {
@@ -394,6 +488,7 @@ export const useReviewStore = defineStore('review', () => {
     session.value = null;
     sessions.value = [];
     progress.value = null;
+    reviewedFiles.value = { files: {} };
     runs.value = [];
     agentStates.value = [];
     threads.value = [];
@@ -407,6 +502,7 @@ export const useReviewStore = defineStore('review', () => {
     session,
     sessions,
     progress,
+    reviewedFiles,
     runs,
     agentStates,
     activeAgentState,
@@ -421,8 +517,10 @@ export const useReviewStore = defineStore('review', () => {
     draftMode,
     pendingAgentChatKeys,
     ensureSession,
+    startNewSession,
     loadSessions,
     loadProgress,
+    loadReviewedFiles,
     loadRuns,
     loadAgentStates,
     loadChatMessages,
@@ -436,6 +534,10 @@ export const useReviewStore = defineStore('review', () => {
     addMessage,
     resolveThread,
     reopenThread,
+    isFileReviewed,
+    markFileReviewed,
+    unmarkFileReviewed,
+    setFilesReviewed,
     saveChatMessage,
     askAgentInThread,
     askAgentAtDraft,

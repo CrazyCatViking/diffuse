@@ -21,6 +21,7 @@ pub const ChangedFile = struct {
     status: FileStatus,
     additions: u32,
     deletions: u32,
+    signature: []const u8,
 
     pub fn statusString(self: ChangedFile) []const u8 {
         return switch (self.status) {
@@ -106,6 +107,7 @@ pub const Repository = struct {
             const path_copy = try self.allocator.dupe(u8, new_path_text);
             const id_copy = try self.allocator.dupe(u8, new_path_text);
             const counts = parseNumstat(numstat_output, new_path_text);
+            const signature = try self.diffSignature(target, new_path_text);
 
             try files.append(self.allocator, .{
                 .id = id_copy,
@@ -114,10 +116,20 @@ pub const Repository = struct {
                 .status = status,
                 .additions = counts.additions,
                 .deletions = counts.deletions,
+                .signature = signature,
             });
         }
 
         return try files.toOwnedSlice(self.allocator);
+    }
+
+    fn diffSignature(self: *Repository, target: DiffTarget, path: []const u8) ![]u8 {
+        const diff_output = try self.gitDiff(target, &.{"--binary"}, path);
+        defer self.allocator.free(diff_output);
+        var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(diff_output, &digest, .{});
+        const hex = std.fmt.bytesToHex(digest, .lower);
+        return try self.allocator.dupe(u8, &hex);
     }
 
     pub fn gitDiff(self: *Repository, target: DiffTarget, flags: []const []const u8, path: ?[]const u8) ![]u8 {
@@ -250,6 +262,7 @@ pub fn freeChangedFiles(allocator: std.mem.Allocator, files: []ChangedFile) void
         allocator.free(file.id);
         if (file.old_path) |path| allocator.free(path);
         if (file.new_path) |path| allocator.free(path);
+        allocator.free(file.signature);
     }
     allocator.free(files);
 }

@@ -4,7 +4,9 @@ const reviews_dir = ".diffuse/reviews";
 const sessions_dir = "sessions";
 const active_file = "active-session";
 const progress_file = "progress.json";
+const reviewed_files_file = "reviewed-files.json";
 const config_file = "config.json";
+const max_reviewed_files_bytes = 16 * 1024 * 1024;
 
 const default_config = "{\"provider\":\"opencode\",\"maxParallelAgents\":1,\"promptInstructions\":\"Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations.\"}";
 
@@ -163,6 +165,23 @@ pub fn writeProgress(allocator: std.mem.Allocator, io: std.Io, repo_root: []cons
     defer allocator.free(path);
     try writeFileAtomic(allocator, io, path, progress_json);
     return try allocator.dupe(u8, progress_json);
+}
+
+pub fn readReviewedFiles(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) !?[]u8 {
+    const path = try reviewedFilesPath(allocator, io, repo_root, session_id);
+    defer allocator.free(path);
+    return std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(max_reviewed_files_bytes)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+}
+
+pub fn writeReviewedFiles(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, reviewed_files_json: []const u8) ![]u8 {
+    try ensureSessionDir(allocator, io, repo_root, session_id);
+    const path = try reviewedFilesPath(allocator, io, repo_root, session_id);
+    defer allocator.free(path);
+    try writeFileAtomic(allocator, io, path, reviewed_files_json);
+    return try allocator.dupe(u8, reviewed_files_json);
 }
 
 pub fn writeAgentState(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, agent_run_id: []const u8, agent_json: []const u8) ![]u8 {
@@ -344,6 +363,12 @@ fn progressPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8,
     const dir_path = try sessionDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, progress_file });
+}
+
+fn reviewedFilesPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) ![]u8 {
+    const dir_path = try sessionDirPath(allocator, io, repo_root, session_id);
+    defer allocator.free(dir_path);
+    return std.fs.path.join(allocator, &.{ dir_path, reviewed_files_file });
 }
 
 fn configPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) ![]u8 {

@@ -15,6 +15,7 @@ This directory is intentionally plain JSON and Markdown so external agent harnes
       <session-id>/
         review.json
         progress.json
+        reviewed-files.json
         threads/
           <thread-id>.json
         runs/
@@ -58,6 +59,8 @@ Diffuse watches `.diffuse/reviews` and emits live UI updates when files change.
 
 `review.json` describes the review target and participants.
 
+`.diffuse/reviews/active-session` contains the active session id. External agents can use that file for the current review, or target `.diffuse/reviews/sessions/<session-id>/` directly when they are asked to consider a specific review. Comments, chat, agent runs, progress, and reviewed-file state are all scoped to one session directory.
+
 ```json
 {
   "id": "session-...",
@@ -91,6 +94,25 @@ Diffuse watches `.diffuse/reviews` and emits live UI updates when files change.
   "completedFiles": ["src/ui.ts"],
   "message": "Reviewing authentication flow",
   "lastActivityAt": "2026-06-15T12:05:00.000Z"
+}
+```
+
+## Reviewed Files
+
+`reviewed-files.json` records files that a human has marked reviewed in this session.
+
+Diffuse treats a file as reviewed only when the saved `signature` matches the current changed-file signature. If the file changes after it was marked reviewed, the current signature changes and the UI shows the file as unreviewed without deleting the historical record.
+
+```json
+{
+  "files": {
+    "src/auth.ts": {
+      "fileId": "src/auth.ts",
+      "reviewedAt": "2026-06-15T12:08:00.000Z",
+      "reviewedBy": "local-human",
+      "signature": "9f4b..."
+    }
+  }
 }
 ```
 
@@ -213,6 +235,9 @@ saveReviewConfig
 getReviewProgress
 saveReviewProgress
 getReviewAgentStates
+getReviewedFiles
+saveReviewedFiles
+updateReviewedFiles
 saveReviewAgentState
 getReviewRuns
 saveReviewRun

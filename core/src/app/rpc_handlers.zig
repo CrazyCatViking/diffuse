@@ -32,6 +32,9 @@ pub fn register(server: anytype) !void {
     try server.handle("createReviewSession", createReviewSession);
     try server.handle("getReviewProgress", getReviewProgress);
     try server.handle("saveReviewProgress", saveReviewProgress);
+    try server.handle("getReviewedFiles", getReviewedFiles);
+    try server.handle("saveReviewedFiles", saveReviewedFiles);
+    try server.handle("updateReviewedFiles", updateReviewedFiles);
     try server.handle("getReviewAgentStates", getReviewAgentStates);
     try server.handle("saveReviewAgentState", saveReviewAgentState);
     try server.handle("getReviewRuns", getReviewRuns);
@@ -198,6 +201,98 @@ fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Re
     const saved = try review.writeRun(runtime.allocator, runtime.io, repo.root, session_id, run_id, run_json);
     defer runtime.allocator.free(saved);
     try emitReviewChanged(runtime, repo.root, session_id, "run.updated");
+    try writer.writeAll(saved);
+}
+
+fn getReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const reviewed_files_json = try review.readReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id);
+    defer if (reviewed_files_json) |json| runtime.allocator.free(json);
+
+    if (reviewed_files_json) |json| try writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("{\"files\":{}}");
+}
+
+fn saveReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const reviewed_files = try getObjectParam(request, "reviewedFiles");
+    const reviewed_files_json = try stringifyJsonValue(runtime.allocator, reviewed_files);
+    defer runtime.allocator.free(reviewed_files_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id, reviewed_files_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "reviewed-files.updated");
+    try writer.writeAll(saved);
+}
+
+fn updateReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const update = try getObjectParam(request, "update");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const current_json = try review.readReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id) orelse try runtime.allocator.dupe(u8, "{\"files\":{}}");
+    defer runtime.allocator.free(current_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, runtime.allocator, current_json, .{});
+    defer parsed.deinit();
+
+    var root_object = switch (parsed.value) {
+        .object => |*object| object,
+        else => return error.InvalidParam,
+    };
+
+    const files_value = root_object.getPtr("files") orelse return error.InvalidParam;
+    var files_object = switch (files_value.*) {
+        .object => |*object| object,
+        else => return error.InvalidParam,
+    };
+
+    const update_object = switch (update) {
+        .object => |object| object,
+        else => return error.InvalidParam,
+    };
+
+    if (update_object.get("files")) |files_update_value| {
+        const files_update = switch (files_update_value) {
+            .object => |object| object,
+            else => return error.InvalidParam,
+        };
+        var iterator = files_update.iterator();
+        while (iterator.next()) |entry| {
+            try files_object.put(runtime.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
+    if (update_object.get("removeFileIds")) |remove_value| {
+        const remove_ids = switch (remove_value) {
+            .array => |array| array,
+            else => return error.InvalidParam,
+        };
+        for (remove_ids.items) |item| {
+            const file_id = switch (item) {
+                .string => |text| text,
+                else => return error.InvalidParam,
+            };
+            _ = files_object.swapRemove(file_id);
+        }
+    }
+
+    const reviewed_files_json = try stringifyJsonValue(runtime.allocator, parsed.value);
+    defer runtime.allocator.free(reviewed_files_json);
+    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id, reviewed_files_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "reviewed-files.updated");
     try writer.writeAll(saved);
 }
 
