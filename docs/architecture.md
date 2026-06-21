@@ -29,7 +29,16 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 - `coreRequest(method, params)` sends a whitelisted request to the Zig core.
 - `onCoreEvent(listener)` subscribes to core notifications such as repository changes and Tree-sitter install progress.
 
-`app/electron/main.ts` creates the browser window, starts the core process lazily, and registers IPC handlers. `app/electron/coreProcess.ts` resolves the core executable from development and packaged-app locations, then spawns it as:
+`app/electron/main.ts` creates the browser window, starts the core process lazily, and registers IPC handlers. `app/electron/coreProcess.ts` resolves the core executable in this order:
+
+- `DIFFUSE_CORE_EXECUTABLE` when set and pointing at an existing file.
+- Development build paths such as `core/zig-out/bin/diffuse`.
+- Packaged app resources under `process.resourcesPath`.
+- Installed core under `DIFFUSE_INSTALL_ROOT` or `~/.local/share/diffuse/core/diffuse`.
+
+It also resolves the Tree-sitter registry directory from `DIFFUSE_TREE_SITTER_REGISTRY_DIR`, nearby development checkouts named `diffuse-tree-sitter`, or `~/.diffuse/tree-sitter`.
+
+The core is spawned as:
 
 ```text
 diffuse rpc
@@ -64,6 +73,8 @@ The main user flow is:
 
 Once a repository is open, filesystem changes under the repository root trigger a changed-file refresh without reopening the repository. If the same file is already displayed, the UI marks the diff as stale and lets the user load the latest version.
 
+The repository watcher currently runs on Linux. Normal repository file changes emit `repository/changed` with changed relative paths. Changes under `.diffuse/reviews` emit `review/changed`, which causes the renderer to refresh review sessions, progress, runs, agent state, threads, and chat messages.
+
 ## Core Entry Points
 
 `core/src/main.zig` delegates to `core/src/app/cli.zig`.
@@ -87,8 +98,9 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 - `session_lock` protects repository session access.
 - `syntax_cache` stores dynamically loaded Tree-sitter parser libraries and queries.
 - `syntax_cache_lock` protects the syntax cache.
-- `repo_watcher` watches the opened repository and emits `repository/changed` notifications.
+- `repo_watcher` watches the opened repository and emits `repository/changed` or `review/changed` notifications on Linux.
 - `outbound` queues JSON response and event messages for the writer task.
+- `lsp_manager` owns persistent language server sessions.
 
 Requests can run concurrently. Responses and notifications are serialized through the outbound queue so only the writer task writes to `stdout`.
 
@@ -96,10 +108,14 @@ Handlers are registered in `core/src/app/rpc_handlers.zig`. Important methods in
 
 - `getVersion`
 - `openRepository`
+- `getDiffTargetDefaults`
+- `listBranches`
 - `listChangedFiles`
 - `getDiffRenderModel`
 - `getSyntaxSpans`
+- `getLspConfigInfo`, `getLspStatus`, `getLspHover`, `getLspDiagnostics`, `installLspServer`, and `restartLspServer`
 - `installTreeSitterGrammar`
+- `listTreeSitterGrammars`, `syncTreeSitterRegistry`, and `uninstallTreeSitterGrammar`
 - review/session persistence methods described in [`review-spec-v1.md`](review-spec-v1.md)
 - LSP methods described in [`lsp.md`](lsp.md)
 
@@ -112,23 +128,30 @@ Opening a repository runs:
 - `git -C <path> rev-parse --show-toplevel`
 - `git -C <root> rev-parse --short HEAD`
 
-Changed files are assembled from:
+Changed files are assembled from `git diff` for the active `DiffTarget`:
 
-- `git status --porcelain=v1 -uall` for paths and status.
+- `git diff --name-status -M` for paths and status.
 - `git diff --numstat` for addition/deletion counts.
+
+The target supports two shapes:
+
+- Ref comparison: `base` and `compare` are set, and the core runs `git diff <base> <compare>`.
+- Working tree comparison: `compare` is unset, and `includeStaged`/`includeUnstaged` decide whether the core compares the base ref, the index, the working tree, or no files.
+
+Default targets come from repository state. Dirty repositories use working tree changes against `HEAD`. Clean repositories compare `HEAD` against the configured upstream when available, then `origin/main`, `origin/master`, or `HEAD`.
 
 `core/src/core/diff.zig` builds a `DiffRenderModel` for a file.
 
-For diff-only mode it runs:
+For diff-only mode it runs the active target through:
 
 ```text
-git diff -- <path>
+git diff <target args> -- <path>
 ```
 
 For full-file context mode it runs:
 
 ```text
-git diff -U999999 -- <path>
+git diff -U999999 <target args> -- <path>
 ```
 
 The resulting unified diff is parsed into rows:
@@ -148,10 +171,7 @@ First, `getDiffRenderModel` returns syntax status such as detected language, gra
 
 Second, `DiffViewer.vue` requests syntax spans lazily for visible line ranges. It uses `@tanstack/vue-virtual` to render only visible rows and queues `getSyntaxSpans` requests in pages. Visible pages are high priority; lookahead/prefetch pages are lower priority.
 
-`getSyntaxSpans` asks the core for either the old or new side:
-
-- Old side source comes from Git.
-- New side source comes from the working tree file.
+`getSyntaxSpans` asks the core for either the old or new side. Source resolution follows the active target: refs for branch comparisons, the index for staged/unstaged boundaries, and the working tree for working-tree new-side content.
 
 The core highlights only the requested range, with extra context for languages that use Tree-sitter injections. The syntax cache keeps dynamic libraries and compiled queries loaded across requests.
 
@@ -162,8 +182,10 @@ Diffuse can show hover information and diagnostics in diffs. LSP configuration a
 At a high level:
 
 - The app exposes settings and UI actions for language servers.
-- The core owns server configuration, process lifecycle, hover requests, and diagnostics.
+- The core owns server configuration, process lifecycle, hover requests, diagnostics, install metadata, and session restarts.
 - Diagnostics describe the new side of a diff because that is the code that will exist after the change.
+
+LSP sessions are keyed by repository, language, and server id. The core opens or updates in-memory documents for the source side requested by the UI, then asks for hover or diagnostics. Server sessions persist until restart, process exit, or core shutdown.
 
 ## Review Persistence And Agent Review
 
@@ -172,6 +194,10 @@ Review state is stored in the opened repository under `.diffuse/reviews`. The da
 The desktop app can start built-in opencode review runs for the active session. Zig core owns review run state in `runs/<agent-run-id>.json`. Electron acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
 
 Review data is intentionally plain JSON and Markdown so external agent harnesses can inspect or update it without linking against Diffuse.
+
+Manual review comments and AI chat use the same persisted review files. The renderer creates human threads for line/selection comments, writes chat messages for user questions, and asks the Electron provider adapter for opencode responses when the user asks AI about a thread or selection.
+
+The opencode runner writes review prompts under `.diffuse/reviews/sessions/<session-id>/prompts/`, writes temporary opencode tool definitions under `.opencode/tools/`, and starts a localhost bridge that validates tool calls before forwarding them to core RPC methods.
 
 ## Tree-Sitter Grammar Installation
 
@@ -186,6 +212,19 @@ During installation, the core sends JSON-RPC notifications like:
 ```
 
 Electron forwards these notifications to the renderer via `core:event`.
+
+Settings can also list installed/available grammars, sync the external registry, and uninstall a grammar. Uninstalling a grammar removes it from the syntax cache before deleting installed files.
+
+## App-Local State
+
+The renderer keeps small UI preferences in browser local storage:
+
+- Recent repositories under `diffuse.recentRepositories`, capped at 10 entries.
+- File tree width under `diffuse.fileTreeWidth`.
+- Syntax theme id under `diffuse.syntaxTheme`.
+- Custom syntax colors under `diffuse.customSyntaxTheme`.
+
+This state is UI convenience data only. Review sessions and agent state are stored in the opened repository under `.diffuse/reviews`.
 
 ## Build Wiring
 
