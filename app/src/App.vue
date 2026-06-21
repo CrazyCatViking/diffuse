@@ -37,10 +37,12 @@
         :progress="review.progress"
         :active-run="review.activeRun"
         :active-agent-state="review.activeAgentState"
+        :session="review.session"
         :sessions="review.sessions"
         :runs="review.runs"
         :open-thread-count="review.openThreads.length"
         :error="review.error"
+        @new-session="review.startNewSession()"
         @start="review.startAgentReview()"
         @stop="review.stopAgentReview()"
       />
@@ -50,8 +52,11 @@
           :files="repo.changedFiles"
           :active-file-id="repo.activeFileId"
           :active-folder-path="selectedFolder?.path"
+          :reviewed-file-ids="reviewedFileIds"
           @select-file="selectFile"
           @select-folder="selectFolder"
+          @set-reviewed="setFileReviewed"
+          @set-folder-reviewed="setFolderReviewed"
         />
         <div
           class="resize-handle"
@@ -97,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
 import DiffTargetBar from './components/diff/DiffTargetBar.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
@@ -135,6 +140,7 @@ function clampFileTreeWidth(width: number) {
 
 const fileTreeWidth = ref(loadFileTreeWidth());
 const fileTreeResizing = ref(false);
+const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
 
 const startFileTreeResize = (event: PointerEvent) => {
   event.preventDefault();
@@ -178,6 +184,17 @@ const selectFile = (fileId: string) => {
 const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
   selectedFolder.value = { path: folder.path, files: sortFilesLikeSidebar(folder.files) };
   repo.activeFileId = undefined;
+};
+
+const setFileReviewed = async (payload: { fileId: string; reviewed: boolean }) => {
+  const file = repo.changedFiles.find((item) => item.id === payload.fileId);
+  if (!file) return;
+  if (payload.reviewed) await review.markFileReviewed(file);
+  else await review.unmarkFileReviewed(file);
+};
+
+const setFolderReviewed = async (payload: { files: ChangedFile[]; reviewed: boolean }) => {
+  await review.setFilesReviewed(payload.files, payload.reviewed);
 };
 
 const changedFilePath = (file: ChangedFile) => file.newPath ?? file.oldPath ?? file.id;

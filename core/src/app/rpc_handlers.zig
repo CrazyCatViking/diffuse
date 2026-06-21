@@ -32,6 +32,8 @@ pub fn register(server: anytype) !void {
     try server.handle("createReviewSession", createReviewSession);
     try server.handle("getReviewProgress", getReviewProgress);
     try server.handle("saveReviewProgress", saveReviewProgress);
+    try server.handle("getReviewedFiles", getReviewedFiles);
+    try server.handle("saveReviewedFiles", saveReviewedFiles);
     try server.handle("getReviewAgentStates", getReviewAgentStates);
     try server.handle("saveReviewAgentState", saveReviewAgentState);
     try server.handle("getReviewRuns", getReviewRuns);
@@ -198,6 +200,35 @@ fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Re
     const saved = try review.writeRun(runtime.allocator, runtime.io, repo.root, session_id, run_id, run_json);
     defer runtime.allocator.free(saved);
     try emitReviewChanged(runtime, repo.root, session_id, "run.updated");
+    try writer.writeAll(saved);
+}
+
+fn getReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const reviewed_files_json = try review.readReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id);
+    defer if (reviewed_files_json) |json| runtime.allocator.free(json);
+
+    if (reviewed_files_json) |json| try writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("{\"files\":{}}");
+}
+
+fn saveReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
+    const session_id = try json_rpc.getStringParam(request, "sessionId");
+    const reviewed_files = try getObjectParam(request, "reviewedFiles");
+    const reviewed_files_json = try stringifyJsonValue(runtime.allocator, reviewed_files);
+    defer runtime.allocator.free(reviewed_files_json);
+
+    try runtime.session_lock.lockShared(runtime.io);
+    defer runtime.session_lock.unlockShared(runtime.io);
+
+    const repo = try runtime.session.requireRepo();
+    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id, reviewed_files_json);
+    defer runtime.allocator.free(saved);
+    try emitReviewChanged(runtime, repo.root, session_id, "reviewed-files.updated");
     try writer.writeAll(saved);
 }
 

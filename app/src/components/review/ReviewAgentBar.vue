@@ -4,11 +4,13 @@
       <div class="review-agent-copy">
         <span class="label">AI review</span>
         <span class="message">{{ message }}</span>
+        <span v-if="session" class="session-id" :title="session.id">{{ shortSessionId }}</span>
       </div>
 
       <div class="review-agent-actions">
         <span v-if="progressText" class="progress">{{ progressText }}</span>
         <Button :disabled="sessions.length === 0 && runs.length === 0" @click="showHistory = !showHistory">History</Button>
+        <Button :disabled="loading || !enabled" @click="emit('newSession')">New session</Button>
         <Button v-if="activeRun" :disabled="loading" @click="emit('stop')">Stop review</Button>
         <Button v-else :disabled="loading || !enabled" @click="emit('start')">Start AI review</Button>
       </div>
@@ -18,8 +20,8 @@
       <div class="history-column">
         <span class="history-title">Sessions</span>
         <span v-if="recentSessions.length === 0" class="history-empty">No review sessions yet</span>
-        <div v-for="item in recentSessions" :key="item.id" class="history-row">
-          <span>{{ item.title ?? item.id }}</span>
+        <div v-for="item in recentSessions" :key="item.id" class="history-row" :class="{ current: item.id === session?.id }">
+          <span>{{ item.title ?? item.id }}<template v-if="item.id === session?.id"> (current)</template></span>
           <span>{{ formatDate(item.updatedAt) }}</span>
         </div>
       </div>
@@ -47,6 +49,7 @@ const props = defineProps<{
   progress: ReviewProgress | null;
   activeRun: ReviewRun | null;
   activeAgentState: ReviewAgentState | null;
+  session: ReviewSession | null;
   sessions: ReviewSession[];
   runs: ReviewRun[];
   openThreadCount: number;
@@ -54,6 +57,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  newSession: [];
   start: [];
   stop: [];
 }>();
@@ -82,6 +86,8 @@ const liveAgentMessage = computed(() => {
 });
 
 const truncateStatus = (value: string) => value.length > 150 ? `${value.slice(0, 147)}...` : value;
+
+const shortSessionId = computed(() => props.session?.id.replace(/^session-/, '').slice(0, 12));
 
 const progressText = computed(() => {
   if (!props.progress || props.progress.totalFiles === undefined || props.progress.reviewedFiles === undefined) return undefined;
@@ -149,6 +155,21 @@ const formatDate = (value: string) => {
   white-space: nowrap;
 }
 
+.session-id {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
+  padding: 2px 6px;
+  color: #8b95a7;
+  background: #202635;
+  border: 1px solid #2d3545;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .review-history {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -177,6 +198,10 @@ const formatDate = (value: string) => {
   min-width: 0;
   color: #98a2b3;
   font-size: 12px;
+}
+
+.history-row.current {
+  color: #dbe7ff;
 }
 
 .history-row span:first-child {

@@ -15,6 +15,7 @@ export type ChangedFile = {
   status: 'added' | 'modified' | 'deleted' | 'renamed';
   additions: number;
   deletions: number;
+  signature: string;
 };
 
 export type DiffTarget = {
@@ -189,6 +190,17 @@ export type ReviewProgress = {
   completedFiles?: string[];
   message?: string;
   lastActivityAt?: string;
+};
+
+export type ReviewedFile = {
+  fileId: string;
+  reviewedAt: string;
+  reviewedBy: string;
+  signature: string;
+};
+
+export type ReviewedFilesState = {
+  files: Record<string, ReviewedFile>;
 };
 
 export type ReviewConfig = {

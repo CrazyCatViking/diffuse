@@ -1,4 +1,4 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewedFilesState, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -102,6 +102,14 @@ export const useClient = () => {
     return window.diffuse.coreRequest('saveReviewProgress', { sessionId, progress: plainJson(progress) });
   };
 
+  const getReviewedFiles = async (sessionId: string): Promise<ReviewedFilesState> => {
+    return window.diffuse.coreRequest('getReviewedFiles', { sessionId });
+  };
+
+  const saveReviewedFiles = async (sessionId: string, reviewedFiles: ReviewedFilesState): Promise<ReviewedFilesState> => {
+    return window.diffuse.coreRequest('saveReviewedFiles', { sessionId, reviewedFiles: plainJson(reviewedFiles) });
+  };
+
   const saveReviewAgentState = async (sessionId: string, agent: ReviewAgentState): Promise<ReviewAgentState> => {
     return window.diffuse.coreRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
   };
@@ -197,6 +205,8 @@ export const useClient = () => {
     createReviewSession,
     getReviewProgress,
     saveReviewProgress,
+    getReviewedFiles,
+    saveReviewedFiles,
     getReviewAgentStates,
     saveReviewAgentState,
     getReviewRuns,

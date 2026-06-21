@@ -4,7 +4,16 @@
     <div v-if="files.length === 0" class="empty">No changed files</div>
     <template v-else>
       <template v-for="node in visibleNodes" :key="node.key">
-        <div v-if="node.type === 'folder'" class="folder-row" :class="{ active: node.key === activeFolderPath }" :style="{ '--depth': node.depth }">
+        <div v-if="node.type === 'folder'" class="folder-row" :class="{ active: node.key === activeFolderPath, reviewed: folderReviewed(node) }" :style="{ '--depth': node.depth }">
+          <input
+            class="review-checkbox"
+            type="checkbox"
+            :checked="folderReviewed(node)"
+            :title="folderReviewed(node) ? 'Mark folder unreviewed' : 'Mark folder reviewed'"
+            :aria-label="folderReviewed(node) ? 'Mark folder unreviewed' : 'Mark folder reviewed'"
+            @click.stop
+            @change="setFolderReviewed(node, ($event.target as HTMLInputElement).checked)"
+          />
           <button class="chevron-button" type="button" :aria-label="collapsedFolders.has(node.key) ? `Expand ${node.name}` : `Collapse ${node.name}`" @click="toggleFolder(node.key)">
             <span class="chevron">{{ collapsedFolders.has(node.key) ? '›' : '⌄' }}</span>
           </button>
@@ -19,7 +28,9 @@
           :name="node.name"
           :depth="node.depth"
           :active="node.file.id === activeFileId"
+          :reviewed="reviewedFileIds.includes(node.file.id)"
           @select="$emit('selectFile', $event)"
+          @set-reviewed="$emit('setReviewed', $event)"
         />
       </template>
     </template>
@@ -55,11 +66,14 @@ const props = defineProps<{
   files: ChangedFile[];
   activeFileId?: string;
   activeFolderPath?: string;
+  reviewedFileIds: string[];
 }>();
 
 const emit = defineEmits<{
   selectFile: [fileId: string];
   selectFolder: [folder: { path: string; files: ChangedFile[] }];
+  setReviewed: [payload: { fileId: string; reviewed: boolean }];
+  setFolderReviewed: [payload: { files: ChangedFile[]; reviewed: boolean }];
 }>();
 
 const collapsedFolders = ref(new Set<string>());
@@ -76,6 +90,15 @@ const toggleFolder = (key: string) => {
 
 const selectFolder = (folder: TreeFolder) => {
   emit('selectFolder', { path: folder.path, files: folderFiles(folder) });
+};
+
+const folderReviewed = (folder: TreeFolder) => {
+  const files = folderFiles(folder);
+  return files.length > 0 && files.every((file) => props.reviewedFileIds.includes(file.id));
+};
+
+const setFolderReviewed = (folder: TreeFolder, reviewed: boolean) => {
+  emit('setFolderReviewed', { files: folderFiles(folder), reviewed });
 };
 
 const folderFiles = (folder: TreeFolder): ChangedFile[] => {
@@ -166,11 +189,11 @@ const sortTree = (nodes: TreeNode[]) => {
 
 .folder-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 4px;
+  grid-template-columns: 16px calc(18px + (var(--depth) * 16px)) minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   width: 100%;
-  padding: 7px 10px 7px calc(10px + (var(--depth) * 16px));
+  padding: 7px 10px;
   color: #aab4c5;
   background: transparent;
   border-radius: 8px;
@@ -182,6 +205,18 @@ const sortTree = (nodes: TreeNode[]) => {
   &.active {
     background: #202635;
   }
+}
+
+.folder-row.reviewed .folder-name {
+  color: #92d6a4;
+}
+
+.review-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #4b7bec;
+  cursor: pointer;
 }
 
 .chevron-button,
@@ -197,6 +232,7 @@ const sortTree = (nodes: TreeNode[]) => {
 
 .chevron-button {
   display: grid;
+  justify-self: end;
   place-items: center;
   width: 18px;
   height: 22px;

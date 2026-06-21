@@ -25,6 +25,7 @@ pub const ChangedFile = struct {
     status: []const u8,
     additions: u32,
     deletions: u32,
+    signature: []const u8,
 };
 
 pub const DiffTarget = struct {
@@ -218,6 +219,7 @@ pub fn changedFile(file: repository.ChangedFile) ChangedFile {
         .status = file.statusString(),
         .additions = file.additions,
         .deletions = file.deletions,
+        .signature = file.signature,
     };
 }
 
