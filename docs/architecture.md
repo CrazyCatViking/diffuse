@@ -9,7 +9,7 @@ Diffuse is split into two cooperating programs:
 - `core/` is a Zig executable named `diffuse`. It owns Git access, repository session state, diff parsing, Tree-sitter syntax work, LSP sessions, review persistence, and JSON-RPC handling.
 - `app/` is an Electron/Vue desktop app. It owns windows, dialogs, UI state, rendering, settings, provider adapters, and communication with the core process.
 
-The app talks to the core over line-delimited JSON-RPC on the core process `stdin` and `stdout`.
+The app talks to the core over line-delimited JSON-RPC on each core process `stdin` and `stdout`. Diffuse uses one Electron app process with one Zig core process per open window, so multiple repositories can be reviewed independently without starting multiple Electron app processes.
 
 ```text
 Vue renderer
@@ -29,7 +29,7 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 - `coreRequest(method, params)` sends a whitelisted request to the Zig core.
 - `onCoreEvent(listener)` subscribes to core notifications such as repository changes and Tree-sitter install progress.
 
-`app/electron/main.ts` creates the browser window, starts the core process lazily, and registers IPC handlers. `app/electron/coreProcess.ts` resolves the core executable in this order:
+`app/electron/main.ts` creates browser windows, owns one `CoreRpcClient` per window, and registers IPC handlers. `app/electron/coreProcess.ts` resolves the core executable in this order:
 
 - `DIFFUSE_CORE_EXECUTABLE` when set and pointing at an existing file.
 - Development build paths such as `core/zig-out/bin/diffuse`.
@@ -38,19 +38,21 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 
 It also resolves the Tree-sitter registry directory from `DIFFUSE_TREE_SITTER_REGISTRY_DIR`, nearby development checkouts named `diffuse-tree-sitter`, or `~/.diffuse/tree-sitter`.
 
-The core is spawned as:
+Each window's core is spawned as:
 
 ```text
 diffuse rpc
 ```
 
-`app/electron/coreRpcClient.ts` wraps the child process. Each request is serialized as a single JSON line:
+`app/electron/coreRpcClient.ts` wraps a child process. Each request is serialized as a single JSON line:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"listChangedFiles","params":{}}
 ```
 
-The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits messages without an `id` as events. Timeouts are applied per method. Most timed-out requests kill and restart the core; `getSyntaxSpans` can time out without killing the process.
+The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits messages without an `id` as events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
+
+Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event, and the main process opens a new `BrowserWindow` with its own core process for that repository.
 
 ## Renderer State
 

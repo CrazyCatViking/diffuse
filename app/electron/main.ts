@@ -1,14 +1,23 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
 import { CoreRequestTimeoutError, type CoreEvent, type CoreRpcClient } from './coreRpcClient';
 import { ReviewAgentRunner } from './reviewAgentRunner';
 
-let mainWindow: BrowserWindow | null = null;
-let core: CoreRpcClient | null = null;
-let reviewAgentRunner: ReviewAgentRunner | null = null;
-const launchRepository = parseLaunchRepository(process.argv);
+type WindowState = {
+  window: BrowserWindow;
+  launchRepository?: string;
+  repositoryRoot?: string;
+  core: CoreRpcClient | null;
+  reviewAgentRunner: ReviewAgentRunner | null;
+};
+
+const windowStates = new Map<number, WindowState>();
+
+if (!app.requestSingleInstanceLock({ cwd: process.cwd() })) {
+  app.exit(0);
+}
 
 const allowedCoreMethods = new Set([
   'getVersion',
@@ -54,17 +63,17 @@ const allowedCoreMethods = new Set([
   'uninstallTreeSitterGrammar'
 ]);
 
-function getCore(): CoreRpcClient {
-  if (core?.isRunning) return core;
+function getCore(state: WindowState): CoreRpcClient {
+  if (state.core?.isRunning) return state.core;
 
-  core = startCoreProcess();
-  core.on('event', (event: CoreEvent) => {
-    mainWindow?.webContents.send('core:event', event);
+  state.core = startCoreProcess();
+  state.core.on('event', (event: CoreEvent) => {
+    if (!state.window.isDestroyed()) state.window.webContents.send('core:event', event);
   });
-  core.once('exit', () => {
-    core = null;
+  state.core.once('exit', () => {
+    state.core = null;
   });
-  return core;
+  return state.core;
 }
 
 function requestTimeoutMs(method: string): number {
@@ -80,26 +89,42 @@ function shouldKillCoreOnTimeout(method: string): boolean {
   return method !== 'getSyntaxSpans' && method !== 'getLspHover' && method !== 'getLspDiagnostics';
 }
 
-async function coreRequest<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+async function coreRequest<T>(state: WindowState, method: string, params: Record<string, unknown> = {}): Promise<T> {
   try {
-    return await getCore().request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
+    return await getCore(state).request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
   } catch (error) {
     if (!(error instanceof CoreRequestTimeoutError)) throw error;
     if (!shouldKillCoreOnTimeout(method)) throw error;
 
-    core?.dispose();
-    core = null;
-    return getCore().request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
+    state.core?.dispose();
+    state.core = null;
+    return getCore(state).request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
   }
 }
 
-function getReviewAgentRunner(): ReviewAgentRunner {
-  reviewAgentRunner ??= new ReviewAgentRunner(coreRequest);
-  return reviewAgentRunner;
+function getReviewAgentRunner(state: WindowState): ReviewAgentRunner {
+  state.reviewAgentRunner ??= new ReviewAgentRunner((method, params) => coreRequest(state, method, params));
+  return state.reviewAgentRunner;
 }
 
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
+function focusWindow(window: BrowserWindow): void {
+  if (window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+function focusExistingRepositoryWindow(path: string): boolean {
+  for (const state of windowStates.values()) {
+    if (state.repositoryRoot !== path && state.launchRepository !== path) continue;
+    focusWindow(state.window);
+    return true;
+  }
+  return false;
+}
+
+function createWindow(launchRepository?: string): WindowState {
+  const window = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 900,
@@ -114,40 +139,84 @@ function createWindow(): void {
     }
   });
 
-  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+  const state: WindowState = {
+    window,
+    launchRepository,
+    core: null,
+    reviewAgentRunner: null
+  };
+  windowStates.set(window.id, state);
+
+  window.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error(`Failed to load preload script ${preloadPath}:`, error);
   });
 
+  window.on('closed', () => {
+    state.reviewAgentRunner?.dispose();
+    state.core?.dispose();
+    windowStates.delete(window.id);
+  });
+
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+    window.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
+    window.loadFile(join(__dirname, '../renderer/index.html'));
   }
+
+  getCore(state);
+  return state;
 }
 
-function parseLaunchRepository(args: string[]): string | undefined {
+function parseLaunchRepository(args: string[], cwd = process.cwd()): string | undefined {
   const index = args.indexOf('--open-repository');
   if (index === -1 || index + 1 >= args.length) return undefined;
-  return args[index + 1];
+  const path = args.slice(index + 1).filter((arg) => !arg.startsWith('-')).at(-1);
+  if (!path) return undefined;
+  return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 app.whenReady().then(() => {
-  getCore();
-  createWindow();
+  createWindow(parseLaunchRepository(process.argv));
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
+app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
+  const cwd = isCwdPayload(additionalData) ? additionalData.cwd : workingDirectory;
+  const launchPath = parseLaunchRepository(argv, cwd);
+  const openWindow = () => {
+    if (launchPath && focusExistingRepositoryWindow(launchPath)) return;
+    const state = createWindow(launchPath);
+    focusWindow(state.window);
+  };
+  if (app.isReady()) openWindow();
+  else void app.whenReady().then(openWindow);
+});
+
+function isCwdPayload(value: unknown): value is { cwd: string } {
+  return typeof value === 'object' && value !== null && 'cwd' in value && typeof value.cwd === 'string';
+}
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
-  reviewAgentRunner?.dispose();
-  core?.dispose();
+  for (const state of windowStates.values()) {
+    state.reviewAgentRunner?.dispose();
+    state.core?.dispose();
+  }
 });
+
+function getWindowState(event: IpcMainInvokeEvent): WindowState {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) throw new Error('Could not resolve request window');
+  const state = windowStates.get(window.id);
+  if (!state) throw new Error('Could not resolve window state');
+  return state;
+}
 
 function ensureLspConfigFile(configPath: string): void {
   mkdirSync(dirname(configPath), { recursive: true });
@@ -163,10 +232,10 @@ function ensureLspConfigFile(configPath: string): void {
   }, null, 2)}\n`);
 }
 
-ipcMain.handle('repo:pickDirectory', async () => {
-  if (!mainWindow) return null;
+ipcMain.handle('repo:pickDirectory', async (event) => {
+  const state = getWindowState(event);
 
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const result = await dialog.showOpenDialog(state.window, {
     title: 'Open Repository',
     properties: ['openDirectory']
   });
@@ -175,17 +244,26 @@ ipcMain.handle('repo:pickDirectory', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('app:getLaunchRepository', async () => {
-  return launchRepository ?? null;
+ipcMain.handle('app:getLaunchRepository', async (event) => {
+  return getWindowState(event).launchRepository ?? null;
 });
 
-ipcMain.handle('core:request', async (_event, request: { method: string; params?: Record<string, unknown> }) => {
+ipcMain.handle('core:request', async (event, request: { method: string; params?: Record<string, unknown> }) => {
   if (!allowedCoreMethods.has(request.method)) {
     throw new Error(`Unknown core method: ${request.method}`);
   }
 
-  return coreRequest(request.method, request.params ?? {});
+  const state = getWindowState(event);
+  const result = await coreRequest(state, request.method, request.params ?? {});
+  if (request.method === 'openRepository' && isOpenRepositoryResult(result)) {
+    state.repositoryRoot = result.root;
+  }
+  return result;
 });
+
+function isOpenRepositoryResult(value: unknown): value is { root: string } {
+  return typeof value === 'object' && value !== null && 'root' in value && typeof value.root === 'string';
+}
 
 ipcMain.handle('lsp:openConfig', async (_event, request: { configPath?: string }) => {
   const configPath = request.configPath;
@@ -196,14 +274,14 @@ ipcMain.handle('lsp:openConfig', async (_event, request: { configPath?: string }
   return configPath;
 });
 
-ipcMain.handle('review-agent:start', async (_event, request: { repositoryRoot: string; sessionId: string; files: unknown[] }) => {
-  return getReviewAgentRunner().start(request as Parameters<ReviewAgentRunner['start']>[0]);
+ipcMain.handle('review-agent:start', async (event, request: { repositoryRoot: string; sessionId: string; files: unknown[] }) => {
+  return getReviewAgentRunner(getWindowState(event)).start(request as Parameters<ReviewAgentRunner['start']>[0]);
 });
 
-ipcMain.handle('review-agent:stop', async () => {
-  return getReviewAgentRunner().stop();
+ipcMain.handle('review-agent:stop', async (event) => {
+  return getReviewAgentRunner(getWindowState(event)).stop();
 });
 
-ipcMain.handle('review-agent:chat', async (_event, request: Parameters<ReviewAgentRunner['chat']>[0]) => {
-  return getReviewAgentRunner().chat(request);
+ipcMain.handle('review-agent:chat', async (event, request: Parameters<ReviewAgentRunner['chat']>[0]) => {
+  return getReviewAgentRunner(getWindowState(event)).chat(request);
 });

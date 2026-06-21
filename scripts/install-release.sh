@@ -75,6 +75,13 @@ launch_app() {
     nohup "\$app" "\$@" >/dev/null 2>&1 &
   fi
 }
+resolve_repository_path() {
+  if [ -d "\$1" ]; then
+    cd "\$1" && pwd -P
+  else
+    printf '%s\n' "\$1"
+  fi
+}
 if [ "\$#" -eq 0 ]; then
   launch_app
   exit 0
@@ -91,7 +98,8 @@ case "\$1" in
     exec "\$core" "\$@"
     ;;
   *)
-    launch_app --open-repository "\$1"
+    repo_path="\$(resolve_repository_path "\$1")"
+    launch_app --open-repository "\$repo_path"
     exit 0
     ;;
 esac
@@ -132,6 +140,13 @@ if [ "\$#" -eq 0 ]; then
   open -a "\$app" >/dev/null 2>&1 &
   exit 0
 fi
+resolve_repository_path() {
+  if [ -d "\$1" ]; then
+    cd "\$1" && pwd -P
+  else
+    printf '%s\n' "\$1"
+  fi
+}
 case "\$1" in
   update)
     exec sh -c "\$(curl -fsSL https://raw.githubusercontent.com/$repo/main/scripts/install-release.sh)"
@@ -144,7 +159,8 @@ case "\$1" in
     exec "\$core" "\$@"
     ;;
   *)
-    open -a "\$app" --args --open-repository "\$1" >/dev/null 2>&1 &
+    repo_path="\$(resolve_repository_path "\$1")"
+    open -a "\$app" --args --open-repository "\$repo_path" >/dev/null 2>&1 &
     exit 0
     ;;
 esac

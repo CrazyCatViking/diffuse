@@ -97,10 +97,10 @@ export const useRepoStore = defineStore('repo', () => {
     loading.value = true;
     error.value = undefined;
     try {
-      repository.value = await client.openRepository(path);
+      repository.value = await withContext(`open repository ${path}`, () => client.openRepository(path));
       rememberRepository(repository.value.root);
-      diffTargetDefaults.value = await client.getDiffTargetDefaults();
-      branches.value = await client.listBranches();
+      diffTargetDefaults.value = await withContext('load diff target defaults', () => client.getDiffTargetDefaults());
+      branches.value = await withContext('list branches', () => client.listBranches());
       diffTarget.value = targetFromDefaults(diffTargetDefaults.value);
       await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
     } catch (err) {
@@ -123,7 +123,7 @@ export const useRepoStore = defineStore('repo', () => {
 
     refreshInFlight = true;
     try {
-      const files = await client.listChangedFiles(diffTarget.value);
+      const files = await withContext('list changed files', () => client.listChangedFiles(diffTarget.value));
       const previousActiveFileId = activeFileId.value;
       changedFileIds.value = options.trackChangedIds === false ? [] : changedFileIdsBetween(changedFiles.value, files, options.changedPaths ?? []);
       changedFiles.value = files;
@@ -141,6 +141,15 @@ export const useRepoStore = defineStore('repo', () => {
         refreshQueued = false;
         void refreshChangedFiles({ selectFallback: false, trackChangedIds: true });
       }
+    }
+  };
+
+  const withContext = async <T>(action: string, run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : JSON.stringify(err);
+      throw new Error(`Failed to ${action}: ${message}`);
     }
   };
 

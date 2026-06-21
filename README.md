@@ -176,6 +176,8 @@ Open a specific repository:
 diffuse /path/to/repository
 ```
 
+If Diffuse is already running, another `diffuse /path/to/repository` command opens a new window in the existing Electron app process. Each window has its own isolated Zig core process.
+
 The desktop app also accepts the packaged-app launch argument `--open-repository <path>`.
 
 Useful CLI commands:
