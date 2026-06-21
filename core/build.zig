@@ -1,13 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{
-        .default_target = .{
-            .cpu_arch = .x86_64,
-            .os_tag = .linux,
-            .abi = .gnu,
-        },
-    });
+    const default_target: std.Target.Query = switch (builtin.os.tag) {
+        .linux => .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+        .windows => .{ .cpu_arch = .x86_64, .os_tag = .windows },
+        .macos => .{ .cpu_arch = .x86_64, .os_tag = .macos },
+        else => .{},
+    };
+    const target = b.standardTargetOptions(.{ .default_target = default_target });
     const optimize = b.standardOptimizeOption(.{});
 
     const root_module = b.createModule(.{

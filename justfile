@@ -42,30 +42,42 @@ install-completions:
 install-completions:
     ./scripts/install.ps1 completions
 
+[unix]
 update: build
     core/zig-out/bin/diffuse update
 
+[windows]
+update: build
+    core/zig-out/bin/diffuse.exe update
+
+[unix]
 install-version version:
     core/zig-out/bin/diffuse install {{version}}
 
+[windows]
+install-version version:
+    core/zig-out/bin/diffuse.exe install {{version}}
+
+[unix]
 completion shell:
     core/zig-out/bin/diffuse completion {{shell}}
 
+[windows]
+completion shell:
+    core/zig-out/bin/diffuse.exe completion {{shell}}
+
+[unix]
 list-versions *args:
     core/zig-out/bin/diffuse list-versions {{args}}
+
+[windows]
+list-versions *args:
+    core/zig-out/bin/diffuse.exe list-versions {{args}}
 
 [unix]
 publish version="":
     ./scripts/publish.sh {{version}}
 
-[windows]
-publish version="":
-    ./scripts/publish.ps1 {{version}}
-
 [unix]
 publish-dry-run version="":
     ./scripts/publish.sh --dry-run {{version}}
-
-[windows]
-publish-dry-run version="":
-    ./scripts/publish.ps1 -DryRun {{version}}

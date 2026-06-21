@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const diff = @import("../core/diff.zig");
 const repository = @import("../core/repository.zig");
@@ -120,12 +121,16 @@ fn launchApp(allocator: std.mem.Allocator, io: std.Io, maybe_path: ?[]const u8, 
 
 fn installRoot(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
     if (environ_map.get("DIFFUSE_INSTALL_ROOT")) |root| return try allocator.dupe(u8, root);
-    const home = environ_map.get("HOME") orelse return try allocator.dupe(u8, ".");
+    if (builtin.os.tag == .windows) {
+        if (environ_map.get("LOCALAPPDATA")) |local_app_data| return try std.fs.path.join(allocator, &.{ local_app_data, "Diffuse" });
+    }
+    const home = homeDir(environ_map) orelse return try allocator.dupe(u8, ".");
     return try std.fs.path.join(allocator, &.{ home, ".local", "share", "diffuse" });
 }
 
 fn electronExecutable(allocator: std.mem.Allocator, io: std.Io, app_root: []const u8) ![]u8 {
-    const local = try std.fs.path.join(allocator, &.{ app_root, "node_modules", "electron", "dist", "electron" });
+    const executable = if (builtin.os.tag == .windows) "electron.exe" else "electron";
+    const local = try std.fs.path.join(allocator, &.{ app_root, "node_modules", "electron", "dist", executable });
     if (fileExists(io, local)) return local;
     allocator.free(local);
     return try allocator.dupe(u8, "electron");
@@ -140,19 +145,21 @@ fn listVersions(allocator: std.mem.Allocator, io: std.Io, environ_map: *const st
     defer allocator.free(cache_path);
     if (cached_only) return readVersionCache(allocator, io, cache_path) catch allocator.alloc(u8, 0);
 
-    const repo = githubRepo(environ_map);
-    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/tags", .{repo});
-    defer allocator.free(url);
-    const json = runOutput(allocator, io, &.{ "curl", "-fsSL", "-H", "Accept: application/vnd.github+json", "-H", "User-Agent: diffuse-cli", url }) catch return readVersionCache(allocator, io, cache_path) catch allocator.alloc(u8, 0);
-    defer allocator.free(json);
-    const tags = try parseGitHubTags(allocator, json);
+    const repo_url = try githubRepoUrl(allocator, environ_map);
+    defer allocator.free(repo_url);
+    const output = runOutput(allocator, io, &.{ "git", "ls-remote", "--tags", "--refs", repo_url }) catch return readVersionCache(allocator, io, cache_path) catch allocator.alloc(u8, 0);
+    defer allocator.free(output);
+    const tags = try parseGitTags(allocator, output);
     try writeVersionCache(io, cache_path, tags);
     return tags;
 }
 
 fn versionCachePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
     const cache_home = environ_map.get("XDG_CACHE_HOME") orelse blk: {
-        const home = environ_map.get("HOME") orelse ".";
+        if (builtin.os.tag == .windows) {
+            if (environ_map.get("LOCALAPPDATA")) |local_app_data| break :blk try std.fs.path.join(allocator, &.{ local_app_data, "Diffuse", "Cache" });
+        }
+        const home = homeDir(environ_map) orelse ".";
         break :blk try std.fs.path.join(allocator, &.{ home, ".cache" });
     };
     if (environ_map.get("XDG_CACHE_HOME") != null) return try std.fs.path.join(allocator, &.{ cache_home, "diffuse", "tags.txt" });
@@ -160,22 +167,58 @@ fn versionCachePath(allocator: std.mem.Allocator, environ_map: *const std.proces
     return try std.fs.path.join(allocator, &.{ cache_home, "diffuse", "tags.txt" });
 }
 
-fn parseGitHubTags(allocator: std.mem.Allocator, json: []const u8) ![]u8 {
+fn parseGitTags(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
+    var tags: std.ArrayList([]u8) = .empty;
+    defer {
+        for (tags.items) |tag| allocator.free(tag);
+        tags.deinit(allocator);
+    }
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const ref_prefix = "refs/tags/";
+        const index = std.mem.indexOf(u8, line, ref_prefix) orelse continue;
+        const tag = std.mem.trim(u8, line[index + ref_prefix.len ..], "\r\n \t");
+        if (tag.len == 0) continue;
+        try tags.append(allocator, try allocator.dupe(u8, tag));
+    }
+
+    std.sort.pdq([]u8, tags.items, {}, newerVersionFirst);
+
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
-    var rest = json;
-    while (std.mem.indexOf(u8, rest, "\"name\"")) |name_index| {
-        rest = rest[name_index + 6 ..];
-        const colon = std.mem.indexOfScalar(u8, rest, ':') orelse break;
-        rest = rest[colon + 1 ..];
-        const quote = std.mem.indexOfScalar(u8, rest, '"') orelse break;
-        rest = rest[quote + 1 ..];
-        const end = std.mem.indexOfScalar(u8, rest, '"') orelse break;
-        try result.appendSlice(allocator, rest[0..end]);
+    for (tags.items) |tag| {
+        try result.appendSlice(allocator, tag);
         try result.append(allocator, '\n');
-        rest = rest[end + 1 ..];
     }
     return result.toOwnedSlice(allocator);
+}
+
+const ParsedVersion = struct {
+    major: u64,
+    minor: u64,
+    patch: u64,
+};
+
+fn newerVersionFirst(_: void, left: []u8, right: []u8) bool {
+    const left_version = parseVersion(left) orelse return false;
+    const right_version = parseVersion(right) orelse return true;
+    if (left_version.major != right_version.major) return left_version.major > right_version.major;
+    if (left_version.minor != right_version.minor) return left_version.minor > right_version.minor;
+    return left_version.patch > right_version.patch;
+}
+
+fn parseVersion(tag: []const u8) ?ParsedVersion {
+    const value = stripV(tag);
+    var iter = std.mem.splitScalar(u8, value, '.');
+    const major_text = iter.next() orelse return null;
+    const minor_text = iter.next() orelse return null;
+    const patch_text = iter.next() orelse return null;
+    if (iter.next() != null) return null;
+    return .{
+        .major = std.fmt.parseInt(u64, major_text, 10) catch return null,
+        .minor = std.fmt.parseInt(u64, minor_text, 10) catch return null,
+        .patch = std.fmt.parseInt(u64, patch_text, 10) catch return null,
+    };
 }
 
 fn readVersionCache(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
@@ -218,13 +261,34 @@ fn resolveInstallVersion(allocator: std.mem.Allocator, io: std.Io, environ_map: 
 }
 
 fn installVersion(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, tag: []const u8) !void {
-    const repo = githubRepo(environ_map);
-    const script = try std.fmt.allocPrint(allocator,
-        "tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT && curl -fsSL -o \"$tmp/diffuse.tar.gz\" 'https://github.com/{s}/archive/refs/tags/{s}.tar.gz' && tar -xzf \"$tmp/diffuse.tar.gz\" -C \"$tmp\" && src=$(find \"$tmp\" -mindepth 1 -maxdepth 1 -type d | head -n 1) && cd \"$src\" && just install",
-        .{ repo, tag },
-    );
-    defer allocator.free(script);
-    try runChecked(allocator, io, "install diffuse", &.{ "sh", "-c", script });
+    const repo_url = try githubRepoUrl(allocator, environ_map);
+    defer allocator.free(repo_url);
+    const parent = try updateSourceParent(allocator, environ_map);
+    defer allocator.free(parent);
+    try std.Io.Dir.createDirPath(.cwd(), io, parent);
+    const source_dir = try std.fs.path.join(allocator, &.{ parent, "source" });
+    defer allocator.free(source_dir);
+    if (fileExists(io, source_dir)) try std.Io.Dir.deleteTree(.cwd(), io, source_dir);
+    try runChecked(allocator, io, "clone diffuse source", &.{ "git", "clone", "--depth", "1", "--branch", tag, repo_url, source_dir });
+    try runCheckedCwd(allocator, io, "install diffuse", &.{ "just", "install" }, source_dir);
+}
+
+fn githubRepoUrl(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
+    return std.fmt.allocPrint(allocator, "https://github.com/{s}.git", .{githubRepo(environ_map)});
+}
+
+fn updateSourceParent(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
+    const cache_root = if (builtin.os.tag == .windows) blk: {
+        if (environ_map.get("LOCALAPPDATA")) |local_app_data| break :blk try std.fs.path.join(allocator, &.{ local_app_data, "Diffuse", "Update" });
+        const home = homeDir(environ_map) orelse ".";
+        break :blk try std.fs.path.join(allocator, &.{ home, ".diffuse", "update" });
+    } else blk: {
+        const cache_home = environ_map.get("XDG_CACHE_HOME") orelse null;
+        if (cache_home) |path| break :blk try std.fs.path.join(allocator, &.{ path, "diffuse", "update" });
+        const home = homeDir(environ_map) orelse ".";
+        break :blk try std.fs.path.join(allocator, &.{ home, ".cache", "diffuse", "update" });
+    };
+    return cache_root;
 }
 
 fn containsLine(text: []const u8, needle: []const u8) bool {
@@ -284,8 +348,27 @@ fn runChecked(allocator: std.mem.Allocator, io: std.Io, step: []const u8, argv: 
     }
 }
 
+fn runCheckedCwd(allocator: std.mem.Allocator, io: std.Io, step: []const u8, argv: []const []const u8, cwd: []const u8) !void {
+    if (try runCommandCwd(allocator, io, step, argv, cwd)) |message| {
+        defer allocator.free(message);
+        var stderr_buffer: [4096]u8 = undefined;
+        var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+        const stderr = &stderr_writer.interface;
+        try stderr.print("{s}\n", .{message});
+        try stderr.flush();
+        std.process.exit(1);
+    }
+}
+
 fn runCommand(allocator: std.mem.Allocator, io: std.Io, step: []const u8, argv: []const []const u8) !?[]u8 {
-    const result = try std.process.run(allocator, io, .{ .argv = argv, .stdout_limit = .limited(1024 * 1024), .stderr_limit = .limited(1024 * 1024) });
+    return runCommandCwd(allocator, io, step, argv, null);
+}
+
+fn runCommandCwd(allocator: std.mem.Allocator, io: std.Io, step: []const u8, argv: []const []const u8, cwd: ?[]const u8) !?[]u8 {
+    const result = if (cwd) |path|
+        try std.process.run(allocator, io, .{ .argv = argv, .cwd = .{ .path = path }, .stdout_limit = .limited(1024 * 1024), .stderr_limit = .limited(1024 * 1024) })
+    else
+        try std.process.run(allocator, io, .{ .argv = argv, .stdout_limit = .limited(1024 * 1024), .stderr_limit = .limited(1024 * 1024) });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     switch (result.term) {
@@ -293,6 +376,10 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, step: []const u8, argv: 
         else => {},
     }
     return try std.fmt.allocPrint(allocator, "{s} failed: {s}{s}", .{ step, result.stderr, result.stdout });
+}
+
+fn homeDir(environ_map: *const std.process.Environ.Map) ?[]const u8 {
+    return environ_map.get("HOME") orelse environ_map.get("USERPROFILE");
 }
 
 fn runOutput(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]u8 {
@@ -313,7 +400,7 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 
 fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !?[]u8 {
     if (environ_map.get("DIFFUSE_GRAMMARS_DIR")) |path| return try allocator.dupe(u8, path);
-    const home = environ_map.get("HOME") orelse return null;
+    const home = homeDir(environ_map) orelse return null;
     return try std.fs.path.join(allocator, &.{ home, ".diffuse", "grammars" });
 }
 

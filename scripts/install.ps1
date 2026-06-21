@@ -18,7 +18,6 @@ function Check-Requirements {
   Need zig
   Need node
   Need pnpm
-  Need tar
 }
 
 function Require-Path($Path) {
@@ -36,11 +35,12 @@ function Install-Diffuse {
 
   New-Item -ItemType Directory -Force $InstallRoot, (Join-Path $InstallRoot "app"), (Join-Path $InstallRoot "core"), $BinDir | Out-Null
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $InstallRoot "app\out"), (Join-Path $InstallRoot "app\node_modules")
-  Copy-Item -Recurse (Join-Path $Root "app\out") (Join-Path $InstallRoot "app\out")
-  Copy-Item -Recurse (Join-Path $Root "app\node_modules") (Join-Path $InstallRoot "app\node_modules")
-  Copy-Item (Join-Path $Root "app\package.json") (Join-Path $InstallRoot "app\package.json")
-  Copy-Item (Join-Path $Root "core\zig-out\bin\diffuse.exe") (Join-Path $InstallRoot "core\diffuse.exe")
-  Copy-Item (Join-Path $Root "core\zig-out\bin\diffuse.exe") $BinPath
+  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $InstallRoot "app\package.json"), (Join-Path $InstallRoot "core\diffuse.exe"), $BinPath
+  Copy-Item -Recurse -Force (Join-Path $Root "app\out") (Join-Path $InstallRoot "app\out")
+  Copy-Item -Recurse -Force (Join-Path $Root "app\node_modules") (Join-Path $InstallRoot "app\node_modules")
+  Copy-Item -Force (Join-Path $Root "app\package.json") (Join-Path $InstallRoot "app\package.json")
+  Copy-Item -Force (Join-Path $Root "core\zig-out\bin\diffuse.exe") (Join-Path $InstallRoot "core\diffuse.exe")
+  Copy-Item -Force (Join-Path $Root "core\zig-out\bin\diffuse.exe") $BinPath
   Ensure-Path
   Install-Completions
   Write-Host "Installed Diffuse to $InstallRoot"

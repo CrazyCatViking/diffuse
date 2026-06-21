@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const diff = @import("diff.zig");
 const repository = @import("repository.zig");
@@ -250,6 +251,10 @@ const Session = struct {
     diagnostics: std.StringHashMap([]Diagnostic),
 
     fn start(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, config: Config) !Session {
+        if (comptime builtin.os.tag == .windows) {
+            return error.LspUnavailableOnWindows;
+        }
+
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(allocator);
         try argv.append(allocator, config.command);
@@ -798,12 +803,12 @@ fn sendMessage(writer: *std.Io.Writer, body: []const u8) !void {
 
 const LspStream = struct {
     allocator: std.mem.Allocator,
-    fd: std.posix.fd_t,
+    fd: if (builtin.os.tag == .windows) void else std.posix.fd_t,
     buffer: std.ArrayList(u8),
 
     const timeout_ms = 5000;
 
-    fn init(allocator: std.mem.Allocator, fd: std.posix.fd_t) LspStream {
+    fn init(allocator: std.mem.Allocator, fd: if (builtin.os.tag == .windows) void else std.posix.fd_t) LspStream {
         return .{ .allocator = allocator, .fd = fd, .buffer = .empty };
     }
 
@@ -811,7 +816,7 @@ const LspStream = struct {
         self.buffer.deinit(self.allocator);
     }
 
-    fn readUntilResponse(self: *LspStream, id: i64) ![]u8 {
+    fn readUntilResponse(self: *LspStream, id: i64) anyerror![]u8 {
         var messages_read: usize = 0;
         while (messages_read < 128) : (messages_read += 1) {
             const body = try self.readMessageTimeout(timeout_ms);
@@ -822,7 +827,7 @@ const LspStream = struct {
         return error.LspResponseNotFound;
     }
 
-    fn readMessageTimeout(self: *LspStream, timeout: i32) ![]u8 {
+    fn readMessageTimeout(self: *LspStream, timeout: i32) anyerror![]u8 {
         while (true) {
             while (headerEnd(self.buffer.items) == null) try self.fill(timeout);
             const header_end = headerEnd(self.buffer.items).?;
@@ -840,7 +845,11 @@ const LspStream = struct {
         }
     }
 
-    fn fill(self: *LspStream, timeout: i32) !void {
+    fn fill(self: *LspStream, timeout: i32) anyerror!void {
+        if (comptime builtin.os.tag == .windows) {
+            return error.LspUnavailableOnWindows;
+        }
+
         var fds = [_]std.posix.pollfd{.{ .fd = self.fd, .events = std.posix.POLL.IN, .revents = 0 }};
         const ready = try std.posix.poll(&fds, timeout);
         if (ready == 0) return error.Timeout;
@@ -1187,15 +1196,15 @@ fn builtinConfig(allocator: std.mem.Allocator, language: []const u8) !?Config {
         .{ .language = "zig", .id = "zls", .command = "zls", .args = &.{} },
         .{ .language = "lua", .id = "lua-language-server", .command = "lua-language-server", .args = &.{} },
     };
-    for (builtins) |builtin| {
-        if (!std.mem.eql(u8, builtin.language, language)) continue;
-        var args = try allocator.alloc([]const u8, builtin.args.len);
+    for (builtins) |builtin_config| {
+        if (!std.mem.eql(u8, builtin_config.language, language)) continue;
+        var args = try allocator.alloc([]const u8, builtin_config.args.len);
         errdefer allocator.free(args);
-        for (builtin.args, 0..) |arg, index| args[index] = try allocator.dupe(u8, arg);
+        for (builtin_config.args, 0..) |arg, index| args[index] = try allocator.dupe(u8, arg);
         return .{
-            .id = try allocator.dupe(u8, builtin.id),
-            .language = try allocator.dupe(u8, builtin.language),
-            .command = try allocator.dupe(u8, builtin.command),
+            .id = try allocator.dupe(u8, builtin_config.id),
+            .language = try allocator.dupe(u8, builtin_config.language),
+            .command = try allocator.dupe(u8, builtin_config.command),
             .args = args,
             .source = try allocator.dupe(u8, "builtin"),
         };

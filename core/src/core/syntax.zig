@@ -4,7 +4,8 @@ const ts = @import("tree-sitter");
 
 const registry_json = @embedFile("tree_sitter_registry.json");
 const default_registry_git_url = "https://github.com/CrazyCatViking/diffuse-tree-sitter.git";
-const enable_direct_highlighter = true;
+const enable_direct_highlighter = builtin.os.tag != .windows;
+const NativeLibrary = if (builtin.os.tag == .windows) void else std.DynLib;
 var temp_file_counter: usize = 0;
 
 const Registry = struct {
@@ -245,7 +246,7 @@ pub const Cache = struct {
 const CacheEntry = struct {
     language: []const u8,
     grammar_path: []const u8,
-    library: std.DynLib,
+    library: NativeLibrary,
     ts_language: *const ts.Language,
     highlights_query: ?*ts.Query = null,
     injections_query: ?*ts.Query = null,
@@ -253,7 +254,7 @@ const CacheEntry = struct {
     fn deinit(self: *CacheEntry, allocator: std.mem.Allocator) void {
         if (self.highlights_query) |query| query.destroy();
         if (self.injections_query) |query| query.destroy();
-        self.library.close();
+        if (comptime builtin.os.tag != .windows) self.library.close();
         allocator.free(self.language);
         allocator.free(self.grammar_path);
     }
@@ -821,6 +822,8 @@ fn cachedDirectQuery(allocator: std.mem.Allocator, io: std.Io, cache: *Cache, la
 }
 
 fn cacheEntry(allocator: std.mem.Allocator, cache: *Cache, language: []const u8, grammar_path: []const u8) !*CacheEntry {
+    if (comptime builtin.os.tag == .windows) return error.DirectHighlighterUnsupported;
+
     for (cache.entries.items) |*entry| {
         if (std.mem.eql(u8, entry.language, language) and std.mem.eql(u8, entry.grammar_path, grammar_path)) return entry;
     }
