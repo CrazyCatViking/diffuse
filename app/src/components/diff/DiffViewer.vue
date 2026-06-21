@@ -618,10 +618,16 @@ const lspDiagnosticsClass = computed(() => ({
   loading: lspDiagnosticsLoading.value,
 }));
 
+const supportsLsp = (fileId: string) => {
+  const normalized = fileId.toLowerCase();
+  return ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.rs', '.py', '.go', '.zig', '.lua']
+    .some((extension) => normalized.endsWith(extension));
+};
+
 const loadLspStatus = async () => {
   const model = props.model;
   const generation = ++lspStatusGeneration;
-  if (!model) {
+  if (!model || !supportsLsp(model.fileId)) {
     lspStatus.value = undefined;
     lspStatusLoading.value = false;
     return;
@@ -648,7 +654,7 @@ const loadLspDiagnostics = async () => {
   const model = props.model;
   const generation = ++lspDiagnosticsGeneration;
   lspDiagnostics.value = [];
-  if (!model) {
+  if (!model || !supportsLsp(model.fileId)) {
     lspDiagnosticsLoading.value = false;
     return;
   }
@@ -680,6 +686,7 @@ const diagnosticsForLine = (side: SyntaxSide, line?: number): LspDiagnostic[] =>
 
 const queueLspHover = (event: PointerEvent) => {
   if (!props.model) return;
+  if (!lspStatus.value?.running) return;
   const target = event.target instanceof Node ? event.target : null;
   const element = target ? reviewElementForNode(target) : null;
   if (!element) {
@@ -688,6 +695,11 @@ const queueLspHover = (event: PointerEvent) => {
   }
 
   const fileId = element.dataset.reviewFileId ?? props.model.fileId;
+  if (!supportsLsp(fileId)) {
+    clearLspHover();
+    return;
+  }
+
   const side = element.dataset.reviewSide;
   const line = Number(element.dataset.reviewLine);
   if ((side !== 'old' && side !== 'new') || !Number.isFinite(line) || line <= 0) {

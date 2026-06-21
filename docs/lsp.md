@@ -88,6 +88,10 @@ Settings can open `~/.diffuse/lsp.json`. If the file does not exist, Diffuse cre
 
 Language servers are persistent per repository/language/server. Settings shows whether a session is running and exposes a restart action for running or errored sessions.
 
-Restarting a server stops matching sessions. The next hover or diagnostics request starts a fresh process.
+Diffuse only attempts to attach a language server when opening supported file types for diagnostics. Unsupported file types do not trigger LSP status, diagnostics, or hover requests.
+
+Hover uses an already-attached language server session. Moving the pointer over code does not start a language server by itself.
+
+Restarting a server stops matching sessions. The next supported file open or diagnostics request starts a fresh process.
 
 LSP is currently unavailable on Windows in the core implementation.

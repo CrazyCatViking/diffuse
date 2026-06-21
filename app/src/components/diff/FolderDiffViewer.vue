@@ -506,6 +506,12 @@ const lspHoverStyle = computed(() => ({
   top: `${lspHover.value.top}px`,
 }));
 
+const supportsLsp = (fileId: string) => {
+  const normalized = fileId.toLowerCase();
+  return ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.rs', '.py', '.go', '.zig', '.lua']
+    .some((extension) => normalized.endsWith(extension));
+};
+
 const queueLspHover = (event: PointerEvent) => {
   const target = event.target instanceof Node ? event.target : null;
   const element = target ? reviewElementForNode(target) : null;
@@ -517,7 +523,7 @@ const queueLspHover = (event: PointerEvent) => {
   const fileId = element.dataset.reviewFileId;
   const side = element.dataset.reviewSide;
   const line = Number(element.dataset.reviewLine);
-  if (!fileId || (side !== 'old' && side !== 'new') || !Number.isFinite(line) || line <= 0) {
+  if (!fileId || !supportsLsp(fileId) || (side !== 'old' && side !== 'new') || !Number.isFinite(line) || line <= 0) {
     clearLspHover();
     return;
   }
@@ -634,6 +640,8 @@ const loadFolderDiff = async () => {
 };
 
 const loadDiagnosticsForModel = async (model: DiffRenderModel, generation: number) => {
+  if (!supportsLsp(model.fileId)) return;
+
   try {
     const diagnostics = await client.getLspDiagnostics(model.fileId, 'new', props.target);
     if (generation !== loadGeneration) return;

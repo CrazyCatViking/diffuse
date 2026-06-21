@@ -172,7 +172,7 @@ pub const Manager = struct {
     }
 
     fn hover(self: *Manager, io: std.Io, repo_root: []const u8, path: []const u8, source: []const u8, line: u32, column: u32, config: Config) ![]u8 {
-        const session = try self.sessionFor(io, repo_root, config);
+        const session = self.existingSessionFor(repo_root, config) orelse return error.LspSessionNotStarted;
         return session.hover(self.allocator, io, repo_root, path, source, line, column, config.language) catch |err| {
             try session.setLastError(self.allocator, err);
             return err;
@@ -224,16 +224,21 @@ pub const Manager = struct {
     }
 
     fn sessionFor(self: *Manager, io: std.Io, repo_root: []const u8, config: Config) !*Session {
-        for (self.sessions.items) |*session| {
-            if (std.mem.eql(u8, session.repo_root, repo_root) and
-                std.mem.eql(u8, session.language, config.language) and
-                std.mem.eql(u8, session.server_id, config.id)) return session;
-        }
+        if (self.existingSessionFor(repo_root, config)) |session| return session;
 
         var session = try Session.start(self.allocator, io, repo_root, config);
         errdefer session.deinit(self.allocator, io);
         try self.sessions.append(self.allocator, session);
         return &self.sessions.items[self.sessions.items.len - 1];
+    }
+
+    fn existingSessionFor(self: *Manager, repo_root: []const u8, config: Config) ?*Session {
+        for (self.sessions.items) |*session| {
+            if (std.mem.eql(u8, session.repo_root, repo_root) and
+                std.mem.eql(u8, session.language, config.language) and
+                std.mem.eql(u8, session.server_id, config.id)) return session;
+        }
+        return null;
     }
 };
 
@@ -342,6 +347,7 @@ const Session = struct {
         const uri = try fileUri(allocator, repo_root, path);
         defer allocator.free(uri);
 
+        if (self.documents.get(uri) == null) return error.LspDocumentNotAttached;
         try self.syncDocument(allocator, writer, uri, language, source);
         const hover_id = self.nextId();
         try sendHover(allocator, writer, uri, line, column, hover_id);
@@ -640,14 +646,22 @@ pub fn hover(
         };
     }
 
-    const contents = manager.hover(io, repo_root, path, source, line, column, cfg) catch |err| {
-        const message = try std.fmt.allocPrint(allocator, "LSP hover request failed: {s}", .{@errorName(err)});
-        return .{
-            .status = "request-failed",
+    const contents = manager.hover(io, repo_root, path, source, line, column, cfg) catch |err| switch (err) {
+        error.LspSessionNotStarted, error.LspDocumentNotAttached => return .{
+            .status = "hover-unavailable",
             .language = try allocator.dupe(u8, language),
             .serverId = try allocator.dupe(u8, cfg.id),
-            .message = message,
-        };
+            .message = try allocator.dupe(u8, "LSP server has not been attached for this file"),
+        },
+        else => {
+            const message = try std.fmt.allocPrint(allocator, "LSP hover request failed: {s}", .{@errorName(err)});
+            return .{
+                .status = "request-failed",
+                .language = try allocator.dupe(u8, language),
+                .serverId = try allocator.dupe(u8, cfg.id),
+                .message = message,
+            };
+        },
     };
     if (contents.len == 0) {
         allocator.free(contents);
