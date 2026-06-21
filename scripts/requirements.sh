@@ -23,6 +23,7 @@ case "$mode" in
     need tar
     ;;
   publish)
+    need git
     need sed
     ;;
   *)

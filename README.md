@@ -22,6 +22,22 @@ It is designed around a simple idea: code review should work well before a pull 
 
 > Diffuse is a work in progress. Expect rough edges, missing polish, and active changes to commands, UI, and review workflows.
 
+## Install
+
+Linux/macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.ps1 | iex
+```
+
+These scripts are hosted directly in this repository and served by GitHub through `raw.githubusercontent.com`. They detect the current platform, download the matching GitHub Release archive, install Diffuse into the user environment, and create the `diffuse` command.
+
 ## Highlights
 
 | Area | What Diffuse Does |
@@ -68,7 +84,37 @@ your-repo/
 
 See [`docs/`](docs/) for the documentation index, [`docs/architecture.md`](docs/architecture.md) for internal architecture notes, [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for the review file format, and [`docs/lsp.md`](docs/lsp.md) for language server details.
 
-## Requirements
+## Install Prebuilt Release
+
+Prebuilt releases are the recommended install path for users. They do not require cloning the repository or installing Zig, Node, pnpm, or just.
+
+Linux/macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.ps1 | iex
+```
+
+The release installers download the matching GitHub Release archive for the current platform, install the packaged Electron app into the user environment, and create a `diffuse` command shim. The shim opens the desktop app for normal usage and forwards CLI subcommands such as `diffuse --version` to the bundled Zig core. Linux installs also add a `.desktop` launcher. macOS installs copy `Diffuse.app` to `~/Applications`. Windows installs add a Start Menu shortcut.
+
+Install a specific version by setting `DIFFUSE_VERSION`:
+
+```sh
+DIFFUSE_VERSION=v0.1.4 sh -c "$(curl -fsSL https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.sh)"
+```
+
+PowerShell:
+
+```powershell
+$env:DIFFUSE_VERSION = "v0.1.4"; irm https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.ps1 | iex
+```
+
+## Source Requirements
 
 To build and install Diffuse from source, install:
 
@@ -82,6 +128,8 @@ To build and install Diffuse from source, install:
 | `curl` and `tar` | Used by build/install tooling on Unix systems. |
 
 ## Install From Source
+
+Source install is intended for contributors and users who want to build locally. It is separate from the prebuilt release installers above.
 
 Clone the repository and install:
 
@@ -141,9 +189,9 @@ diffuse list-versions --cached
 diffuse completion <bash|zsh|fish|powershell>
 ```
 
-`diffuse update` resolves the newest Git tag from GitHub and runs the source installer for that tag. `diffuse install <version>` accepts versions with or without a leading `v` and prints the closest/latest available version when the requested tag cannot be found. Version discovery is cached under the platform cache directory and `diffuse list-versions --cached` reads only that cache.
+`diffuse update` resolves the newest GitHub Release and installs the matching prebuilt artifact for the current platform. `diffuse install <version>` accepts released versions with or without a leading `v` and prints the closest/latest available release when the requested release cannot be found. Version discovery is cached under the platform cache directory and `diffuse list-versions --cached` reads only that cache.
 
-Update/install source is cloned into a cache directory before running `just install` from that checkout. The GitHub repository defaults to `CrazyCatViking/diffuse` and can be overridden with `DIFFUSE_GITHUB_REPO=owner/repo`.
+Built-in update/install commands only consider GitHub Releases and do not clone the repository. To install a non-release commit or branch, check out the source repository yourself and run `just install`. The GitHub repository defaults to `CrazyCatViking/diffuse` and can be overridden with `DIFFUSE_GITHUB_REPO=owner/repo`.
 
 Developer/debug commands:
 
@@ -201,6 +249,27 @@ Build only the app:
 cd app
 pnpm build
 ```
+
+Package the native Electron app for the current platform:
+
+```sh
+cd core
+zig build -Doptimize=ReleaseSafe
+
+cd ../app
+pnpm install --frozen-lockfile
+pnpm dist
+```
+
+`pnpm dist` copies the built Zig core into Electron resources and runs `electron-builder`. This packaging path is for prebuilt releases; it does not replace `just install`, which continues to install from source.
+
+Publish a release:
+
+```sh
+just publish 0.1.5
+```
+
+`just publish` updates the version, commits the release, creates and pushes the `v0.1.5` tag, and lets the GitHub Actions release workflow build Linux, macOS, and Windows archives. The workflow creates the GitHub Release and uploads those archives. Use `just publish-dry-run 0.1.5` to preview the local version/tag steps.
 
 Build only the core:
 

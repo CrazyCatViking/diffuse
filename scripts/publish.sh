@@ -52,6 +52,7 @@ if [[ "$dry_run" -eq 1 ]]; then
   echo "Would commit: Release $tag"
   echo "Would tag: $tag"
   echo "Would push commit and tag to origin"
+  echo "GitHub Actions would build artifacts and create the GitHub Release"
   exit 0
 fi
 
@@ -63,3 +64,4 @@ git tag "$tag"
 git push origin HEAD
 git push origin "$tag"
 echo "Published $tag"
+echo "GitHub Actions will build release artifacts and create the GitHub Release."

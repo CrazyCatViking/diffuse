@@ -25,23 +25,35 @@ function resolveCoreExecutable(): string {
   const configured = process.env.DIFFUSE_CORE_EXECUTABLE;
   if (configured && existsSync(configured)) return configured;
 
+  const executableName = process.platform === 'win32' ? 'diffuse.exe' : 'diffuse';
+
   const devCandidates = [
-    resolve(__dirname, '../../../core/zig-out/bin/diffuse'),
-    resolve(process.cwd(), '../core/zig-out/bin/diffuse'),
+    resolve(__dirname, '../../../core/zig-out/bin', executableName),
+    resolve(process.cwd(), '../core/zig-out/bin', executableName),
   ];
 
   for (const candidate of devCandidates) {
     if (existsSync(candidate)) return candidate;
   }
 
-  const packagedPath = join(process.resourcesPath, 'diffuse');
-  if (existsSync(packagedPath)) return packagedPath;
+  const packagedCandidates = [
+    join(process.resourcesPath, executableName),
+    join(process.resourcesPath, 'core', executableName),
+  ];
+  for (const candidate of packagedCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
 
-  const installRoot = process.env.DIFFUSE_INSTALL_ROOT ?? join(resolveHomeDir(), '.local', 'share', 'diffuse');
-  const installedPath = join(installRoot, 'core', 'diffuse');
+  const installRoot = process.env.DIFFUSE_INSTALL_ROOT ?? defaultInstallRoot();
+  const installedPath = join(installRoot, 'core', executableName);
   if (existsSync(installedPath)) return installedPath;
 
   return devCandidates[0];
+}
+
+function defaultInstallRoot(): string {
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) return join(process.env.LOCALAPPDATA, 'Diffuse');
+  return join(resolveHomeDir(), '.local', 'share', 'diffuse');
 }
 
 function resolveTreeSitterRegistryDir(): string {

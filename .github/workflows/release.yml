@@ -1,1 +1,90 @@
+name: Release
 
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            artifact_pattern: app/dist/*.tar.gz
+          - platform: mac-x64
+            runner: macos-13
+            artifact_pattern: app/dist/*.zip
+          - platform: mac-arm64
+            runner: macos-latest
+            artifact_pattern: app/dist/*.zip
+          - platform: win-x64
+            runner: windows-latest
+            artifact_pattern: app/dist/*.zip
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.732+2f3234c76
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.4.0 --activate
+
+      - name: Build core
+        working-directory: core
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Install app dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Build app archive
+        working-directory: app
+        run: pnpm dist
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diffuse-${{ matrix.platform }}
+          path: ${{ matrix.artifact_pattern }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          files=$(find release-artifacts -type f | sort)
+          gh release create "$TAG" $files \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Diffuse $TAG" \
+            --notes "Prebuilt Diffuse release artifacts for Linux, macOS, and Windows."

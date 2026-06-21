@@ -149,11 +149,11 @@ fn listVersions(allocator: std.mem.Allocator, io: std.Io, environ_map: *const st
     defer allocator.free(cache_path);
     if (cached_only) return readVersionCache(allocator, io, cache_path) catch allocator.alloc(u8, 0);
 
-    const repo_url = try githubRepoUrl(allocator, environ_map);
-    defer allocator.free(repo_url);
-    const output = runOutput(allocator, io, &.{ "git", "ls-remote", "--tags", "--refs", repo_url }) catch return readVersionCache(allocator, io, cache_path) catch allocator.alloc(u8, 0);
+    const releases_url = try githubReleasesApiUrl(allocator, environ_map);
+    defer allocator.free(releases_url);
+    const output = fetchReleaseJson(allocator, io, releases_url) catch return readVersionCache(allocator, io, cache_path) catch allocator.alloc(u8, 0);
     defer allocator.free(output);
-    const tags = try parseGitTags(allocator, output);
+    const tags = try parseGitHubReleaseTags(allocator, output);
     try writeVersionCache(io, cache_path, tags);
     return tags;
 }
@@ -171,19 +171,25 @@ fn versionCachePath(allocator: std.mem.Allocator, environ_map: *const std.proces
     return try std.fs.path.join(allocator, &.{ cache_home, "diffuse", "tags.txt" });
 }
 
-fn parseGitTags(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
+fn parseGitHubReleaseTags(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
     var tags: std.ArrayList([]u8) = .empty;
     defer {
         for (tags.items) |tag| allocator.free(tag);
         tags.deinit(allocator);
     }
-    var lines = std.mem.splitScalar(u8, output, '\n');
-    while (lines.next()) |line| {
-        const ref_prefix = "refs/tags/";
-        const index = std.mem.indexOf(u8, line, ref_prefix) orelse continue;
-        const tag = std.mem.trim(u8, line[index + ref_prefix.len ..], "\r\n \t");
-        if (tag.len == 0) continue;
-        try tags.append(allocator, try allocator.dupe(u8, tag));
+
+    var remaining = output;
+    const key = "\"tag_name\"";
+    while (std.mem.indexOf(u8, remaining, key)) |key_index| {
+        remaining = remaining[key_index + key.len ..];
+        const colon_index = std.mem.indexOfScalar(u8, remaining, ':') orelse break;
+        remaining = std.mem.trim(u8, remaining[colon_index + 1 ..], "\r\n \t");
+        if (remaining.len == 0 or remaining[0] != '"') continue;
+        remaining = remaining[1..];
+        const end_index = std.mem.indexOfScalar(u8, remaining, '"') orelse break;
+        const tag = remaining[0..end_index];
+        if (tag.len > 0) try tags.append(allocator, try allocator.dupe(u8, tag));
+        remaining = remaining[end_index + 1 ..];
     }
 
     std.sort.pdq([]u8, tags.items, {}, newerVersionFirst);
@@ -235,6 +241,15 @@ fn writeVersionCache(io: std.Io, path: []const u8, tags: []const u8) !void {
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = path, .data = tags });
 }
 
+fn fetchReleaseJson(allocator: std.mem.Allocator, io: std.Io, releases_url: []const u8) ![]u8 {
+    if (builtin.os.tag == .windows) {
+        const command = try std.fmt.allocPrint(allocator, "Invoke-RestMethod -Uri '{s}' | ConvertTo-Json -Compress", .{releases_url});
+        defer allocator.free(command);
+        return runOutput(allocator, io, &.{ "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command });
+    }
+    return runOutput(allocator, io, &.{ "curl", "-fsSL", releases_url });
+}
+
 fn resolveInstallVersion(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, requested: []const u8) ![]u8 {
     const versions = try listVersions(allocator, io, environ_map, false);
     defer allocator.free(versions);
@@ -265,22 +280,18 @@ fn resolveInstallVersion(allocator: std.mem.Allocator, io: std.Io, environ_map: 
 }
 
 fn installVersion(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, tag: []const u8) !void {
-    const repo_url = try githubRepoUrl(allocator, environ_map);
-    defer allocator.free(repo_url);
-    const parent = try updateSourceParent(allocator, environ_map);
-    defer allocator.free(parent);
-    try std.Io.Dir.createDirPath(.cwd(), io, parent);
-    const source_dir = try std.fs.path.join(allocator, &.{ parent, "source" });
-    defer allocator.free(source_dir);
-    if (fileExists(io, source_dir)) {
-        try printProgressFmt(io, "Removing previous update source at {s}...", .{source_dir});
-        try std.Io.Dir.deleteTree(.cwd(), io, source_dir);
+    const repo = githubRepo(environ_map);
+    try printProgressFmt(io, "Downloading and installing Diffuse release {s} from {s}...", .{ tag, repo });
+    if (builtin.os.tag == .windows) {
+        const command = try std.fmt.allocPrint(allocator, "$env:DIFFUSE_VERSION='{s}'; $env:DIFFUSE_GITHUB_REPO='{s}'; irm https://raw.githubusercontent.com/{s}/main/scripts/install-release.ps1 | iex", .{ tag, repo, repo });
+        defer allocator.free(command);
+        try runChecked(allocator, io, "install diffuse release", &.{ "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command });
+    } else {
+        const command = try std.fmt.allocPrint(allocator, "DIFFUSE_VERSION='{s}' DIFFUSE_GITHUB_REPO='{s}' sh -c \"$(curl -fsSL https://raw.githubusercontent.com/{s}/main/scripts/install-release.sh)\"", .{ tag, repo, repo });
+        defer allocator.free(command);
+        try runChecked(allocator, io, "install diffuse release", &.{ "sh", "-c", command });
     }
-    try printProgressFmt(io, "Cloning {s} tag {s} into {s}...", .{ repo_url, tag, source_dir });
-    try runChecked(allocator, io, "clone diffuse source", &.{ "git", "clone", "--depth", "1", "--branch", tag, repo_url, source_dir });
-    try printProgress(io, "Building and installing Diffuse from source. This can take a few minutes...");
-    try runCheckedCwd(allocator, io, "install diffuse", &.{ "just", "install" }, source_dir);
-    try printProgressFmt(io, "Diffuse {s} installed successfully.", .{tag});
+    try printProgressFmt(io, "Diffuse release {s} installed successfully.", .{tag});
 }
 
 fn printProgress(io: std.Io, message: []const u8) !void {
@@ -301,6 +312,10 @@ fn printProgressFmt(io: std.Io, comptime format: []const u8, args: anytype) !voi
 
 fn githubRepoUrl(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
     return std.fmt.allocPrint(allocator, "https://github.com/{s}.git", .{githubRepo(environ_map)});
+}
+
+fn githubReleasesApiUrl(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
+    return std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/releases", .{githubRepo(environ_map)});
 }
 
 fn updateSourceParent(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
