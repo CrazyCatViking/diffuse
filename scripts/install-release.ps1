@@ -45,12 +45,12 @@ try {
   Set-Content -Path $Launcher -Value @"
 `$exe = '$Exe'
 `$core = '$Core'
-if (`$args.Count -eq 0) { & `$exe; exit `$LASTEXITCODE }
+if (`$args.Count -eq 0) { Start-Process -FilePath `$exe; exit 0 }
 switch (`$args[0]) {
   'update' { Invoke-Expression (Invoke-RestMethod 'https://raw.githubusercontent.com/$Repo/main/scripts/install-release.ps1'); exit `$LASTEXITCODE }
   'install' { if (`$args.Count -lt 2) { Write-Error 'Usage: diffuse install <version>'; exit 2 }; `$env:DIFFUSE_VERSION = `$args[1]; Invoke-Expression (Invoke-RestMethod 'https://raw.githubusercontent.com/$Repo/main/scripts/install-release.ps1'); exit `$LASTEXITCODE }
   { `$_ -in @('--help','--version','version','completion','list-versions','rpc','files','diff') } { & `$core @args; exit `$LASTEXITCODE }
-  default { & `$exe --open-repository `$args[0]; exit `$LASTEXITCODE }
+  default { Start-Process -FilePath `$exe -ArgumentList @('--open-repository', `$args[0]); exit 0 }
 }
 "@
   Set-Content -Path (Join-Path $BinDir "diffuse.cmd") -Value "@powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" %*`r`n"
