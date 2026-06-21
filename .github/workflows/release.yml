@@ -49,6 +49,19 @@ jobs:
           corepack enable
           corepack prepare pnpm@11.4.0 --activate
 
+      - name: Show checked out Zig manifest
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git describe --tags --exact-match || true
+          sed -n '1,40p' core/build.zig.zon
+
+      - name: Clean Zig caches
+        shell: bash
+        run: |
+          rm -rf core/.zig-cache
+          rm -rf ~/.cache/zig
+
       - name: Build core
         working-directory: core
         run: zig build -Doptimize=ReleaseSafe
