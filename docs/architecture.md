@@ -117,7 +117,17 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 
 Requests can run concurrently. Responses and notifications are serialized through the outbound queue so only the writer task writes to `stdout`.
 
-Handlers are registered in `core/src/app/rpc_handlers.zig`. Important methods include:
+`core/src/app/rpc_handlers.zig` coordinates domain handler registration. Handler implementations are split by responsibility:
+
+- `repository_handlers.zig` owns version, repository open, branch, target-default, and changed-file RPCs.
+- `diff_handlers.zig` owns diff render model RPCs.
+- `syntax_handlers.zig` owns syntax span and Tree-sitter grammar RPCs.
+- `lsp_handlers.zig` owns language-server status, install, hover, diagnostics, and restart RPCs.
+- `review_handlers.zig` owns review persistence and agent review state RPCs.
+- `rpc_params.zig` owns shared parameter parsing, JSON conversion, diff target parsing, grammar-root resolution, and review ID validation helpers used by handlers.
+- `rpc_events.zig` owns shared event/progress emitters.
+
+Important methods include:
 
 - `getVersion`
 - `openRepository`
