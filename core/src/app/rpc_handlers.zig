@@ -223,8 +223,8 @@ fn saveReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rp
     const reviewed_files_json = try stringifyJsonValue(runtime.allocator, reviewed_files);
     defer runtime.allocator.free(reviewed_files_json);
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.session_lock.lock(runtime.io);
+    defer runtime.session_lock.unlock(runtime.io);
 
     const repo = try runtime.session.requireRepo();
     const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id, reviewed_files_json);
@@ -237,8 +237,8 @@ fn updateReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_
     const session_id = try json_rpc.getStringParam(request, "sessionId");
     const update = try getObjectParam(request, "update");
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.session_lock.lock(runtime.io);
+    defer runtime.session_lock.unlock(runtime.io);
 
     const repo = try runtime.session.requireRepo();
     const current_json = try review.readReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id) orelse try runtime.allocator.dupe(u8, "{\"files\":{}}");
@@ -270,7 +270,9 @@ fn updateReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_
         };
         var iterator = files_update.iterator();
         while (iterator.next()) |entry| {
-            try files_object.put(runtime.allocator, entry.key_ptr.*, entry.value_ptr.*);
+            const key = try parsed.arena.allocator().dupe(u8, entry.key_ptr.*);
+            const value = try cloneJsonValue(parsed.arena.allocator(), entry.value_ptr.*);
+            try files_object.put(parsed.arena.allocator(), key, value);
         }
     }
 
@@ -951,6 +953,31 @@ fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8
     errdefer buffer.deinit();
     try std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &buffer.writer);
     return try buffer.toOwnedSlice();
+}
+
+fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |inner| .{ .bool = inner },
+        .integer => |inner| .{ .integer = inner },
+        .float => |inner| .{ .float = inner },
+        .number_string => |inner| .{ .number_string = try allocator.dupe(u8, inner) },
+        .string => |inner| .{ .string = try allocator.dupe(u8, inner) },
+        .array => |inner| blk: {
+            var cloned: std.json.Array = .init(allocator);
+            for (inner.items) |item| try cloned.append(try cloneJsonValue(allocator, item));
+            break :blk .{ .array = cloned };
+        },
+        .object => |inner| blk: {
+            var cloned: std.json.ObjectMap = .empty;
+            var iterator = inner.iterator();
+            while (iterator.next()) |entry| {
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                try cloned.put(allocator, key, try cloneJsonValue(allocator, entry.value_ptr.*));
+            }
+            break :blk .{ .object = cloned };
+        },
+    };
 }
 
 fn writeCompactJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, json: []const u8) !void {

@@ -24,6 +24,7 @@ export const useReviewStore = defineStore('review', () => {
   const draftMode = ref<'comment' | 'chat'>('comment');
   const pendingAgentChatKeys = ref(new Set<string>());
   let reviewedFilesMutation = Promise.resolve();
+  let reviewedFilesVersion = 0;
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
   const activeRun = computed(() => {
@@ -111,7 +112,11 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    reviewedFiles.value = await client.getReviewedFiles(session.value.id);
+    const sessionId = session.value.id;
+    await reviewedFilesMutation.catch(() => undefined);
+    const version = reviewedFilesVersion;
+    const loaded = await client.getReviewedFiles(sessionId);
+    if (session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = loaded;
   };
 
   const loadRuns = async () => {
@@ -334,7 +339,9 @@ export const useReviewStore = defineStore('review', () => {
     const sessionId = session.value.id;
     try {
       reviewedFilesMutation = reviewedFilesMutation.then(async () => {
-        reviewedFiles.value = await client.updateReviewedFiles(sessionId, update);
+        const version = reviewedFilesVersion += 1;
+        const updated = await client.updateReviewedFiles(sessionId, update);
+        if (session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = updated;
       });
       await reviewedFilesMutation;
       error.value = undefined;
