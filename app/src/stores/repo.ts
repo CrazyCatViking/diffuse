@@ -125,7 +125,8 @@ export const useRepoStore = defineStore('repo', () => {
     try {
       const files = await withContext('list changed files', () => client.listChangedFiles(diffTarget.value));
       const previousActiveFileId = activeFileId.value;
-      changedFileIds.value = options.trackChangedIds === false ? [] : changedFileIdsBetween(changedFiles.value, files, options.changedPaths ?? []);
+      changedFileIds.value =
+        options.trackChangedIds === false ? [] : changedFileIdsBetween(changedFiles.value, files, options.changedPaths ?? []);
       changedFiles.value = files;
       if (files.some((file) => file.id === previousActiveFileId)) {
         activeFileId.value = previousActiveFileId;

@@ -29,7 +29,7 @@ import { computed, ref } from 'vue';
 import type { LspDiagnostic } from '../../lib/protocol';
 
 const props = defineProps<{
-  diagnostics?: LspDiagnostic[]
+  diagnostics?: LspDiagnostic[];
 }>();
 
 const open = ref(false);
@@ -66,9 +66,15 @@ const diagnosticKey = (diagnostic: LspDiagnostic) => {
   cursor: help;
   outline: none;
 
-  &.error { background: #ff6b6b; }
-  &.warning { background: #f0b86a; }
-  &.info { background: #8fb3ff; }
+  &.error {
+    background: #ff6b6b;
+  }
+  &.warning {
+    background: #f0b86a;
+  }
+  &.info {
+    background: #8fb3ff;
+  }
 }
 
 .diagnostic-popover {
@@ -97,8 +103,12 @@ const diagnosticKey = (diagnostic: LspDiagnostic) => {
   padding-left: 8px;
   border-left: 2px solid #8fb3ff;
 
-  &.error { border-left-color: #ff6b6b; }
-  &.warning { border-left-color: #f0b86a; }
+  &.error {
+    border-left-color: #ff6b6b;
+  }
+  &.warning {
+    border-left-color: #f0b86a;
+  }
 }
 
 .diagnostic-header {

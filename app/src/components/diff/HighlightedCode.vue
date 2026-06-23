@@ -1,5 +1,7 @@
 <template>
-  <pre class="code"><template v-for="(fragment, index) in fragments" :key="index"><span v-if="fragment.style" :style="fragment.style">{{ fragment.text }}</span><template v-else>{{ fragment.text }}</template></template></pre>
+  <pre
+    class="code"
+  ><template v-for="(fragment, index) in fragments" :key="index"><span v-if="fragment.style" :style="fragment.style">{{ fragment.text }}</span><template v-else>{{ fragment.text }}</template></template></pre>
 </template>
 
 <script setup lang="ts">
@@ -83,36 +85,40 @@ const fragments = computed<Fragment[]>(() => {
   const result: Fragment[] = [];
   const spans = props.spans
     ? props.spans
-    .filter((span) => isVisualScope(span.scope))
-    .map((span) => ({
-      startColumn: Math.max(0, Math.min(props.text.length, span.startColumn)),
-      endColumn: Math.max(0, Math.min(props.text.length, span.endColumn)),
-      scope: span.scope
-    }))
-    .filter((span) => span.endColumn > span.startColumn)
+        .filter((span) => isVisualScope(span.scope))
+        .map((span) => ({
+          startColumn: Math.max(0, Math.min(props.text.length, span.startColumn)),
+          endColumn: Math.max(0, Math.min(props.text.length, span.endColumn)),
+          scope: span.scope,
+        }))
+        .filter((span) => span.endColumn > span.startColumn)
     : [];
-  const highlights = props.reviewHighlights
-    ?.map((highlight) => ({
-      startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
-      endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
-    }))
-    .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
-  const searchHighlights = props.searchHighlights
-    ?.map((highlight) => ({
-      startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
-      endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
-      active: highlight.active,
-    }))
-    .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
+  const highlights =
+    props.reviewHighlights
+      ?.map((highlight) => ({
+        startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
+        endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
+      }))
+      .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
+  const searchHighlights =
+    props.searchHighlights
+      ?.map((highlight) => ({
+        startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
+        endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
+        active: highlight.active,
+      }))
+      .filter((highlight) => highlight.endColumn > highlight.startColumn) ?? [];
   if (spans.length === 0 && highlights.length === 0 && searchHighlights.length === 0) return [{ text: props.text }];
 
-  const boundaries = [...new Set([
-    0,
-    props.text.length,
-    ...spans.flatMap((span) => [span.startColumn, span.endColumn]),
-    ...highlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
-    ...searchHighlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
-  ])].sort((a, b) => a - b);
+  const boundaries = [
+    ...new Set([
+      0,
+      props.text.length,
+      ...spans.flatMap((span) => [span.startColumn, span.endColumn]),
+      ...highlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
+      ...searchHighlights.flatMap((highlight) => [highlight.startColumn, highlight.endColumn]),
+    ]),
+  ].sort((a, b) => a - b);
   for (let index = 0; index + 1 < boundaries.length; index += 1) {
     const start = boundaries[index];
     const end = boundaries[index + 1];
@@ -140,8 +146,10 @@ const isReviewHighlighted = (highlights: ReviewTextHighlight[], start: number, e
 };
 
 const searchHighlightForRange = (highlights: SearchTextHighlight[], start: number, end: number) => {
-  return highlights.find((highlight) => highlight.startColumn < end && highlight.endColumn > start && highlight.active)
-    ?? highlights.find((highlight) => highlight.startColumn < end && highlight.endColumn > start);
+  return (
+    highlights.find((highlight) => highlight.startColumn < end && highlight.endColumn > start && highlight.active) ??
+    highlights.find((highlight) => highlight.startColumn < end && highlight.endColumn > start)
+  );
 };
 
 const bestScopeForRange = (spans: SyntaxSpan[], start: number, end: number): string | undefined => {
@@ -207,5 +215,4 @@ const normalizeAlias = (scope: string): string => {
   text-overflow: ellipsis;
   white-space: pre;
 }
-
 </style>

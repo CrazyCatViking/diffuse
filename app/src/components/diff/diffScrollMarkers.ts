@@ -7,11 +7,14 @@ type DiffScrollMarkerRange = {
   bottom: number;
 };
 
-export const buildDiffScrollMarkers = <T>(items: T[], options: {
-  estimateSize: (item: T) => number;
-  kindForItem: (item: T) => 'added' | 'deleted' | undefined;
-  side?: SyntaxSide;
-}): DiffScrollMarker[] => {
+export const buildDiffScrollMarkers = <T>(
+  items: T[],
+  options: {
+    estimateSize: (item: T) => number;
+    kindForItem: (item: T) => 'added' | 'deleted' | undefined;
+    side?: SyntaxSide;
+  },
+): DiffScrollMarker[] => {
   const totalSize = items.reduce((sum, item) => sum + options.estimateSize(item), 0);
   if (totalSize <= 0) return [];
 
@@ -21,8 +24,8 @@ export const buildDiffScrollMarkers = <T>(items: T[], options: {
     const size = options.estimateSize(item);
     const kind = options.kindForItem(item);
     if (kind && markerVisibleForSide(kind, options.side)) {
-      const top = offset / totalSize * 100;
-      const bottom = Math.max((offset + size) / totalSize * 100, top + 0.45);
+      const top = (offset / totalSize) * 100;
+      const bottom = Math.max(((offset + size) / totalSize) * 100, top + 0.45);
       markerRanges.push({ kind, top, bottom });
     }
     offset += size;

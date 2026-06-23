@@ -7,10 +7,7 @@
 
     <label class="ref-field source-field">
       <span>Source</span>
-      <select
-        v-model="sourceRef"
-        @change="applySelection"
-      >
+      <select v-model="sourceRef" @change="applySelection">
         <option :value="workingTreeValue">Working tree</option>
         <option v-for="option in refOptions" :key="`source-${option.value}`" :value="option.value">
           {{ option.label }}
@@ -22,10 +19,7 @@
 
     <label class="ref-field target-field">
       <span>Target</span>
-      <select
-        v-model="targetRef"
-        @change="applySelection"
-      >
+      <select v-model="targetRef" @change="applySelection">
         <option v-for="option in refOptions" :key="`target-${option.value}`" :value="option.value">
           {{ option.label }}
         </option>
@@ -73,7 +67,7 @@ watch(
     sourceRef.value = target.compare ?? workingTreeValue;
     targetRef.value = target.base ?? props.defaults?.base ?? 'HEAD';
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 const applySelection = () => {

@@ -104,42 +104,45 @@ type CommentPayload = { side: SyntaxSide; line: number; text: string; clientX: n
 type ToggleCommentsPayload = { side: SyntaxSide; line: number };
 type ReviewReplyPayload = { thread: ReviewThread; body: string };
 
-withDefaults(defineProps<{
-  mode: 'split' | 'inline' | 'pane';
-  paneSide?: SyntaxSide;
-  fileId?: string;
-  row?: DiffRow;
-  reviewRow?: InlineReviewEntry;
-  reviewClass?: string | string[] | Record<string, boolean>;
-  oldSyntaxSpans?: SyntaxSpan[];
-  newSyntaxSpans?: SyntaxSpan[];
-  inlineSyntaxSpans?: SyntaxSpan[];
-  oldCommentCount?: number;
-  newCommentCount?: number;
-  oldCommentsExpanded?: boolean;
-  newCommentsExpanded?: boolean;
-  oldReviewHighlights?: ReviewTextHighlight[];
-  newReviewHighlights?: ReviewTextHighlight[];
-  inlineReviewHighlights?: ReviewTextHighlight[];
-  oldSearchHighlights?: SearchTextHighlight[];
-  newSearchHighlights?: SearchTextHighlight[];
-  inlineSearchHighlights?: SearchTextHighlight[];
-  oldDiagnostics?: LspDiagnostic[];
-  newDiagnostics?: LspDiagnostic[];
-  commentHoverDisabled?: boolean;
-  draftBody?: string;
-  chatMessages?: ReviewChatMessage[];
-  agentResponding?: boolean;
-  error?: string;
-}>(), {
-  oldCommentCount: 0,
-  newCommentCount: 0,
-  oldCommentsExpanded: false,
-  newCommentsExpanded: false,
-  oldDiagnostics: () => [],
-  newDiagnostics: () => [],
-  draftBody: '',
-});
+withDefaults(
+  defineProps<{
+    mode: 'split' | 'inline' | 'pane';
+    paneSide?: SyntaxSide;
+    fileId?: string;
+    row?: DiffRow;
+    reviewRow?: InlineReviewEntry;
+    reviewClass?: string | string[] | Record<string, boolean>;
+    oldSyntaxSpans?: SyntaxSpan[];
+    newSyntaxSpans?: SyntaxSpan[];
+    inlineSyntaxSpans?: SyntaxSpan[];
+    oldCommentCount?: number;
+    newCommentCount?: number;
+    oldCommentsExpanded?: boolean;
+    newCommentsExpanded?: boolean;
+    oldReviewHighlights?: ReviewTextHighlight[];
+    newReviewHighlights?: ReviewTextHighlight[];
+    inlineReviewHighlights?: ReviewTextHighlight[];
+    oldSearchHighlights?: SearchTextHighlight[];
+    newSearchHighlights?: SearchTextHighlight[];
+    inlineSearchHighlights?: SearchTextHighlight[];
+    oldDiagnostics?: LspDiagnostic[];
+    newDiagnostics?: LspDiagnostic[];
+    commentHoverDisabled?: boolean;
+    draftBody?: string;
+    chatMessages?: ReviewChatMessage[];
+    agentResponding?: boolean;
+    error?: string;
+  }>(),
+  {
+    oldCommentCount: 0,
+    newCommentCount: 0,
+    oldCommentsExpanded: false,
+    newCommentsExpanded: false,
+    oldDiagnostics: () => [],
+    newDiagnostics: () => [],
+    draftBody: '',
+  },
+);
 
 const emit = defineEmits<{
   comment: [payload: CommentPayload];

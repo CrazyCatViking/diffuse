@@ -45,7 +45,7 @@ const bridge = {
   onCoreEvent,
   startReviewAgent,
   stopReviewAgent,
-  chatWithReviewAgent
+  chatWithReviewAgent,
 };
 
 contextBridge.exposeInMainWorld('diffuse', bridge);

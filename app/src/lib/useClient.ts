@@ -1,4 +1,35 @@
-import { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewedFilesState, ReviewedFilesUpdate, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from "./protocol";
+import {
+  BranchInfo,
+  ChangedFile,
+  DiffRenderModel,
+  DiffRenderOptions,
+  DiffTarget,
+  DiffTargetDefaults,
+  InstallLspServerResult,
+  InstallTreeSitterGrammarResult,
+  LspConfigInfo,
+  LspDiagnostics,
+  LspHover,
+  LspInstallInfo,
+  LspStatus,
+  OpenRepositoryResult,
+  RestartLspServerResult,
+  ReviewAgentState,
+  ReviewChatMessage,
+  ReviewConfig,
+  ReviewedFilesState,
+  ReviewedFilesUpdate,
+  ReviewProgress,
+  ReviewRun,
+  ReviewSession,
+  ReviewThread,
+  SyncTreeSitterRegistryResult,
+  SyntaxLineSpans,
+  SyntaxSide,
+  TreeSitterGrammar,
+  UninstallTreeSitterGrammarResult,
+  VersionInfo,
+} from './protocol';
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -38,7 +69,14 @@ export const useClient = () => {
     return window.diffuse.coreRequest('getDiffRenderModel', { fileId, options, target: plainDiffTarget(target) });
   };
 
-  const getSyntaxSpans = async (fileId: string, side: SyntaxSide, startLine: number, endLine: number, options: Pick<DiffRenderOptions, 'context'>, target: DiffTarget): Promise<SyntaxLineSpans[]> => {
+  const getSyntaxSpans = async (
+    fileId: string,
+    side: SyntaxSide,
+    startLine: number,
+    endLine: number,
+    options: Pick<DiffRenderOptions, 'context'>,
+    target: DiffTarget,
+  ): Promise<SyntaxLineSpans[]> => {
     return window.diffuse.coreRequest('getSyntaxSpans', { fileId, side, startLine, endLine, options, target: plainDiffTarget(target) });
   };
 
@@ -162,7 +200,15 @@ export const useClient = () => {
     await window.diffuse.stopReviewAgent();
   };
 
-  const chatWithReviewAgent = async (repositoryRoot: string, sessionId: string, thread: ReviewThread, question: string, chatMessages: ReviewChatMessage[], userMessageId?: string, responseMessageId?: string): Promise<ReviewChatMessage> => {
+  const chatWithReviewAgent = async (
+    repositoryRoot: string,
+    sessionId: string,
+    thread: ReviewThread,
+    question: string,
+    chatMessages: ReviewChatMessage[],
+    userMessageId?: string,
+    responseMessageId?: string,
+  ): Promise<ReviewChatMessage> => {
     return window.diffuse.chatWithReviewAgent({
       repositoryRoot,
       sessionId,
@@ -185,9 +231,9 @@ export const useClient = () => {
   const uninstallTreeSitterGrammar = async (language: string): Promise<UninstallTreeSitterGrammarResult> => {
     return window.diffuse.coreRequest('uninstallTreeSitterGrammar', { language });
   };
-     
+
   return {
-    pickRepository,     
+    pickRepository,
     getVersion,
     openRepository,
     getDiffTargetDefaults,
@@ -228,6 +274,6 @@ export const useClient = () => {
     installTreeSitterGrammar,
     listTreeSitterGrammars,
     syncTreeSitterRegistry,
-    uninstallTreeSitterGrammar
+    uninstallTreeSitterGrammar,
   };
 };

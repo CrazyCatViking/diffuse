@@ -36,10 +36,7 @@ function resolveCoreExecutable(): string {
     if (existsSync(candidate)) return candidate;
   }
 
-  const packagedCandidates = [
-    join(process.resourcesPath, executableName),
-    join(process.resourcesPath, 'core', executableName),
-  ];
+  const packagedCandidates = [join(process.resourcesPath, executableName), join(process.resourcesPath, 'core', executableName)];
   for (const candidate of packagedCandidates) {
     if (existsSync(candidate)) return candidate;
   }

@@ -38,7 +38,12 @@
         <label v-for="field in customColorFields" :key="field.key" class="color-field">
           <span>{{ field.label }}</span>
           <span class="color-controls">
-            <input class="color-swatch-input" type="color" :value="settings.customSyntaxTheme[field.key]" @input="setCustomSyntaxColor(field.key, $event)" />
+            <input
+              class="color-swatch-input"
+              type="color"
+              :value="settings.customSyntaxTheme[field.key]"
+              @input="setCustomSyntaxColor(field.key, $event)"
+            />
             <input
               class="hex-input"
               type="text"
@@ -102,8 +107,15 @@
                 <div class="install-summary">{{ server.install.description }}</div>
                 <div class="install-command">
                   <code>{{ lspInstallCommand(server) }}</code>
-                  <Button type="button" @click="copyLspInstallCommand(server)">{{ copiedLspLanguage === server.language ? 'Copied' : 'Copy' }}</Button>
-                  <Button v-if="server.install.safeToRun" type="button" :disabled="installingLspServer === server.serverId" @click="installLspServer(server)">
+                  <Button type="button" @click="copyLspInstallCommand(server)">{{
+                    copiedLspLanguage === server.language ? 'Copied' : 'Copy'
+                  }}</Button>
+                  <Button
+                    v-if="server.install.safeToRun"
+                    type="button"
+                    :disabled="installingLspServer === server.serverId"
+                    @click="installLspServer(server)"
+                  >
                     {{ installingLspServer === server.serverId ? 'Installing...' : 'Install' }}
                   </Button>
                 </div>
@@ -668,7 +680,7 @@ p {
 
 .theme-preview :deep(.code) {
   height: 24px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   line-height: 24px;
 }
@@ -718,7 +730,7 @@ p {
   background: #111318;
   border: 1px solid #2a3140;
   border-radius: 8px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   text-transform: lowercase;
 }
@@ -777,7 +789,7 @@ p {
     min-width: 0;
     overflow: hidden;
     color: #d7deea;
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

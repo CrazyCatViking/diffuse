@@ -5,26 +5,74 @@
   <div v-else class="diff-row" :class="[row.kind, { 'comment-hover-disabled': commentHoverDisabled }]">
     <div class="line-number old">
       <span>{{ row.oldLine ?? '' }}</span>
-      <button v-if="oldCommentCount > 0 && !oldCommentsExpanded" class="collapsed-comment-indicator" type="button" title="Show collapsed comment" aria-label="Show collapsed comment" @click="emit('toggleComments', { side: 'old', line: row.oldLine! })">
+      <button
+        v-if="oldCommentCount > 0 && !oldCommentsExpanded"
+        class="collapsed-comment-indicator"
+        type="button"
+        title="Show collapsed comment"
+        aria-label="Show collapsed comment"
+        @click="emit('toggleComments', { side: 'old', line: row.oldLine! })"
+      >
         <span class="comment-icon" aria-hidden="true" />
       </button>
-      <button v-if="row.oldLine && oldCommentCount === 0" class="comment-bubble" type="button" title="Add old-side comment" aria-label="Add old-side comment" @click="emitOldComment">
+      <button
+        v-if="row.oldLine && oldCommentCount === 0"
+        class="comment-bubble"
+        type="button"
+        title="Add old-side comment"
+        aria-label="Add old-side comment"
+        @click="emitOldComment"
+      >
         <span class="comment-icon" aria-hidden="true" />
       </button>
       <DiagnosticMarker :diagnostics="oldDiagnostics" />
     </div>
-    <HighlightedCode class="old" :text="row.oldText ?? ''" :spans="oldSyntaxSpans ?? row.oldSyntaxSpans" :review-highlights="oldReviewHighlights" :search-highlights="oldSearchHighlights" data-review-side="old" :data-review-line="row.oldLine" :data-review-file-id="fileId" :data-review-text="row.oldText ?? ''" />
+    <HighlightedCode
+      class="old"
+      :text="row.oldText ?? ''"
+      :spans="oldSyntaxSpans ?? row.oldSyntaxSpans"
+      :review-highlights="oldReviewHighlights"
+      :search-highlights="oldSearchHighlights"
+      data-review-side="old"
+      :data-review-line="row.oldLine"
+      :data-review-file-id="fileId"
+      :data-review-text="row.oldText ?? ''"
+    />
     <div class="line-number new">
       <span>{{ row.newLine ?? '' }}</span>
-      <button v-if="newCommentCount > 0 && !newCommentsExpanded" class="collapsed-comment-indicator" type="button" title="Show collapsed comment" aria-label="Show collapsed comment" @click="emit('toggleComments', { side: 'new', line: row.newLine! })">
+      <button
+        v-if="newCommentCount > 0 && !newCommentsExpanded"
+        class="collapsed-comment-indicator"
+        type="button"
+        title="Show collapsed comment"
+        aria-label="Show collapsed comment"
+        @click="emit('toggleComments', { side: 'new', line: row.newLine! })"
+      >
         <span class="comment-icon" aria-hidden="true" />
       </button>
-      <button v-if="row.newLine && newCommentCount === 0" class="comment-bubble" type="button" title="Add new-side comment" aria-label="Add new-side comment" @click="emitNewComment">
+      <button
+        v-if="row.newLine && newCommentCount === 0"
+        class="comment-bubble"
+        type="button"
+        title="Add new-side comment"
+        aria-label="Add new-side comment"
+        @click="emitNewComment"
+      >
         <span class="comment-icon" aria-hidden="true" />
       </button>
       <DiagnosticMarker :diagnostics="newDiagnostics" />
     </div>
-    <HighlightedCode class="new" :text="row.newText ?? ''" :spans="newSyntaxSpans ?? row.newSyntaxSpans" :review-highlights="newReviewHighlights" :search-highlights="newSearchHighlights" data-review-side="new" :data-review-line="row.newLine" :data-review-file-id="fileId" :data-review-text="row.newText ?? ''" />
+    <HighlightedCode
+      class="new"
+      :text="row.newText ?? ''"
+      :spans="newSyntaxSpans ?? row.newSyntaxSpans"
+      :review-highlights="newReviewHighlights"
+      :search-highlights="newSearchHighlights"
+      data-review-side="new"
+      :data-review-line="row.newLine"
+      :data-review-file-id="fileId"
+      :data-review-text="row.newText ?? ''"
+    />
   </div>
 </template>
 
@@ -35,26 +83,26 @@ import DiagnosticMarker from './DiagnosticMarker.vue';
 import HighlightedCode, { type ReviewTextHighlight, type SearchTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
-  row: DiffRow
-  fileId?: string
-  oldSyntaxSpans?: SyntaxSpan[]
-  newSyntaxSpans?: SyntaxSpan[]
-  oldCommentCount?: number
-  newCommentCount?: number
-  oldCommentsExpanded?: boolean
-  newCommentsExpanded?: boolean
-  oldReviewHighlights?: ReviewTextHighlight[]
-  newReviewHighlights?: ReviewTextHighlight[]
-  oldSearchHighlights?: SearchTextHighlight[]
-  newSearchHighlights?: SearchTextHighlight[]
-  oldDiagnostics?: LspDiagnostic[]
-  newDiagnostics?: LspDiagnostic[]
-  commentHoverDisabled?: boolean
+  row: DiffRow;
+  fileId?: string;
+  oldSyntaxSpans?: SyntaxSpan[];
+  newSyntaxSpans?: SyntaxSpan[];
+  oldCommentCount?: number;
+  newCommentCount?: number;
+  oldCommentsExpanded?: boolean;
+  newCommentsExpanded?: boolean;
+  oldReviewHighlights?: ReviewTextHighlight[];
+  newReviewHighlights?: ReviewTextHighlight[];
+  oldSearchHighlights?: SearchTextHighlight[];
+  newSearchHighlights?: SearchTextHighlight[];
+  oldDiagnostics?: LspDiagnostic[];
+  newDiagnostics?: LspDiagnostic[];
+  commentHoverDisabled?: boolean;
 }>();
 
 const emit = defineEmits<{
-  comment: [payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }]
-  toggleComments: [payload: { side: 'old' | 'new'; line: number }]
+  comment: [payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }];
+  toggleComments: [payload: { side: 'old' | 'new'; line: number }];
 }>();
 
 const oldCommentCount = computed(() => props.oldCommentCount ?? 0);
@@ -81,7 +129,7 @@ const emitNewComment = (event: MouseEvent) => {
   height: 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.025);
   box-sizing: border-box;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   line-height: 24px;
 }
@@ -114,7 +162,9 @@ const emitNewComment = (event: MouseEvent) => {
 .comment-bubble {
   opacity: 0;
   transform: translateX(-4px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
 }
 
 .comment-icon {
@@ -134,7 +184,7 @@ const emitNewComment = (event: MouseEvent) => {
     height: 4px;
     border-right: 2px solid #f0c36a;
     border-bottom: 2px solid #f0c36a;
-    content: "";
+    content: '';
   }
 }
 
@@ -151,16 +201,16 @@ const emitNewComment = (event: MouseEvent) => {
 
 .added {
   .new,
-    .new + :deep(.code),
-    :deep(.code.new) {
+  .new + :deep(.code),
+  :deep(.code.new) {
     background: #19312a;
   }
 }
 
 .deleted {
   .old,
-    .old + :deep(.code),
-    :deep(.code.old) {
+  .old + :deep(.code),
+  :deep(.code.old) {
     background: #362226;
   }
 }
@@ -176,7 +226,7 @@ const emitNewComment = (event: MouseEvent) => {
 
 .hunk-text {
   padding: 2px 12px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   line-height: 24px;
 }

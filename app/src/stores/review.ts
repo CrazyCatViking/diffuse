@@ -1,7 +1,20 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import type { ChangedFile, DiffTarget, ReviewedFilesState, ReviewedFilesUpdate, ReviewAgentState, ReviewAnchor, ReviewChatMessage, ReviewMessage, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../lib/protocol';
+import type {
+  ChangedFile,
+  DiffTarget,
+  ReviewedFilesState,
+  ReviewedFilesUpdate,
+  ReviewAgentState,
+  ReviewAnchor,
+  ReviewChatMessage,
+  ReviewMessage,
+  ReviewProgress,
+  ReviewRun,
+  ReviewSession,
+  ReviewThread,
+} from '../lib/protocol';
 import { useRepoStore } from './repo';
 
 const humanParticipantId = 'local-human';
@@ -60,7 +73,7 @@ export const useReviewStore = defineStore('review', () => {
 
     try {
       const active = await client.getActiveReviewSession();
-      session.value = active ?? await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget));
+      session.value = active ?? (await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget)));
       await client.recoverStaleReviewRuns(session.value.id);
       await refreshReviewState();
     } catch (err) {
@@ -85,7 +98,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    chatMessages.value = (await client.getReviewChatMessages(session.value.id)).sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+    chatMessages.value = (await client.getReviewChatMessages(session.value.id)).sort((first, second) =>
+      first.createdAt.localeCompare(second.createdAt),
+    );
   };
 
   const loadSessions = async () => {
@@ -138,7 +153,15 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const refreshReviewState = async () => {
-    await Promise.all([loadSessions(), loadThreads(), loadProgress(), loadReviewedFiles(), loadRuns(), loadAgentStates(), loadChatMessages()]);
+    await Promise.all([
+      loadSessions(),
+      loadThreads(),
+      loadProgress(),
+      loadReviewedFiles(),
+      loadRuns(),
+      loadAgentStates(),
+      loadChatMessages(),
+    ]);
   };
 
   const startNewSession = async () => {
@@ -263,7 +286,7 @@ export const useReviewStore = defineStore('review', () => {
 
     try {
       const saved = await client.saveReviewThread(session.value.id, updated);
-      threads.value = threads.value.map((item) => item.id === saved.id ? saved : item);
+      threads.value = threads.value.map((item) => (item.id === saved.id ? saved : item));
       error.value = undefined;
       return true;
     } catch (err) {
@@ -276,14 +299,14 @@ export const useReviewStore = defineStore('review', () => {
     if (!session.value) return;
     const updated = { ...thread, status: 'resolved' as const, updatedAt: new Date().toISOString() };
     const saved = await client.saveReviewThread(session.value.id, updated);
-    threads.value = threads.value.map((item) => item.id === saved.id ? saved : item);
+    threads.value = threads.value.map((item) => (item.id === saved.id ? saved : item));
   };
 
   const reopenThread = async (thread: ReviewThread) => {
     if (!session.value) return;
     const updated = { ...thread, status: 'open' as const, updatedAt: new Date().toISOString() };
     const saved = await client.saveReviewThread(session.value.id, updated);
-    threads.value = threads.value.map((item) => item.id === saved.id ? saved : item);
+    threads.value = threads.value.map((item) => (item.id === saved.id ? saved : item));
   };
 
   const isFileReviewed = (file: ChangedFile) => {
@@ -339,7 +362,7 @@ export const useReviewStore = defineStore('review', () => {
     const sessionId = session.value.id;
     try {
       reviewedFilesMutation = reviewedFilesMutation.then(async () => {
-        const version = reviewedFilesVersion += 1;
+        const version = (reviewedFilesVersion += 1);
         const updated = await client.updateReviewedFiles(sessionId, update);
         if (session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = updated;
       });
@@ -370,7 +393,9 @@ export const useReviewStore = defineStore('review', () => {
 
     try {
       const saved = await client.saveReviewChatMessage(session.value.id, message);
-      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== saved.id), saved].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== saved.id), saved].sort((first, second) =>
+        first.createdAt.localeCompare(second.createdAt),
+      );
       error.value = undefined;
       return true;
     } catch (err) {
@@ -418,8 +443,18 @@ export const useReviewStore = defineStore('review', () => {
       const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
       const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
       chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
-      const assistant = await client.chatWithReviewAgent(repo.repository.root, session.value.id, thread, text, chatMessages.value, savedUser.id, savedPending.id);
-      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== assistant.id), assistant].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+      const assistant = await client.chatWithReviewAgent(
+        repo.repository.root,
+        session.value.id,
+        thread,
+        text,
+        chatMessages.value,
+        savedUser.id,
+        savedPending.id,
+      );
+      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== assistant.id), assistant].sort((first, second) =>
+        first.createdAt.localeCompare(second.createdAt),
+      );
       return true;
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
@@ -460,8 +495,23 @@ export const useReviewStore = defineStore('review', () => {
       updatedAt: now,
       messages: [{ id: createId('msg'), authorId: humanParticipantId, body: text, createdAt: now }],
     };
-    const userMessage: ReviewChatMessage = { id: createId('chat'), sessionId: session.value.id, role: 'user', body: text, createdAt: now, context };
-    const pendingMessage: ReviewChatMessage = { id: createId('chat'), sessionId: session.value.id, role: 'assistant', body: 'Thinking...', createdAt: new Date().toISOString(), provider: 'opencode', context };
+    const userMessage: ReviewChatMessage = {
+      id: createId('chat'),
+      sessionId: session.value.id,
+      role: 'user',
+      body: text,
+      createdAt: now,
+      context,
+    };
+    const pendingMessage: ReviewChatMessage = {
+      id: createId('chat'),
+      sessionId: session.value.id,
+      role: 'assistant',
+      body: 'Thinking...',
+      createdAt: new Date().toISOString(),
+      provider: 'opencode',
+      context,
+    };
 
     loading.value = true;
     error.value = undefined;
@@ -471,7 +521,15 @@ export const useReviewStore = defineStore('review', () => {
       const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
       chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
       cancelDraft();
-      const assistant = await client.chatWithReviewAgent(repo.repository.root, session.value.id, pseudoThread, text, chatMessages.value, savedUser.id, savedPending.id);
+      const assistant = await client.chatWithReviewAgent(
+        repo.repository.root,
+        session.value.id,
+        pseudoThread,
+        text,
+        chatMessages.value,
+        savedUser.id,
+        savedPending.id,
+      );
       chatMessages.value = upsertChatMessages(chatMessages.value, [assistant]);
       return true;
     } catch (err) {

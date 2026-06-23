@@ -1,5 +1,14 @@
 <template>
-  <div class="file-row" :class="{ active, reviewed }" :style="{ '--depth': depth }" role="button" tabindex="0" @click="$emit('select', file.id)" @keydown.enter="$emit('select', file.id)" @keydown.space.prevent="$emit('select', file.id)">
+  <div
+    class="file-row"
+    :class="{ active, reviewed }"
+    :style="{ '--depth': depth }"
+    role="button"
+    tabindex="0"
+    @click="$emit('select', file.id)"
+    @keydown.enter="$emit('select', file.id)"
+    @keydown.space.prevent="$emit('select', file.id)"
+  >
     <input
       class="review-checkbox"
       type="checkbox"
@@ -83,5 +92,4 @@ defineEmits<{
   color: #8b95a7;
   font-size: 12px;
 }
-
 </style>

@@ -44,7 +44,11 @@ export const useDiffSelection = (options: {
 
     const side = start.dataset.reviewSide;
     const startFileId = start.dataset.reviewFileId;
-    if ((side !== 'old' && side !== 'new') || end.dataset.reviewSide !== side || (options.requireSameFile && end.dataset.reviewFileId !== startFileId)) {
+    if (
+      (side !== 'old' && side !== 'new') ||
+      end.dataset.reviewSide !== side ||
+      (options.requireSameFile && end.dataset.reviewFileId !== startFileId)
+    ) {
       selectionDraft.value = undefined;
       return;
     }
@@ -82,7 +86,8 @@ export const useDiffSelection = (options: {
         side,
         startLine: normalizedStartLine,
         endLine: normalizedEndLine,
-        startColumn: normalizedStartLine === normalizedEndLine ? Math.min(normalizedStartColumn, normalizedEndColumn) : normalizedStartColumn,
+        startColumn:
+          normalizedStartLine === normalizedEndLine ? Math.min(normalizedStartColumn, normalizedEndColumn) : normalizedStartColumn,
         endColumn: normalizedStartLine === normalizedEndLine ? Math.max(normalizedStartColumn, normalizedEndColumn) : normalizedEndColumn,
         selectedText,
         lineText: start.dataset.reviewText,
@@ -104,7 +109,7 @@ export const useDiffSelection = (options: {
   };
 
   const reviewElementForNode = (node: Node) => {
-    const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentNode instanceof Element ? node.parentNode : null;
+    const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentNode instanceof Element ? node.parentNode : null;
     return element?.closest<HTMLElement>(options.selector);
   };
 
@@ -134,10 +139,7 @@ export const useDiffSelection = (options: {
   };
 
   const rectsIntersect = (first: DOMRect, second: DOMRect) => {
-    return first.left < second.right
-      && first.right > second.left
-      && first.top < second.bottom
-      && first.bottom > second.top;
+    return first.left < second.right && first.right > second.left && first.top < second.bottom && first.bottom > second.top;
   };
 
   const positionSelectionToolbar = (clientX: number, clientY: number) => {

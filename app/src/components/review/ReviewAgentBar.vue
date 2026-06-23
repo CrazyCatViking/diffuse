@@ -85,7 +85,7 @@ const liveAgentMessage = computed(() => {
   return undefined;
 });
 
-const truncateStatus = (value: string) => value.length > 150 ? `${value.slice(0, 147)}...` : value;
+const truncateStatus = (value: string) => (value.length > 150 ? `${value.slice(0, 147)}...` : value);
 
 const shortSessionId = computed(() => props.session?.id.replace(/^session-/, '').slice(0, 12));
 

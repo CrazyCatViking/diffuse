@@ -10,7 +10,11 @@ type PendingRequest = {
 };
 
 export class CoreRpcError extends Error {
-  constructor(readonly code: number, message: string, readonly data?: unknown) {
+  constructor(
+    readonly code: number,
+    message: string,
+    readonly data?: unknown,
+  ) {
     super(message);
     this.name = 'CoreRpcError';
   }
@@ -53,15 +57,16 @@ export class CoreRpcClient extends EventEmitter {
 
   get isRunning(): boolean {
     return (
-      !this.exited &&
-      !this.child.killed &&
-      this.child.exitCode === null &&
-      this.child.signalCode === null &&
-      !this.child.stdin.destroyed
-    )
+      !this.exited && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null && !this.child.stdin.destroyed
+    );
   }
 
-  request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000, options: { killOnTimeout?: boolean } = {}): Promise<T> {
+  request<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = 30_000,
+    options: { killOnTimeout?: boolean } = {},
+  ): Promise<T> {
     const id = this.nextId++;
     const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     const killOnTimeout = options.killOnTimeout ?? true;
@@ -79,7 +84,7 @@ export class CoreRpcClient extends EventEmitter {
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
         reject,
-        timer
+        timer,
       });
 
       if (!this.isRunning) {

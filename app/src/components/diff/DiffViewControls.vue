@@ -12,16 +12,35 @@
         @keydown.esc.prevent="emit('closeSearch')"
       />
       <span class="search-count">{{ searchStatus }}</span>
-      <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Previous match" @click="emit('moveSearch', -1)">Prev</button>
-      <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Next match" @click="emit('moveSearch', 1)">Next</button>
+      <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Previous match" @click="emit('moveSearch', -1)">
+        Prev
+      </button>
+      <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Next match" @click="emit('moveSearch', 1)">
+        Next
+      </button>
     </div>
-    <button v-else-if="searchEnabled" class="control" type="button" title="Search file (Ctrl+F or /)" @click="emit('openSearch')">Search</button>
+    <button v-else-if="searchEnabled" class="control" type="button" title="Search file (Ctrl+F or /)" @click="emit('openSearch')">
+      Search
+    </button>
     <button class="control" :class="{ active: viewMode === 'split' }" type="button" @click="emit('update:viewMode', 'split')">Split</button>
-    <button class="control" :class="{ active: viewMode === 'inline' }" type="button" @click="emit('update:viewMode', 'inline')">Inline</button>
-    <button v-if="showSyncScroll && viewMode === 'split'" class="control" :class="{ active: syncScroll }" type="button" @click="emit('update:syncScroll', !syncScroll)">
+    <button class="control" :class="{ active: viewMode === 'inline' }" type="button" @click="emit('update:viewMode', 'inline')">
+      Inline
+    </button>
+    <button
+      v-if="showSyncScroll && viewMode === 'split'"
+      class="control"
+      :class="{ active: syncScroll }"
+      type="button"
+      @click="emit('update:syncScroll', !syncScroll)"
+    >
       {{ syncScroll ? 'Synced' : 'Desynced' }}
     </button>
-    <button class="control" :class="{ active: contextMode === 'full' }" type="button" @click="emit('update:contextMode', contextMode === 'full' ? 'diff' : 'full')">
+    <button
+      class="control"
+      :class="{ active: contextMode === 'full' }"
+      type="button"
+      @click="emit('update:contextMode', contextMode === 'full' ? 'diff' : 'full')"
+    >
       {{ contextMode === 'full' ? 'Full file' : 'Diff only' }}
     </button>
   </div>
@@ -31,25 +50,28 @@
 import { nextTick, ref, watch } from 'vue';
 import type { DiffContextMode, DiffViewMode } from '../../lib/protocol';
 
-const props = withDefaults(defineProps<{
-  viewMode: DiffViewMode;
-  contextMode: DiffContextMode;
-  searchEnabled?: boolean;
-  searchOpen?: boolean;
-  searchQuery?: string;
-  searchStatus?: string;
-  hasSearchMatches?: boolean;
-  showSyncScroll?: boolean;
-  syncScroll?: boolean;
-}>(), {
-  searchEnabled: false,
-  searchOpen: false,
-  searchQuery: '',
-  searchStatus: '0/0',
-  hasSearchMatches: false,
-  showSyncScroll: false,
-  syncScroll: false,
-});
+const props = withDefaults(
+  defineProps<{
+    viewMode: DiffViewMode;
+    contextMode: DiffContextMode;
+    searchEnabled?: boolean;
+    searchOpen?: boolean;
+    searchQuery?: string;
+    searchStatus?: string;
+    hasSearchMatches?: boolean;
+    showSyncScroll?: boolean;
+    syncScroll?: boolean;
+  }>(),
+  {
+    searchEnabled: false,
+    searchOpen: false,
+    searchQuery: '',
+    searchStatus: '0/0',
+    hasSearchMatches: false,
+    showSyncScroll: false,
+    syncScroll: false,
+  },
+);
 
 const emit = defineEmits<{
   'update:viewMode': [mode: DiffViewMode];
@@ -63,16 +85,19 @@ const emit = defineEmits<{
 
 const searchInputRef = ref<HTMLInputElement | null>(null);
 
-watch(() => props.searchOpen, (open) => {
-  if (!open) {
-    searchInputRef.value?.blur();
-    return;
-  }
-  void nextTick(() => {
-    searchInputRef.value?.focus();
-    searchInputRef.value?.select();
-  });
-});
+watch(
+  () => props.searchOpen,
+  (open) => {
+    if (!open) {
+      searchInputRef.value?.blur();
+      return;
+    }
+    void nextTick(() => {
+      searchInputRef.value?.focus();
+      searchInputRef.value?.select();
+    });
+  },
+);
 </script>
 
 <style scoped lang="scss">

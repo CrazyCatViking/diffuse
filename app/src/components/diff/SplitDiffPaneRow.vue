@@ -5,12 +5,26 @@
   <div v-else class="diff-row" :class="[row.kind, side, { 'comment-hover-disabled': commentHoverDisabled }]">
     <div class="line-number">
       <span>{{ lineNumber }}</span>
-      <button v-if="commentCount > 0 && !commentsExpanded" class="collapsed-comment-indicator" type="button" title="Show collapsed comment" aria-label="Show collapsed comment" @click="emit('toggleComments', { side, line: line! })">
+      <button
+        v-if="commentCount > 0 && !commentsExpanded"
+        class="collapsed-comment-indicator"
+        type="button"
+        title="Show collapsed comment"
+        aria-label="Show collapsed comment"
+        @click="emit('toggleComments', { side, line: line! })"
+      >
         <span class="comment-icon" aria-hidden="true" />
       </button>
       <DiagnosticMarker :diagnostics="diagnostics" />
     </div>
-    <button v-if="line && commentCount === 0" class="comment-bubble" type="button" title="Add comment" aria-label="Add comment" @click="emitComment">
+    <button
+      v-if="line && commentCount === 0"
+      class="comment-bubble"
+      type="button"
+      title="Add comment"
+      aria-label="Add comment"
+      @click="emitComment"
+    >
       <span class="comment-icon" aria-hidden="true" />
     </button>
     <HighlightedCode
@@ -33,28 +47,28 @@ import DiagnosticMarker from './DiagnosticMarker.vue';
 import HighlightedCode, { type ReviewTextHighlight, type SearchTextHighlight } from './HighlightedCode.vue';
 
 const props = defineProps<{
-  row: DiffRow
-  side: 'old' | 'new'
-  fileId?: string
-  syntaxSpans?: SyntaxSpan[]
-  commentCount?: number
-  commentsExpanded?: boolean
-  reviewHighlights?: ReviewTextHighlight[]
-  searchHighlights?: SearchTextHighlight[]
-  diagnostics?: LspDiagnostic[]
-  commentHoverDisabled?: boolean
+  row: DiffRow;
+  side: 'old' | 'new';
+  fileId?: string;
+  syntaxSpans?: SyntaxSpan[];
+  commentCount?: number;
+  commentsExpanded?: boolean;
+  reviewHighlights?: ReviewTextHighlight[];
+  searchHighlights?: SearchTextHighlight[];
+  diagnostics?: LspDiagnostic[];
+  commentHoverDisabled?: boolean;
 }>();
 
 const emit = defineEmits<{
-  comment: [payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }]
-  toggleComments: [payload: { side: 'old' | 'new'; line: number }]
+  comment: [payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }];
+  toggleComments: [payload: { side: 'old' | 'new'; line: number }];
 }>();
 
-const line = computed(() => props.side === 'old' ? props.row.oldLine : props.row.newLine);
+const line = computed(() => (props.side === 'old' ? props.row.oldLine : props.row.newLine));
 const lineNumber = computed(() => line.value ?? '');
-const text = computed(() => props.side === 'old' ? props.row.oldText ?? '' : props.row.newText ?? '');
+const text = computed(() => (props.side === 'old' ? (props.row.oldText ?? '') : (props.row.newText ?? '')));
 const fileId = computed(() => props.fileId);
-const rowSpans = computed(() => props.side === 'old' ? props.row.oldSyntaxSpans : props.row.newSyntaxSpans);
+const rowSpans = computed(() => (props.side === 'old' ? props.row.oldSyntaxSpans : props.row.newSyntaxSpans));
 const commentCount = computed(() => props.commentCount ?? 0);
 const commentsExpanded = computed(() => props.commentsExpanded ?? false);
 const commentHoverDisabled = computed(() => props.commentHoverDisabled ?? false);
@@ -74,7 +88,7 @@ const emitComment = (event: MouseEvent) => {
   height: 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.025);
   box-sizing: border-box;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   line-height: 24px;
 }
@@ -104,7 +118,9 @@ const emitComment = (event: MouseEvent) => {
   font: inherit;
   padding: 0;
   transform: translateX(-4px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
 }
 
 .comment-icon {
@@ -124,7 +140,7 @@ const emitComment = (event: MouseEvent) => {
     height: 4px;
     border-right: 2px solid #f0c36a;
     border-bottom: 2px solid #f0c36a;
-    content: "";
+    content: '';
   }
 }
 
@@ -177,7 +193,7 @@ const emitComment = (event: MouseEvent) => {
 .hunk-text {
   padding: 2px 12px;
   overflow: hidden;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   line-height: 24px;
   text-overflow: ellipsis;

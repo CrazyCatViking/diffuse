@@ -47,7 +47,11 @@
         @stop="review.stopAgentReview()"
       />
 
-      <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }">
+      <main
+        class="workspace"
+        :class="{ resizing: fileTreeResizing }"
+        :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }"
+      >
         <ChangedFilesPane
           :files="repo.changedFiles"
           :active-file-id="repo.activeFileId"
@@ -244,7 +248,7 @@ watch(
     } else {
       review.clear();
     }
-  }
+  },
 );
 
 watch(
@@ -253,7 +257,7 @@ watch(
     if (selectedFolder.value) return;
     if (fileId) void diff.loadDiff(fileId, { silent: diff.current?.fileId === fileId });
     else diff.clear();
-  }
+  },
 );
 
 watch(
@@ -274,7 +278,7 @@ watch(
     if (diff.current?.fileId === repo.activeFileId && repo.changedFileIds.includes(repo.activeFileId)) {
       diff.markNewChanges();
     }
-  }
+  },
 );
 
 watch(
@@ -284,7 +288,7 @@ watch(
     if (repo.activeFileId) void diff.loadDiff(repo.activeFileId);
     else diff.clear();
   },
-  { deep: true }
+  { deep: true },
 );
 </script>
 

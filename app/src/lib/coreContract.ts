@@ -1,4 +1,35 @@
-import type { BranchInfo, ChangedFile, DiffRenderModel, DiffRenderOptions, DiffTarget, DiffTargetDefaults, InstallLspServerResult, InstallTreeSitterGrammarResult, LspConfigInfo, LspDiagnostics, LspHover, LspInstallInfo, LspStatus, OpenRepositoryResult, RestartLspServerResult, ReviewAgentState, ReviewChatMessage, ReviewConfig, ReviewedFilesState, ReviewedFilesUpdate, ReviewProgress, ReviewRun, ReviewSession, ReviewThread, SyncTreeSitterRegistryResult, SyntaxLineSpans, SyntaxSide, TreeSitterGrammar, UninstallTreeSitterGrammarResult, VersionInfo } from './protocol';
+import type {
+  BranchInfo,
+  ChangedFile,
+  DiffRenderModel,
+  DiffRenderOptions,
+  DiffTarget,
+  DiffTargetDefaults,
+  InstallLspServerResult,
+  InstallTreeSitterGrammarResult,
+  LspConfigInfo,
+  LspDiagnostics,
+  LspHover,
+  LspInstallInfo,
+  LspStatus,
+  OpenRepositoryResult,
+  RestartLspServerResult,
+  ReviewAgentState,
+  ReviewChatMessage,
+  ReviewConfig,
+  ReviewedFilesState,
+  ReviewedFilesUpdate,
+  ReviewProgress,
+  ReviewRun,
+  ReviewSession,
+  ReviewThread,
+  SyncTreeSitterRegistryResult,
+  SyntaxLineSpans,
+  SyntaxSide,
+  TreeSitterGrammar,
+  UninstallTreeSitterGrammarResult,
+  VersionInfo,
+} from './protocol';
 
 export const coreMethodNames = [
   'getVersion',
@@ -42,10 +73,10 @@ export const coreMethodNames = [
   'listTreeSitterGrammars',
   'syncTreeSitterRegistry',
   'installTreeSitterGrammar',
-  'uninstallTreeSitterGrammar'
+  'uninstallTreeSitterGrammar',
 ] as const;
 
-export type CoreMethod = typeof coreMethodNames[number];
+export type CoreMethod = (typeof coreMethodNames)[number];
 
 export type CoreMethods = {
   getVersion: { params: Record<string, never>; result: VersionInfo };
@@ -54,7 +85,17 @@ export type CoreMethods = {
   listBranches: { params: Record<string, never>; result: BranchInfo[] };
   listChangedFiles: { params: { target: DiffTarget }; result: ChangedFile[] };
   getDiffRenderModel: { params: { fileId: string; options: DiffRenderOptions; target: DiffTarget }; result: DiffRenderModel };
-  getSyntaxSpans: { params: { fileId: string; side: SyntaxSide; startLine: number; endLine: number; options: Pick<DiffRenderOptions, 'context'>; target: DiffTarget }; result: SyntaxLineSpans[] };
+  getSyntaxSpans: {
+    params: {
+      fileId: string;
+      side: SyntaxSide;
+      startLine: number;
+      endLine: number;
+      options: Pick<DiffRenderOptions, 'context'>;
+      target: DiffTarget;
+    };
+    result: SyntaxLineSpans[];
+  };
   getLspConfigInfo: { params: Record<string, never>; result: LspConfigInfo };
   getLspInstallInfo: { params: { serverId: string; command: string }; result: LspInstallInfo };
   installLspServer: { params: { serverId: string; command: string }; result: InstallLspServerResult };

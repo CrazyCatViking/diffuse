@@ -24,7 +24,15 @@ export const useReviewInteractions = (options: {
   };
 
   const agentRespondingForEntry = (entry: InlineReviewEntry) => {
-    if (entry.kind === 'draft') return entry.mode === 'chat' && Boolean(review.draftFile && review.draftAnchor && review.pendingAgentChatKeys.has(selectionChatThreadId(review.draftFile.id, review.draftAnchor)));
+    if (entry.kind === 'draft')
+      return (
+        entry.mode === 'chat' &&
+        Boolean(
+          review.draftFile &&
+          review.draftAnchor &&
+          review.pendingAgentChatKeys.has(selectionChatThreadId(review.draftFile.id, review.draftAnchor)),
+        )
+      );
     return review.pendingAgentChatKeys.has(entry.kind === 'thread' ? entry.thread.id : entry.chatThreadId);
   };
 

@@ -88,7 +88,10 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
     const thumbHeight = Math.max((element.clientHeight / element.scrollHeight) * track.clientHeight, 24);
     const trackTop = track.getBoundingClientRect().top;
     const targetTop = event.clientY - trackTop - thumbHeight / 2;
-    element.scrollTop = Math.max(0, Math.min(targetTop / track.clientHeight * element.scrollHeight, element.scrollHeight - element.clientHeight));
+    element.scrollTop = Math.max(
+      0,
+      Math.min((targetTop / track.clientHeight) * element.scrollHeight, element.scrollHeight - element.clientHeight),
+    );
     schedule();
   };
 
@@ -108,7 +111,7 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
     if (!element || drag.trackHeight <= 0) return;
 
     const deltaY = event.clientY - drag.startY;
-    element.scrollTop = drag.startScrollTop + deltaY / drag.trackHeight * element.scrollHeight;
+    element.scrollTop = drag.startScrollTop + (deltaY / drag.trackHeight) * element.scrollHeight;
     schedule();
   };
 

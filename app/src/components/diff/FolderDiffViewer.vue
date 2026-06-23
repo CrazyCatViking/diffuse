@@ -6,7 +6,12 @@
         <span class="file-count">{{ files.length }} file{{ files.length === 1 ? '' : 's' }}</span>
       </div>
 
-      <DiffViewControls :view-mode="viewMode" :context-mode="contextMode" @update:view-mode="emit('update:viewMode', $event)" @update:context-mode="emit('update:contextMode', $event)" />
+      <DiffViewControls
+        :view-mode="viewMode"
+        :context-mode="contextMode"
+        @update:view-mode="emit('update:viewMode', $event)"
+        @update:context-mode="emit('update:contextMode', $event)"
+      />
     </div>
 
     <FolderDiffStream
@@ -56,12 +61,31 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, LspDiagnostic, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type {
+  ChangedFile,
+  DiffContextMode,
+  DiffRenderModel,
+  DiffRow,
+  DiffTarget,
+  DiffViewMode,
+  LspDiagnostic,
+  ReviewAnchor,
+  SyntaxSide,
+  SyntaxSpan,
+} from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
 import { useReviewStore } from '../../stores/review';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
 import type { ReviewTextHighlight } from './HighlightedCode.vue';
-import { buildDisplayRows as buildReviewDisplayRows, buildReviewEntriesByEndLine, commentStartKey, displayDiffRow, displayReviewRow, selectionChatEntries as buildSelectionChatEntries, type DisplayRow } from './reviewRows';
+import {
+  buildDisplayRows as buildReviewDisplayRows,
+  buildReviewEntriesByEndLine,
+  commentStartKey,
+  displayDiffRow,
+  displayReviewRow,
+  selectionChatEntries as buildSelectionChatEntries,
+  type DisplayRow,
+} from './reviewRows';
 import DiffViewControls from './DiffViewControls.vue';
 import type { DiffScrollMarker } from './DiffScrollbar.vue';
 import { useReviewInteractions } from './useReviewInteractions';
@@ -136,12 +160,13 @@ const folderScrollRef = ref<HTMLElement | null>(null);
 const scrollbars = useDiffScrollbar({ folder: folderScrollRef });
 const hasFolderScroll = scrollbars.panes.folder.hasScroll;
 const folderThumbStyle = scrollbars.panes.folder.thumbStyle;
-const diffTargetFingerprint = () => JSON.stringify({
-  base: props.target.base,
-  compare: props.target.compare,
-  includeStaged: props.target.includeStaged,
-  includeUnstaged: props.target.includeUnstaged,
-});
+const diffTargetFingerprint = () =>
+  JSON.stringify({
+    base: props.target.base,
+    compare: props.target.compare,
+    includeStaged: props.target.includeStaged,
+    includeUnstaged: props.target.includeUnstaged,
+  });
 const {
   selectionDraft,
   selectionBubbleStyle,
@@ -162,7 +187,15 @@ const folderVirtualItems = computed<FolderVirtualItem[]>(() => {
   return models.value.flatMap((model) => {
     const items: FolderVirtualItem[] = [{ kind: 'file', key: `file:${model.fileId}`, model }];
     if (model.rows.length === 0) items.push({ kind: 'empty', key: `empty:${model.fileId}`, fileId: model.fileId });
-    else items.push(...displayRowsForModel(model).map((item) => ({ kind: 'row' as const, key: `row:${model.fileId}:${item.key}`, fileId: model.fileId, item })));
+    else
+      items.push(
+        ...displayRowsForModel(model).map((item) => ({
+          kind: 'row' as const,
+          key: `row:${model.fileId}:${item.key}`,
+          fileId: model.fileId,
+          item,
+        })),
+      );
     return items;
   });
 });
@@ -175,7 +208,7 @@ const folderVirtualizer = useVirtualizer(
     estimateSize: (index: number) => estimateFolderItemSize(folderVirtualItems.value[index]),
     overscan: 40,
     useAnimationFrameWithResizeObserver: true,
-  }))
+  })),
 );
 
 const folderVirtualRows = computed(() => folderVirtualizer.value.getVirtualItems());
@@ -196,7 +229,8 @@ const expandedCommentStarts = computed(() => {
   for (const thread of review.threads) {
     const startKey = commentStartKey(thread.anchor.side, thread.anchor.startLine);
     if (collapsedCommentStarts.value.has(startKey)) continue;
-    if (thread.status === 'open' || expandedResolvedCommentStarts.value.has(startKey)) expanded.add(fileCommentStartKey(thread.fileId, thread.anchor.side, thread.anchor.startLine));
+    if (thread.status === 'open' || expandedResolvedCommentStarts.value.has(startKey))
+      expanded.add(fileCommentStartKey(thread.fileId, thread.anchor.side, thread.anchor.startLine));
   }
   return expanded;
 });
@@ -205,7 +239,7 @@ const reviewHighlightAnchorsByFileSide = computed(() => {
   const addAnchor = (fileId: string, anchor: ReviewAnchor) => {
     if (anchor.startColumn === undefined || anchor.endColumn === undefined) return;
     const key = fileSideKey(fileId, anchor.side);
-    anchors.set(key, [...anchors.get(key) ?? [], anchor]);
+    anchors.set(key, [...(anchors.get(key) ?? []), anchor]);
   };
   for (const thread of review.threads) {
     if (!expandedCommentStarts.value.has(fileCommentStartKey(thread.fileId, thread.anchor.side, thread.anchor.startLine))) continue;
@@ -303,7 +337,13 @@ const diagnosticSummary = (fileId: string) => {
   };
 };
 
-const emptyModel = (): DiffRenderModel => ({ fileId: '', mode: props.viewMode, context: props.contextMode, syntax: { grammarInstalled: false, highlightsInstalled: false }, rows: [] });
+const emptyModel = (): DiffRenderModel => ({
+  fileId: '',
+  mode: props.viewMode,
+  context: props.contextMode,
+  syntax: { grammarInstalled: false, highlightsInstalled: false },
+  rows: [],
+});
 
 const fileSideKey = (fileId: string, side: SyntaxSide) => `${fileId}:${side}`;
 
@@ -409,14 +449,20 @@ const syntaxForInlineRow = (fileId: string, row: DiffRow) => {
 const syntaxKey = (fileId: string, side: SyntaxSide, line: number) => `${fileId}:${side}:${line}`;
 
 const displayRowsForModel = (model: DiffRenderModel): DisplayRow[] => {
-  return buildReviewDisplayRows(model.rows, buildReviewEntriesByEndLine({
-    fileId: model.fileId,
-    threads: fileThreads(model.fileId),
-    chatMessages: review.chatMessages,
-    collapsedCommentStarts: collapsedCommentStarts.value,
-    resolvedCommentStarts: expandedResolvedCommentStarts.value,
-    draft: review.draftAnchor && review.draftFile ? { fileId: review.draftFile.id, anchor: review.draftAnchor, mode: review.draftMode } : undefined,
-  }));
+  return buildReviewDisplayRows(
+    model.rows,
+    buildReviewEntriesByEndLine({
+      fileId: model.fileId,
+      threads: fileThreads(model.fileId),
+      chatMessages: review.chatMessages,
+      collapsedCommentStarts: collapsedCommentStarts.value,
+      resolvedCommentStarts: expandedResolvedCommentStarts.value,
+      draft:
+        review.draftAnchor && review.draftFile
+          ? { fileId: review.draftFile.id, anchor: review.draftAnchor, mode: review.draftMode }
+          : undefined,
+    }),
+  );
 };
 
 const selectionChatEntries = (fileId: string): InlineReviewEntry[] => buildSelectionChatEntries(fileId, review.chatMessages);
@@ -465,7 +511,7 @@ const reviewHighlightsForInlineRow = (fileId: string, row: DiffRow) => {
 
 const reviewHighlightsForRow = (fileId: string, row: DiffRow, side: SyntaxSide): ReviewTextHighlight[] => {
   const line = side === 'old' ? row.oldLine : row.newLine;
-  const text = side === 'old' ? row.oldText ?? '' : row.newText ?? '';
+  const text = side === 'old' ? (row.oldText ?? '') : (row.newText ?? '');
   if (!line || text.length === 0) return [];
 
   return reviewHighlightsForLine(fileId, side, line, text.length);
@@ -489,8 +535,8 @@ const reviewHighlightAnchors = (fileId: string, side: SyntaxSide) => {
 
 const reviewHighlightForLine = (anchor: ReviewAnchor, line: number, textLength: number): ReviewTextHighlight | undefined => {
   if (line < anchor.startLine || line > anchor.endLine) return undefined;
-  const startColumn = line === anchor.startLine ? anchor.startColumn ?? 0 : 0;
-  const endColumn = line === anchor.endLine ? anchor.endColumn ?? textLength : textLength;
+  const startColumn = line === anchor.startLine ? (anchor.startColumn ?? 0) : 0;
+  const endColumn = line === anchor.endLine ? (anchor.endColumn ?? textLength) : textLength;
   if (endColumn <= startColumn) return undefined;
   return { startColumn, endColumn };
 };
@@ -522,9 +568,22 @@ const {
   reopenThread,
   startSelectionComment,
   startSelectionChat,
-} = useReviewInteractions({ review, draftBody, collapsedCommentStarts, expandedResolvedCommentStarts, selectionDraft, clearNativeSelection });
+} = useReviewInteractions({
+  review,
+  draftBody,
+  collapsedCommentStarts,
+  expandedResolvedCommentStarts,
+  selectionDraft,
+  clearNativeSelection,
+});
 
-const { hover: lspHover, hoverStyle: lspHoverStyle, queue: queueLspHover, clear: clearLspHover, cleanup: cleanupLspHover } = useLspHover({
+const {
+  hover: lspHover,
+  hoverStyle: lspHoverStyle,
+  queue: queueLspHover,
+  clear: clearLspHover,
+  cleanup: cleanupLspHover,
+} = useLspHover({
   client,
   target: () => props.target,
   diffTargetFingerprint,
@@ -538,14 +597,10 @@ watch(
   () => {
     void loadFolderDiff();
   },
-  { immediate: true }
+  { immediate: true },
 );
 
-watch(
-  [folderTotalSize, () => props.viewMode, () => loading.value],
-  scrollbars.updateAfterRender,
-  { immediate: true, flush: 'post' }
-);
+watch([folderTotalSize, () => props.viewMode, () => loading.value], scrollbars.updateAfterRender, { immediate: true, flush: 'post' });
 
 onMounted(() => {
   document.addEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);

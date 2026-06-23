@@ -37,10 +37,14 @@ export const useDiffStore = defineStore('diff', () => {
     error.value = undefined;
 
     try {
-      current.value = await client.getDiffRenderModel(fileId, {
-        mode: viewMode.value,
-        context: contextMode.value,
-      }, repo.diffTarget);
+      current.value = await client.getDiffRenderModel(
+        fileId,
+        {
+          mode: viewMode.value,
+          context: contextMode.value,
+        },
+        repo.diffTarget,
+      );
       hasNewChanges.value = false;
     } catch (err) {
       if (err instanceof Error) {

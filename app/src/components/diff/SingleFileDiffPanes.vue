@@ -5,46 +5,249 @@
   <div v-else-if="rowsLength === 0" class="message">No unstaged diff for this file.</div>
   <div v-else-if="initialSyntaxGateActive" class="syntax-gate" />
   <div v-else-if="viewMode === 'split' && syncScroll" class="pane-shell" :class="{ 'has-diff-scroll': hasSyncedSplitScroll }">
-    <div :ref="(element) => setPaneRef('syncedSplit', element)" class="pane synced-split-view" @scroll="emit('scroll', 'syncedSplit', $event)" @pointermove="emit('pointerMove', $event)" @mouseleave="emit('mouseLeave')" @mouseup="emit('mouseUp')">
+    <div
+      :ref="(element) => setPaneRef('syncedSplit', element)"
+      class="pane synced-split-view"
+      @scroll="emit('scroll', 'syncedSplit', $event)"
+      @pointermove="emit('pointerMove', $event)"
+      @mouseleave="emit('mouseLeave')"
+      @mouseup="emit('mouseUp')"
+    >
       <div class="spacer synced-split-spacer" :style="{ height: `${syncedSplitTotalSize}px` }">
-        <div v-for="entry in syncedSplitRenderedRows" :key="String(entry.virtualRow.key)" class="virtual-row" :data-index="entry.virtualRow.index" :ref="entry.diffRow ? undefined : measureSyncedSplitElement" :style="{ transform: `translateY(${entry.virtualRow.start}px)` }">
-          <DiffRenderedRow mode="split" :row="entry.diffRow" :review-row="entry.reviewRow" :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'" :file-id="model.fileId" :old-syntax-spans="entry.oldSyntaxSpans" :new-syntax-spans="entry.newSyntaxSpans" :old-comment-count="entry.oldCommentCount" :new-comment-count="entry.newCommentCount" :old-comments-expanded="entry.oldCommentsExpanded" :new-comments-expanded="entry.newCommentsExpanded" :old-review-highlights="entry.oldReviewHighlights" :new-review-highlights="entry.newReviewHighlights" :old-search-highlights="entry.oldSearchHighlights" :new-search-highlights="entry.newSearchHighlights" :old-diagnostics="[]" :new-diagnostics="entry.newDiagnostics" :comment-hover-disabled="commentHoverDisabled" :draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry)" :agent-responding="agentRespondingForEntry(entry)" :error="reviewError" @comment="emit('comment', $event)" @toggle-comments="emit('toggleComments', $event)" @update:draft-body="emit('update:draftBody', $event)" @submit="emit('submit')" @submit-chat-draft="emit('submitChatDraft')" @cancel="emit('cancel')" @reply="emit('reply', $event)" @chat="emit('chat', $event)" @collapse="emit('collapse', $event)" @resolve="emit('resolve', $event)" @reopen="emit('reopen', $event)" />
+        <div
+          v-for="entry in syncedSplitRenderedRows"
+          :key="String(entry.virtualRow.key)"
+          class="virtual-row"
+          :data-index="entry.virtualRow.index"
+          :ref="entry.diffRow ? undefined : measureSyncedSplitElement"
+          :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
+        >
+          <DiffRenderedRow
+            mode="split"
+            :row="entry.diffRow"
+            :review-row="entry.reviewRow"
+            :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'"
+            :file-id="model.fileId"
+            :old-syntax-spans="entry.oldSyntaxSpans"
+            :new-syntax-spans="entry.newSyntaxSpans"
+            :old-comment-count="entry.oldCommentCount"
+            :new-comment-count="entry.newCommentCount"
+            :old-comments-expanded="entry.oldCommentsExpanded"
+            :new-comments-expanded="entry.newCommentsExpanded"
+            :old-review-highlights="entry.oldReviewHighlights"
+            :new-review-highlights="entry.newReviewHighlights"
+            :old-search-highlights="entry.oldSearchHighlights"
+            :new-search-highlights="entry.newSearchHighlights"
+            :old-diagnostics="[]"
+            :new-diagnostics="entry.newDiagnostics"
+            :comment-hover-disabled="commentHoverDisabled"
+            :draft-body="draftBody"
+            :chat-messages="chatMessagesForEntry(entry)"
+            :agent-responding="agentRespondingForEntry(entry)"
+            :error="reviewError"
+            @comment="emit('comment', $event)"
+            @toggle-comments="emit('toggleComments', $event)"
+            @update:draft-body="emit('update:draftBody', $event)"
+            @submit="emit('submit')"
+            @submit-chat-draft="emit('submitChatDraft')"
+            @cancel="emit('cancel')"
+            @reply="emit('reply', $event)"
+            @chat="emit('chat', $event)"
+            @collapse="emit('collapse', $event)"
+            @resolve="emit('resolve', $event)"
+            @reopen="emit('reopen', $event)"
+          />
         </div>
       </div>
     </div>
-    <DiffScrollbar v-if="hasSyncedSplitScroll" :markers="syncedSplitMarkers" :thumb-style="syncedSplitThumbStyle" @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'syncedSplit')" @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'syncedSplit')" />
+    <DiffScrollbar
+      v-if="hasSyncedSplitScroll"
+      :markers="syncedSplitMarkers"
+      :thumb-style="syncedSplitThumbStyle"
+      @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'syncedSplit')"
+      @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'syncedSplit')"
+    />
   </div>
   <div v-else-if="viewMode === 'split'" class="split-view">
     <div class="pane-shell old-pane-shell" :class="{ 'has-diff-scroll': hasLeftScroll }">
-      <div :ref="(element) => setPaneRef('left', element)" class="pane old-pane" @scroll="emit('scroll', 'left', $event)" @pointermove="emit('pointerMove', $event)" @mouseleave="emit('mouseLeave')" @mouseup="emit('mouseUp')">
+      <div
+        :ref="(element) => setPaneRef('left', element)"
+        class="pane old-pane"
+        @scroll="emit('scroll', 'left', $event)"
+        @pointermove="emit('pointerMove', $event)"
+        @mouseleave="emit('mouseLeave')"
+        @mouseup="emit('mouseUp')"
+      >
         <div class="spacer" :style="{ height: `${leftTotalSize}px` }">
-          <div v-for="entry in leftRenderedRows" :key="`old-${String(entry.virtualRow.key)}`" class="virtual-row" :data-index="entry.virtualRow.index" :ref="entry.diffRow ? undefined : measureLeftElement" :style="{ transform: `translateY(${entry.virtualRow.start}px)` }">
-            <DiffRenderedRow mode="pane" pane-side="old" :row="entry.diffRow" :review-row="entry.reviewRow" review-class="old" :file-id="model.fileId" :old-syntax-spans="entry.oldSyntaxSpans" :old-comment-count="entry.oldCommentCount" :old-comments-expanded="entry.oldCommentsExpanded" :old-review-highlights="entry.oldReviewHighlights" :old-search-highlights="entry.oldSearchHighlights" :old-diagnostics="[]" :comment-hover-disabled="commentHoverDisabled" :draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry)" :agent-responding="agentRespondingForEntry(entry)" :error="reviewError" @comment="emit('comment', $event)" @toggle-comments="emit('toggleComments', $event)" @update:draft-body="emit('update:draftBody', $event)" @submit="emit('submit')" @submit-chat-draft="emit('submitChatDraft')" @cancel="emit('cancel')" @reply="emit('reply', $event)" @chat="emit('chat', $event)" @collapse="emit('collapse', $event)" @resolve="emit('resolve', $event)" @reopen="emit('reopen', $event)" />
+          <div
+            v-for="entry in leftRenderedRows"
+            :key="`old-${String(entry.virtualRow.key)}`"
+            class="virtual-row"
+            :data-index="entry.virtualRow.index"
+            :ref="entry.diffRow ? undefined : measureLeftElement"
+            :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
+          >
+            <DiffRenderedRow
+              mode="pane"
+              pane-side="old"
+              :row="entry.diffRow"
+              :review-row="entry.reviewRow"
+              review-class="old"
+              :file-id="model.fileId"
+              :old-syntax-spans="entry.oldSyntaxSpans"
+              :old-comment-count="entry.oldCommentCount"
+              :old-comments-expanded="entry.oldCommentsExpanded"
+              :old-review-highlights="entry.oldReviewHighlights"
+              :old-search-highlights="entry.oldSearchHighlights"
+              :old-diagnostics="[]"
+              :comment-hover-disabled="commentHoverDisabled"
+              :draft-body="draftBody"
+              :chat-messages="chatMessagesForEntry(entry)"
+              :agent-responding="agentRespondingForEntry(entry)"
+              :error="reviewError"
+              @comment="emit('comment', $event)"
+              @toggle-comments="emit('toggleComments', $event)"
+              @update:draft-body="emit('update:draftBody', $event)"
+              @submit="emit('submit')"
+              @submit-chat-draft="emit('submitChatDraft')"
+              @cancel="emit('cancel')"
+              @reply="emit('reply', $event)"
+              @chat="emit('chat', $event)"
+              @collapse="emit('collapse', $event)"
+              @resolve="emit('resolve', $event)"
+              @reopen="emit('reopen', $event)"
+            />
           </div>
         </div>
       </div>
-      <DiffScrollbar v-if="hasLeftScroll" :markers="leftMarkers" :thumb-style="leftThumbStyle" @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'left')" @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'left')" />
+      <DiffScrollbar
+        v-if="hasLeftScroll"
+        :markers="leftMarkers"
+        :thumb-style="leftThumbStyle"
+        @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'left')"
+        @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'left')"
+      />
     </div>
     <div class="pane-shell" :class="{ 'has-diff-scroll': hasRightScroll }">
-      <div :ref="(element) => setPaneRef('right', element)" class="pane new-pane" @scroll="emit('scroll', 'right', $event)" @pointermove="emit('pointerMove', $event)" @mouseleave="emit('mouseLeave')" @mouseup="emit('mouseUp')">
+      <div
+        :ref="(element) => setPaneRef('right', element)"
+        class="pane new-pane"
+        @scroll="emit('scroll', 'right', $event)"
+        @pointermove="emit('pointerMove', $event)"
+        @mouseleave="emit('mouseLeave')"
+        @mouseup="emit('mouseUp')"
+      >
         <div class="spacer" :style="{ height: `${rightTotalSize}px` }">
-          <div v-for="entry in rightRenderedRows" :key="`new-${String(entry.virtualRow.key)}`" class="virtual-row" :data-index="entry.virtualRow.index" :ref="entry.diffRow ? undefined : measureRightElement" :style="{ transform: `translateY(${entry.virtualRow.start}px)` }">
-            <DiffRenderedRow mode="pane" pane-side="new" :row="entry.diffRow" :review-row="entry.reviewRow" review-class="new" :file-id="model.fileId" :new-syntax-spans="entry.newSyntaxSpans" :new-comment-count="entry.newCommentCount" :new-comments-expanded="entry.newCommentsExpanded" :new-review-highlights="entry.newReviewHighlights" :new-search-highlights="entry.newSearchHighlights" :new-diagnostics="entry.newDiagnostics" :comment-hover-disabled="commentHoverDisabled" :draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry)" :agent-responding="agentRespondingForEntry(entry)" :error="reviewError" @comment="emit('comment', $event)" @toggle-comments="emit('toggleComments', $event)" @update:draft-body="emit('update:draftBody', $event)" @submit="emit('submit')" @submit-chat-draft="emit('submitChatDraft')" @cancel="emit('cancel')" @reply="emit('reply', $event)" @chat="emit('chat', $event)" @collapse="emit('collapse', $event)" @resolve="emit('resolve', $event)" @reopen="emit('reopen', $event)" />
+          <div
+            v-for="entry in rightRenderedRows"
+            :key="`new-${String(entry.virtualRow.key)}`"
+            class="virtual-row"
+            :data-index="entry.virtualRow.index"
+            :ref="entry.diffRow ? undefined : measureRightElement"
+            :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
+          >
+            <DiffRenderedRow
+              mode="pane"
+              pane-side="new"
+              :row="entry.diffRow"
+              :review-row="entry.reviewRow"
+              review-class="new"
+              :file-id="model.fileId"
+              :new-syntax-spans="entry.newSyntaxSpans"
+              :new-comment-count="entry.newCommentCount"
+              :new-comments-expanded="entry.newCommentsExpanded"
+              :new-review-highlights="entry.newReviewHighlights"
+              :new-search-highlights="entry.newSearchHighlights"
+              :new-diagnostics="entry.newDiagnostics"
+              :comment-hover-disabled="commentHoverDisabled"
+              :draft-body="draftBody"
+              :chat-messages="chatMessagesForEntry(entry)"
+              :agent-responding="agentRespondingForEntry(entry)"
+              :error="reviewError"
+              @comment="emit('comment', $event)"
+              @toggle-comments="emit('toggleComments', $event)"
+              @update:draft-body="emit('update:draftBody', $event)"
+              @submit="emit('submit')"
+              @submit-chat-draft="emit('submitChatDraft')"
+              @cancel="emit('cancel')"
+              @reply="emit('reply', $event)"
+              @chat="emit('chat', $event)"
+              @collapse="emit('collapse', $event)"
+              @resolve="emit('resolve', $event)"
+              @reopen="emit('reopen', $event)"
+            />
           </div>
         </div>
       </div>
-      <DiffScrollbar v-if="hasRightScroll" :markers="rightMarkers" :thumb-style="rightThumbStyle" @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'right')" @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'right')" />
+      <DiffScrollbar
+        v-if="hasRightScroll"
+        :markers="rightMarkers"
+        :thumb-style="rightThumbStyle"
+        @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'right')"
+        @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'right')"
+      />
     </div>
   </div>
   <div v-else class="pane-shell" :class="{ 'has-diff-scroll': hasInlineScroll }">
-    <div :ref="(element) => setPaneRef('inline', element)" class="pane inline-view" @scroll="emit('scroll', 'inline', $event)" @pointermove="emit('pointerMove', $event)" @mouseleave="emit('mouseLeave')" @mouseup="emit('mouseUp')">
+    <div
+      :ref="(element) => setPaneRef('inline', element)"
+      class="pane inline-view"
+      @scroll="emit('scroll', 'inline', $event)"
+      @pointermove="emit('pointerMove', $event)"
+      @mouseleave="emit('mouseLeave')"
+      @mouseup="emit('mouseUp')"
+    >
       <div class="spacer inline-spacer" :style="{ height: `${inlineTotalSize}px` }">
-        <div v-for="entry in inlineRenderedRows" :key="String(entry.virtualRow.key)" class="virtual-row" :data-index="entry.virtualRow.index" :ref="entry.diffRow ? undefined : measureInlineElement" :style="{ transform: `translateY(${entry.virtualRow.start}px)` }">
-          <DiffRenderedRow mode="inline" :row="entry.diffRow" :review-row="entry.reviewRow" review-class="inline" :file-id="model.fileId" :inline-syntax-spans="entry.inlineSyntaxSpans" :old-comment-count="entry.oldCommentCount" :new-comment-count="entry.newCommentCount" :old-comments-expanded="entry.oldCommentsExpanded" :new-comments-expanded="entry.newCommentsExpanded" :inline-review-highlights="entry.inlineReviewHighlights" :inline-search-highlights="entry.inlineSearchHighlights" :old-diagnostics="[]" :new-diagnostics="entry.newDiagnostics" :comment-hover-disabled="commentHoverDisabled" :draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry)" :agent-responding="agentRespondingForEntry(entry)" :error="reviewError" @comment="emit('comment', $event)" @toggle-comments="emit('toggleComments', $event)" @update:draft-body="emit('update:draftBody', $event)" @submit="emit('submit')" @submit-chat-draft="emit('submitChatDraft')" @cancel="emit('cancel')" @reply="emit('reply', $event)" @chat="emit('chat', $event)" @collapse="emit('collapse', $event)" @resolve="emit('resolve', $event)" @reopen="emit('reopen', $event)" />
+        <div
+          v-for="entry in inlineRenderedRows"
+          :key="String(entry.virtualRow.key)"
+          class="virtual-row"
+          :data-index="entry.virtualRow.index"
+          :ref="entry.diffRow ? undefined : measureInlineElement"
+          :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
+        >
+          <DiffRenderedRow
+            mode="inline"
+            :row="entry.diffRow"
+            :review-row="entry.reviewRow"
+            review-class="inline"
+            :file-id="model.fileId"
+            :inline-syntax-spans="entry.inlineSyntaxSpans"
+            :old-comment-count="entry.oldCommentCount"
+            :new-comment-count="entry.newCommentCount"
+            :old-comments-expanded="entry.oldCommentsExpanded"
+            :new-comments-expanded="entry.newCommentsExpanded"
+            :inline-review-highlights="entry.inlineReviewHighlights"
+            :inline-search-highlights="entry.inlineSearchHighlights"
+            :old-diagnostics="[]"
+            :new-diagnostics="entry.newDiagnostics"
+            :comment-hover-disabled="commentHoverDisabled"
+            :draft-body="draftBody"
+            :chat-messages="chatMessagesForEntry(entry)"
+            :agent-responding="agentRespondingForEntry(entry)"
+            :error="reviewError"
+            @comment="emit('comment', $event)"
+            @toggle-comments="emit('toggleComments', $event)"
+            @update:draft-body="emit('update:draftBody', $event)"
+            @submit="emit('submit')"
+            @submit-chat-draft="emit('submitChatDraft')"
+            @cancel="emit('cancel')"
+            @reply="emit('reply', $event)"
+            @chat="emit('chat', $event)"
+            @collapse="emit('collapse', $event)"
+            @resolve="emit('resolve', $event)"
+            @reopen="emit('reopen', $event)"
+          />
         </div>
       </div>
     </div>
-    <DiffScrollbar v-if="hasInlineScroll" :markers="inlineMarkers" :thumb-style="inlineThumbStyle" @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'inline')" @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'inline')" />
+    <DiffScrollbar
+      v-if="hasInlineScroll"
+      :markers="inlineMarkers"
+      :thumb-style="inlineThumbStyle"
+      @track-pointer-down="emit('scrollbarTrackPointerDown', $event, 'inline')"
+      @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'inline')"
+    />
   </div>
 </template>
 

@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "electron-vite dev -- --ozone-platform=wayland",
     "check:rpc-contract": "node ../scripts/check-rpc-contract.mjs",
+    "format": "prettier --write \"src/**/*.{ts,vue,scss}\" \"electron/**/*.ts\" \"scripts/**/*.mjs\" electron.vite.config.ts",
+    "format:check": "prettier --check \"src/**/*.{ts,vue,scss}\" \"electron/**/*.ts\" \"scripts/**/*.mjs\" electron.vite.config.ts",
     "build": "pnpm check:rpc-contract && vue-tsc --noEmit && electron-vite build",
     "package": "pnpm build && node scripts/prepare-electron-package.mjs && electron-builder --dir",
     "dist": "pnpm build && node scripts/prepare-electron-package.mjs && electron-builder",
@@ -59,6 +61,7 @@
     "@vitejs/plugin-vue": "^6.0.0",
     "electron-vite": "^4.0.0",
     "pinia": "^3.0.3",
+    "prettier": "^3.8.4",
     "sass": "^1.89.0",
     "vue": "^3.5.14"
   },

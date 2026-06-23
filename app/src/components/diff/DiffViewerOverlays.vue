@@ -1,9 +1,19 @@
 <template>
   <div v-if="showSelectionToolbar" class="selection-toolbar" :style="selectionStyle">
-    <button type="button" title="Comment on selection" aria-label="Comment on selection" @pointerdown.prevent.stop="emit('commentSelection')">
+    <button
+      type="button"
+      title="Comment on selection"
+      aria-label="Comment on selection"
+      @pointerdown.prevent.stop="emit('commentSelection')"
+    >
       <span class="comment-icon" aria-hidden="true" />
     </button>
-    <button type="button" title="Ask AI about selection" aria-label="Ask AI about selection" @pointerdown.prevent.stop="emit('chatSelection')">
+    <button
+      type="button"
+      title="Ask AI about selection"
+      aria-label="Ask AI about selection"
+      @pointerdown.prevent.stop="emit('chatSelection')"
+    >
       <span class="ai-icon" aria-hidden="true" />
     </button>
   </div>
@@ -80,7 +90,7 @@ const emit = defineEmits<{
     height: 4px;
     border-right: 2px solid #f0c36a;
     border-bottom: 2px solid #f0c36a;
-    content: "";
+    content: '';
   }
 }
 
@@ -95,7 +105,7 @@ const emit = defineEmits<{
   &::before,
   &::after {
     position: absolute;
-    content: "";
+    content: '';
     background: currentColor;
   }
 
@@ -138,7 +148,7 @@ const emit = defineEmits<{
 
   pre {
     margin: 0;
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
     font-size: 12px;
     line-height: 1.45;
     white-space: pre-wrap;

@@ -3,30 +3,123 @@
   <div v-else-if="error" class="message error">{{ error }}</div>
   <div v-else-if="modelsLength === 0" class="message">No diffs in this folder.</div>
   <div v-else class="folder-diffs-shell" :class="{ 'has-diff-scroll': hasFolderScroll }">
-    <div :ref="setScrollRef" class="folder-diffs" @scroll="emit('scroll')" @pointermove="emit('pointerMove', $event)" @mouseleave="emit('mouseLeave')" @mouseup="emit('mouseUp')">
+    <div
+      :ref="setScrollRef"
+      class="folder-diffs"
+      @scroll="emit('scroll')"
+      @pointermove="emit('pointerMove', $event)"
+      @mouseleave="emit('mouseLeave')"
+      @mouseup="emit('mouseUp')"
+    >
       <div class="folder-spacer" :style="{ height: `${folderTotalSize}px` }">
-        <div v-for="entry in folderRenderedRows" :key="String(entry.virtualRow.key)" class="virtual-row" :data-index="entry.virtualRow.index" :ref="entry.diffRow ? undefined : measureFolderElement" :style="{ transform: `translateY(${entry.virtualRow.start}px)` }">
+        <div
+          v-for="entry in folderRenderedRows"
+          :key="String(entry.virtualRow.key)"
+          class="virtual-row"
+          :data-index="entry.virtualRow.index"
+          :ref="entry.diffRow ? undefined : measureFolderElement"
+          :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
+        >
           <template v-if="entry.item.kind === 'file'">
             <header class="file-header">
               <span>{{ entry.model.fileId }}</span>
               <span class="file-row-count">{{ entry.model.rows.length }} rows</span>
-              <span v-if="diagnosticSummary(entry.model.fileId)" class="diagnostic-summary" :class="diagnosticSummary(entry.model.fileId)?.className">
+              <span
+                v-if="diagnosticSummary(entry.model.fileId)"
+                class="diagnostic-summary"
+                :class="diagnosticSummary(entry.model.fileId)?.className"
+              >
                 {{ diagnosticSummary(entry.model.fileId)?.label }}
               </span>
             </header>
           </template>
           <div v-else-if="entry.item.kind === 'empty'" class="empty-file">No diff for this file.</div>
           <template v-else-if="entry.item.kind === 'row' && viewMode === 'split'">
-            <DiffRenderedRow mode="split" :row="entry.diffRow" :review-row="entry.reviewRow" :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'" :file-id="entry.fileId" :old-syntax-spans="entry.oldSyntaxSpans" :new-syntax-spans="entry.newSyntaxSpans" :old-comment-count="entry.oldCommentCount" :new-comment-count="entry.newCommentCount" :old-comments-expanded="entry.oldCommentsExpanded" :new-comments-expanded="entry.newCommentsExpanded" :old-review-highlights="entry.oldReviewHighlights" :new-review-highlights="entry.newReviewHighlights" :old-diagnostics="[]" :new-diagnostics="entry.newDiagnostics" :comment-hover-disabled="commentHoverDisabled" :draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry)" :agent-responding="agentRespondingForEntry(entry)" :error="reviewError" @comment="emit('comment', entry.fileId, $event)" @toggle-comments="emit('toggleComments', $event)" @update:draft-body="emit('update:draftBody', $event)" @submit="emit('submit')" @submit-chat-draft="emit('submitChatDraft')" @cancel="emit('cancel')" @reply="emit('reply', $event)" @chat="emit('chat', $event)" @collapse="emit('collapse', $event)" @resolve="emit('resolve', $event)" @reopen="emit('reopen', $event)" />
+            <DiffRenderedRow
+              mode="split"
+              :row="entry.diffRow"
+              :review-row="entry.reviewRow"
+              :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'"
+              :file-id="entry.fileId"
+              :old-syntax-spans="entry.oldSyntaxSpans"
+              :new-syntax-spans="entry.newSyntaxSpans"
+              :old-comment-count="entry.oldCommentCount"
+              :new-comment-count="entry.newCommentCount"
+              :old-comments-expanded="entry.oldCommentsExpanded"
+              :new-comments-expanded="entry.newCommentsExpanded"
+              :old-review-highlights="entry.oldReviewHighlights"
+              :new-review-highlights="entry.newReviewHighlights"
+              :old-diagnostics="[]"
+              :new-diagnostics="entry.newDiagnostics"
+              :comment-hover-disabled="commentHoverDisabled"
+              :draft-body="draftBody"
+              :chat-messages="chatMessagesForEntry(entry)"
+              :agent-responding="agentRespondingForEntry(entry)"
+              :error="reviewError"
+              @comment="emit('comment', entry.fileId, $event)"
+              @toggle-comments="emit('toggleComments', $event)"
+              @update:draft-body="emit('update:draftBody', $event)"
+              @submit="emit('submit')"
+              @submit-chat-draft="emit('submitChatDraft')"
+              @cancel="emit('cancel')"
+              @reply="emit('reply', $event)"
+              @chat="emit('chat', $event)"
+              @collapse="emit('collapse', $event)"
+              @resolve="emit('resolve', $event)"
+              @reopen="emit('reopen', $event)"
+            />
           </template>
           <template v-else-if="entry.item.kind === 'row'">
-            <DiffRenderedRow mode="inline" :row="entry.diffRow" :review-row="entry.reviewRow" review-class="inline" :file-id="entry.fileId" :inline-syntax-spans="entry.inlineSyntaxSpans" :old-comment-count="entry.oldCommentCount" :new-comment-count="entry.newCommentCount" :old-comments-expanded="entry.oldCommentsExpanded" :new-comments-expanded="entry.newCommentsExpanded" :inline-review-highlights="entry.inlineReviewHighlights" :old-diagnostics="[]" :new-diagnostics="entry.newDiagnostics" :comment-hover-disabled="commentHoverDisabled" :draft-body="draftBody" :chat-messages="chatMessagesForEntry(entry)" :agent-responding="agentRespondingForEntry(entry)" :error="reviewError" @comment="emit('comment', entry.fileId, $event)" @toggle-comments="emit('toggleComments', $event)" @update:draft-body="emit('update:draftBody', $event)" @submit="emit('submit')" @submit-chat-draft="emit('submitChatDraft')" @cancel="emit('cancel')" @reply="emit('reply', $event)" @chat="emit('chat', $event)" @collapse="emit('collapse', $event)" @resolve="emit('resolve', $event)" @reopen="emit('reopen', $event)" />
+            <DiffRenderedRow
+              mode="inline"
+              :row="entry.diffRow"
+              :review-row="entry.reviewRow"
+              review-class="inline"
+              :file-id="entry.fileId"
+              :inline-syntax-spans="entry.inlineSyntaxSpans"
+              :old-comment-count="entry.oldCommentCount"
+              :new-comment-count="entry.newCommentCount"
+              :old-comments-expanded="entry.oldCommentsExpanded"
+              :new-comments-expanded="entry.newCommentsExpanded"
+              :inline-review-highlights="entry.inlineReviewHighlights"
+              :old-diagnostics="[]"
+              :new-diagnostics="entry.newDiagnostics"
+              :comment-hover-disabled="commentHoverDisabled"
+              :draft-body="draftBody"
+              :chat-messages="chatMessagesForEntry(entry)"
+              :agent-responding="agentRespondingForEntry(entry)"
+              :error="reviewError"
+              @comment="emit('comment', entry.fileId, $event)"
+              @toggle-comments="emit('toggleComments', $event)"
+              @update:draft-body="emit('update:draftBody', $event)"
+              @submit="emit('submit')"
+              @submit-chat-draft="emit('submitChatDraft')"
+              @cancel="emit('cancel')"
+              @reply="emit('reply', $event)"
+              @chat="emit('chat', $event)"
+              @collapse="emit('collapse', $event)"
+              @resolve="emit('resolve', $event)"
+              @reopen="emit('reopen', $event)"
+            />
           </template>
         </div>
       </div>
-      <DiffViewerOverlays :show-selection-toolbar="showSelectionToolbar" :selection-style="selectionStyle" :lsp-hover="lspHover" :lsp-hover-style="lspHoverStyle" @comment-selection="emit('commentSelection')" @chat-selection="emit('chatSelection')" />
+      <DiffViewerOverlays
+        :show-selection-toolbar="showSelectionToolbar"
+        :selection-style="selectionStyle"
+        :lsp-hover="lspHover"
+        :lsp-hover-style="lspHoverStyle"
+        @comment-selection="emit('commentSelection')"
+        @chat-selection="emit('chatSelection')"
+      />
     </div>
-    <DiffScrollbar v-if="hasFolderScroll" :markers="folderMarkers" :thumb-style="folderThumbStyle" @track-pointer-down="emit('scrollbarTrackPointerDown', $event)" @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event)" />
+    <DiffScrollbar
+      v-if="hasFolderScroll"
+      :markers="folderMarkers"
+      :thumb-style="folderThumbStyle"
+      @track-pointer-down="emit('scrollbarTrackPointerDown', $event)"
+      @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event)"
+    />
   </div>
 </template>
 
@@ -195,8 +288,12 @@ const setScrollRef = (element: unknown) => {
   font-size: 12px;
   font-weight: 700;
 
-  &.error { color: #ff8d8d; }
-  &.warning { color: #f0b86a; }
+  &.error {
+    color: #ff8d8d;
+  }
+  &.warning {
+    color: #f0b86a;
+  }
 }
 
 .empty-file {

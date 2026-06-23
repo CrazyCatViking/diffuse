@@ -52,23 +52,31 @@ function shouldKillCoreOnTimeout(method: string): boolean {
   return method !== 'getSyntaxSpans' && method !== 'getLspHover' && method !== 'getLspDiagnostics';
 }
 
-async function coreRequest<M extends CoreMethod>(state: WindowState, method: M, params: CoreMethods[M]['params'] = {} as CoreMethods[M]['params']): Promise<CoreMethods[M]['result']> {
+async function coreRequest<M extends CoreMethod>(
+  state: WindowState,
+  method: M,
+  params: CoreMethods[M]['params'] = {} as CoreMethods[M]['params'],
+): Promise<CoreMethods[M]['result']> {
   try {
-    return await getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
+    return await getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), {
+      killOnTimeout: shouldKillCoreOnTimeout(method),
+    });
   } catch (error) {
     if (!(error instanceof CoreRequestTimeoutError)) throw error;
     if (!shouldKillCoreOnTimeout(method)) throw error;
 
     state.core?.dispose();
     state.core = null;
-    return getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
+    return getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), {
+      killOnTimeout: shouldKillCoreOnTimeout(method),
+    });
   }
 }
 
 function getReviewAgentRunner(state: WindowState): ReviewAgentRunner {
   state.reviewAgentRunner ??= new ReviewAgentRunner(async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
     if (!isCoreMethod(method)) throw new Error(`Unknown core method: ${method}`);
-    return await coreRequest(state, method, params as CoreMethods[typeof method]['params']) as T;
+    return (await coreRequest(state, method, params as CoreMethods[typeof method]['params'])) as T;
   });
   return state.reviewAgentRunner;
 }
@@ -101,15 +109,15 @@ function createWindow(launchRepository?: string): WindowState {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
-    }
+      sandbox: false,
+    },
   });
 
   const state: WindowState = {
     window,
     launchRepository,
     core: null,
-    reviewAgentRunner: null
+    reviewAgentRunner: null,
   };
   windowStates.set(window.id, state);
 
@@ -136,7 +144,10 @@ function createWindow(launchRepository?: string): WindowState {
 function parseLaunchRepository(args: string[], cwd = process.cwd()): string | undefined {
   const index = args.indexOf('--open-repository');
   if (index === -1 || index + 1 >= args.length) return undefined;
-  const path = args.slice(index + 1).filter((arg) => !arg.startsWith('-')).at(-1);
+  const path = args
+    .slice(index + 1)
+    .filter((arg) => !arg.startsWith('-'))
+    .at(-1);
   if (!path) return undefined;
   return isAbsolute(path) ? path : resolve(cwd, path);
 }
@@ -188,14 +199,21 @@ function ensureLspConfigFile(configPath: string): void {
   mkdirSync(dirname(configPath), { recursive: true });
   if (existsSync(configPath)) return;
 
-  writeFileSync(configPath, `${JSON.stringify({
-    lsp: {
-      zig: {
-        command: 'zls',
-        args: []
-      }
-    }
-  }, null, 2)}\n`);
+  writeFileSync(
+    configPath,
+    `${JSON.stringify(
+      {
+        lsp: {
+          zig: {
+            command: 'zls',
+            args: [],
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 ipcMain.handle('repo:pickDirectory', async (event) => {
@@ -203,7 +221,7 @@ ipcMain.handle('repo:pickDirectory', async (event) => {
 
   const result = await dialog.showOpenDialog(state.window, {
     title: 'Open Repository',
-    properties: ['openDirectory']
+    properties: ['openDirectory'],
   });
 
   if (result.canceled || result.filePaths.length === 0) return null;

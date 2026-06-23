@@ -1,12 +1,6 @@
 <template>
   <div class="diff-scrollbar" @pointerdown="emit('trackPointerDown', $event)">
-    <div
-      v-for="marker in markers"
-      :key="marker.key"
-      class="diff-scroll-marker"
-      :class="marker.kind"
-      :style="marker.style"
-    />
+    <div v-for="marker in markers" :key="marker.key" class="diff-scroll-marker" :class="marker.kind" :style="marker.style" />
     <div class="diff-scroll-thumb" :style="thumbStyle" @pointerdown.stop="emit('thumbPointerDown', $event)" />
   </div>
 </template>

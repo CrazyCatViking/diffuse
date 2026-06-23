@@ -1,5 +1,11 @@
 <template>
-  <section class="review-box" :class="{ resolved: entry.kind === 'thread' && entry.thread.status === 'resolved', chat: entry.kind === 'chat' || entry.kind === 'draft' && entry.mode === 'chat' }">
+  <section
+    class="review-box"
+    :class="{
+      resolved: entry.kind === 'thread' && entry.thread.status === 'resolved',
+      chat: entry.kind === 'chat' || (entry.kind === 'draft' && entry.mode === 'chat'),
+    }"
+  >
     <div v-if="entry.kind === 'thread'" class="review-box-header">
       <span v-if="entry.thread.status === 'resolved'" class="resolved-label">Resolved</span>
       <span v-else class="thread-label">Thread</span>
@@ -13,10 +19,16 @@
 
     <form v-if="entry.kind === 'draft'" class="comment-composer" @submit.prevent="submitDraft">
       <div class="composer-author">You</div>
-      <textarea :value="draftBody" :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'" @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)" />
+      <textarea
+        :value="draftBody"
+        :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
+        @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)"
+      />
       <div class="composer-actions">
         <button type="button" @click="emit('cancel')">Cancel</button>
-        <button type="submit" :disabled="draftBody.trim().length === 0 || agentResponding">{{ entry.mode === 'chat' ? 'Ask AI' : 'Comment' }}</button>
+        <button type="submit" :disabled="draftBody.trim().length === 0 || agentResponding">
+          {{ entry.mode === 'chat' ? 'Ask AI' : 'Comment' }}
+        </button>
       </div>
     </form>
 
@@ -52,41 +64,44 @@
 import { computed, ref } from 'vue';
 import type { ReviewAnchor, ReviewChatMessage, ReviewThread } from '../../lib/protocol';
 
-export type InlineReviewEntry = {
-  kind: 'draft';
-  key: string;
-  anchor: ReviewAnchor;
-  mode: 'comment' | 'chat';
-} | {
-  kind: 'thread';
-  key: string;
-  anchor: ReviewAnchor;
-  thread: ReviewThread;
-} | {
-  kind: 'chat';
-  key: string;
-  anchor: ReviewAnchor;
-  chatThreadId: string;
-};
+export type InlineReviewEntry =
+  | {
+      kind: 'draft';
+      key: string;
+      anchor: ReviewAnchor;
+      mode: 'comment' | 'chat';
+    }
+  | {
+      kind: 'thread';
+      key: string;
+      anchor: ReviewAnchor;
+      thread: ReviewThread;
+    }
+  | {
+      kind: 'chat';
+      key: string;
+      anchor: ReviewAnchor;
+      chatThreadId: string;
+    };
 
 const props = defineProps<{
-  entry: InlineReviewEntry
-  draftBody: string
-  chatMessages?: ReviewChatMessage[]
-  agentResponding?: boolean
-  error?: string
+  entry: InlineReviewEntry;
+  draftBody: string;
+  chatMessages?: ReviewChatMessage[];
+  agentResponding?: boolean;
+  error?: string;
 }>();
 
 const emit = defineEmits<{
-  'update:draftBody': [value: string]
-  submit: []
-  submitChatDraft: []
-  cancel: []
-  reply: [payload: { thread: ReviewThread; body: string }]
-  chat: [payload: { thread: ReviewThread; body: string }]
-  collapse: [anchor: ReviewAnchor]
-  resolve: [thread: ReviewThread]
-  reopen: [thread: ReviewThread]
+  'update:draftBody': [value: string];
+  submit: [];
+  submitChatDraft: [];
+  cancel: [];
+  reply: [payload: { thread: ReviewThread; body: string }];
+  chat: [payload: { thread: ReviewThread; body: string }];
+  collapse: [anchor: ReviewAnchor];
+  resolve: [thread: ReviewThread];
+  reopen: [thread: ReviewThread];
 }>();
 
 const replyBody = ref('');
@@ -118,13 +133,16 @@ const submitChat = () => {
 };
 
 const timelineMessages = computed(() => {
-  const threadMessages = props.entry.kind === 'thread' ? props.entry.thread.messages.map((message) => ({
-    id: message.id,
-    kind: 'thread' as const,
-    author: authorName(message.authorId),
-    body: message.body,
-    createdAt: message.createdAt,
-  })) : [];
+  const threadMessages =
+    props.entry.kind === 'thread'
+      ? props.entry.thread.messages.map((message) => ({
+          id: message.id,
+          kind: 'thread' as const,
+          author: authorName(message.authorId),
+          body: message.body,
+          createdAt: message.createdAt,
+        }))
+      : [];
   const chatMessages = (props.chatMessages ?? []).map((message) => ({
     id: message.id,
     kind: 'chat' as const,

@@ -8,8 +8,9 @@ const lspHoverDelayMs = 420;
 
 export const supportsLspFile = (fileId: string) => {
   const normalized = fileId.toLowerCase();
-  return ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.rs', '.py', '.go', '.zig', '.lua']
-    .some((extension) => normalized.endsWith(extension));
+  return ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.rs', '.py', '.go', '.zig', '.lua'].some((extension) =>
+    normalized.endsWith(extension),
+  );
 };
 
 export const useLspHover = (options: {
@@ -49,7 +50,14 @@ export const useLspHover = (options: {
     const fileId = options.fileIdForElement(element);
     const side = element.dataset.reviewSide;
     const line = Number(element.dataset.reviewLine);
-    if (!fileId || !supportsLspFile(fileId) || (side !== 'old' && side !== 'new') || !Number.isFinite(line) || line <= 0 || options.canQueue?.(fileId) === false) {
+    if (
+      !fileId ||
+      !supportsLspFile(fileId) ||
+      (side !== 'old' && side !== 'new') ||
+      !Number.isFinite(line) ||
+      line <= 0 ||
+      options.canQueue?.(fileId) === false
+    ) {
       clear();
       return;
     }
@@ -71,7 +79,15 @@ export const useLspHover = (options: {
     hover.value = { ...hover.value, visible: false, loading: false };
   };
 
-  const load = async (request: { fileId: string; side: SyntaxSide; line: number; column: number; cacheKey: string; clientX: number; clientY: number }) => {
+  const load = async (request: {
+    fileId: string;
+    side: SyntaxSide;
+    line: number;
+    column: number;
+    cacheKey: string;
+    clientX: number;
+    clientY: number;
+  }) => {
     const currentRequestId = ++requestId;
     const cached = cache.get(request.cacheKey);
     if (cached) {
@@ -87,14 +103,19 @@ export const useLspHover = (options: {
       show(loaded, request.clientX, request.clientY, false);
     } catch (error) {
       if (currentRequestId !== requestId) return;
-      show({ status: 'request-failed', message: error instanceof Error ? error.message : String(error) }, request.clientX, request.clientY, false);
+      show(
+        { status: 'request-failed', message: error instanceof Error ? error.message : String(error) },
+        request.clientX,
+        request.clientY,
+        false,
+      );
     } finally {
       if (currentRequestId === requestId) options.afterHoverRequest?.();
     }
   };
 
   const show = (loaded: LspHover, clientX: number, clientY: number, loading: boolean) => {
-    const contents = loaded.status === 'ok' ? loaded.contents ?? '' : '';
+    const contents = loaded.status === 'ok' ? (loaded.contents ?? '') : '';
     if (!contents.trim()) {
       hover.value = { ...hover.value, visible: false, loading: false };
       return;
@@ -115,7 +136,12 @@ export const useLspHover = (options: {
   return { hover, hoverStyle, queue, clear, cleanup };
 };
 
-const columnAtPoint = (element: HTMLElement, clientX: number, clientY: number, textOffsetWithinElement: (element: HTMLElement, node: Node, offset: number) => number) => {
+const columnAtPoint = (
+  element: HTMLElement,
+  clientX: number,
+  clientY: number,
+  textOffsetWithinElement: (element: HTMLElement, node: Node, offset: number) => number,
+) => {
   const text = element.dataset.reviewText ?? element.textContent ?? '';
   const range = rangeAtPoint(clientX, clientY);
   if (range && element.contains(range.startContainer)) {

@@ -6,9 +6,7 @@
         <span v-if="model" class="row-count">{{ rows.length }} rows</span>
         <span v-if="hasNewChanges" class="update-status">
           New changes available
-          <button class="load-latest" type="button" :disabled="loading" @click="emit('loadLatest')">
-            Load latest
-          </button>
+          <button class="load-latest" type="button" :disabled="loading" @click="emit('loadLatest')">Load latest</button>
         </span>
         <span v-if="syntaxMessage" class="syntax-status">
           {{ syntaxMessage }}
@@ -99,7 +97,14 @@
       @resolve="resolveThread"
       @reopen="reopenThread"
     />
-    <DiffViewerOverlays :show-selection-toolbar="Boolean(selectionDraft)" :selection-style="selectionBubbleStyle" :lsp-hover="lspHover" :lsp-hover-style="lspHoverStyle" @comment-selection="startSelectionComment" @chat-selection="startSelectionChat" />
+    <DiffViewerOverlays
+      :show-selection-toolbar="Boolean(selectionDraft)"
+      :selection-style="selectionBubbleStyle"
+      :lsp-hover="lspHover"
+      :lsp-hover-style="lspHoverStyle"
+      @comment-selection="startSelectionComment"
+      @chat-selection="startSelectionChat"
+    />
   </section>
 </template>
 
@@ -107,12 +112,31 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useClient } from '../../lib/useClient';
-import type { ChangedFile, DiffContextMode, DiffRenderModel, DiffRow, DiffTarget, DiffViewMode, LspDiagnostic, LspStatus, ReviewAnchor, ReviewThread, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type {
+  ChangedFile,
+  DiffContextMode,
+  DiffRenderModel,
+  DiffRow,
+  DiffTarget,
+  DiffViewMode,
+  LspDiagnostic,
+  LspStatus,
+  ReviewAnchor,
+  ReviewThread,
+  SyntaxSide,
+  SyntaxSpan,
+} from '../../lib/protocol';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
-import { buildDisplayRows as buildReviewDisplayRows, buildReviewEntriesByEndLine, commentStartKey, selectionChatEntries as buildSelectionChatEntries, type DisplayRow } from './reviewRows';
+import {
+  buildDisplayRows as buildReviewDisplayRows,
+  buildReviewEntriesByEndLine,
+  commentStartKey,
+  selectionChatEntries as buildSelectionChatEntries,
+  type DisplayRow,
+} from './reviewRows';
 import DiffViewControls from './DiffViewControls.vue';
 import DiffViewerOverlays from './DiffViewerOverlays.vue';
 import type { DiffScrollMarker } from './DiffScrollbar.vue';
@@ -125,24 +149,24 @@ import { buildRenderedDiffRowFields } from './diffRenderedRows';
 import SingleFileDiffPanes from './SingleFileDiffPanes.vue';
 
 const props = defineProps<{
-  model?: DiffRenderModel 
-  loading: boolean
-  error?: string 
-  viewMode: DiffViewMode
-  contextMode: DiffContextMode
-  target: DiffTarget
-  syncScroll: boolean
-  installingGrammar: boolean
-  grammarInstallStep?: string
-  hasNewChanges: boolean
+  model?: DiffRenderModel;
+  loading: boolean;
+  error?: string;
+  viewMode: DiffViewMode;
+  contextMode: DiffContextMode;
+  target: DiffTarget;
+  syncScroll: boolean;
+  installingGrammar: boolean;
+  grammarInstallStep?: string;
+  hasNewChanges: boolean;
 }>();
 
 const emit = defineEmits<{
-  'update:viewMode': [mode: DiffViewMode]
-  'update:contextMode': [mode: DiffContextMode]
-  'update:syncScroll': [enabled: boolean]
-  installGrammar: []
-  loadLatest: []
+  'update:viewMode': [mode: DiffViewMode];
+  'update:contextMode': [mode: DiffContextMode];
+  'update:syncScroll': [enabled: boolean];
+  installGrammar: [];
+  loadLatest: [];
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -250,13 +274,14 @@ const syntaxMessage = computed(() => {
 });
 
 const activeFile = computed(() => repo.changedFiles.find((file) => file.id === props.model?.fileId));
-const diffTargetFingerprint = () => JSON.stringify({
-  base: props.target.base,
-  compare: props.target.compare,
-  includeStaged: props.target.includeStaged,
-  includeUnstaged: props.target.includeUnstaged,
-  head: repo.repository?.head,
-});
+const diffTargetFingerprint = () =>
+  JSON.stringify({
+    base: props.target.base,
+    compare: props.target.compare,
+    includeStaged: props.target.includeStaged,
+    includeUnstaged: props.target.includeUnstaged,
+    head: repo.repository?.head,
+  });
 const {
   selectionDraft,
   selectionBubbleStyle,
@@ -292,7 +317,14 @@ const searchMatches = computed<SearchMatch[]>(() => {
   rows.value.forEach((row, rowIndex) => {
     if (props.viewMode === 'inline') {
       const side = row.kind === 'deleted' ? 'old' : 'new';
-      collectSearchMatches(matches, rowIndex, side, side === 'old' ? row.oldLine : row.newLine, side === 'old' ? row.oldText : row.newText, query);
+      collectSearchMatches(
+        matches,
+        rowIndex,
+        side,
+        side === 'old' ? row.oldLine : row.newLine,
+        side === 'old' ? row.oldText : row.newText,
+        query,
+      );
     } else {
       collectSearchMatches(matches, rowIndex, 'old', row.oldLine, row.oldText, query);
       collectSearchMatches(matches, rowIndex, 'new', row.newLine, row.newText, query);
@@ -339,11 +371,21 @@ const reviewHighlightAnchorsBySide = computed(() => {
     if (thread.anchor.startColumn === undefined || thread.anchor.endColumn === undefined) continue;
     anchors.get(thread.anchor.side)?.push(thread.anchor);
   }
-  if (review.draftAnchor && review.draftFile?.id === props.model?.fileId && review.draftAnchor.startColumn !== undefined && review.draftAnchor.endColumn !== undefined) {
+  if (
+    review.draftAnchor &&
+    review.draftFile?.id === props.model?.fileId &&
+    review.draftAnchor.startColumn !== undefined &&
+    review.draftAnchor.endColumn !== undefined
+  ) {
     anchors.get(review.draftAnchor.side)?.push(review.draftAnchor);
   }
   const pendingSelection = selectionDraft.value;
-  if (pendingSelection && pendingSelection.file.id === props.model?.fileId && pendingSelection.anchor.startColumn !== undefined && pendingSelection.anchor.endColumn !== undefined) {
+  if (
+    pendingSelection &&
+    pendingSelection.file.id === props.model?.fileId &&
+    pendingSelection.anchor.startColumn !== undefined &&
+    pendingSelection.anchor.endColumn !== undefined
+  ) {
     anchors.get(pendingSelection.anchor.side)?.push(pendingSelection.anchor);
   }
   return anchors;
@@ -376,7 +418,9 @@ const lspStatusTitle = computed(() => {
     status.configSource ? `Config: ${status.configSource}` : undefined,
     status.running ? 'Session: running' : status.starting ? 'Session: starting' : 'Session: not started',
     status.lastError ? `Last error: ${status.lastError}` : undefined,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 });
 const lspDiagnosticsSummary = computed(() => {
   const diagnostics = lspDiagnostics.value;
@@ -491,13 +535,20 @@ const reviewHighlightsForLine = (side: SyntaxSide, line: number, textLength: num
 
 const reviewHighlightForLine = (anchor: ReviewAnchor, line: number, textLength: number): ReviewTextHighlight | undefined => {
   if (line < anchor.startLine || line > anchor.endLine) return undefined;
-  const startColumn = line === anchor.startLine ? anchor.startColumn ?? 0 : 0;
-  const endColumn = line === anchor.endLine ? anchor.endColumn ?? textLength : textLength;
+  const startColumn = line === anchor.startLine ? (anchor.startColumn ?? 0) : 0;
+  const endColumn = line === anchor.endLine ? (anchor.endColumn ?? textLength) : textLength;
   if (endColumn <= startColumn) return undefined;
   return { startColumn, endColumn };
 };
 
-const collectSearchMatches = (matches: SearchMatch[], rowIndex: number, side: SyntaxSide, line: number | undefined, text: string | undefined, query: string) => {
+const collectSearchMatches = (
+  matches: SearchMatch[],
+  rowIndex: number,
+  side: SyntaxSide,
+  line: number | undefined,
+  text: string | undefined,
+  query: string,
+) => {
   if (!line || !text) return;
   const lowerText = text.toLowerCase();
   let startColumn = lowerText.indexOf(query);
@@ -520,25 +571,33 @@ const searchHighlightsForLine = (side: SyntaxSide, line: number | undefined): Se
 };
 
 const sameSearchMatch = (first: SearchMatch, second: SearchMatch) => {
-  return first.rowIndex === second.rowIndex
-    && first.side === second.side
-    && first.line === second.line
-    && first.startColumn === second.startColumn
-    && first.endColumn === second.endColumn;
+  return (
+    first.rowIndex === second.rowIndex &&
+    first.side === second.side &&
+    first.line === second.line &&
+    first.startColumn === second.startColumn &&
+    first.endColumn === second.endColumn
+  );
 };
 
 const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
   const fileId = props.model?.fileId;
   if (!fileId) return buildReviewDisplayRows(rows.value, new Map());
-  return buildReviewDisplayRows(rows.value, buildReviewEntriesByEndLine({
-    fileId,
-    threads: fileThreads.value,
-    chatMessages: review.chatMessages,
-    collapsedCommentStarts: collapsedCommentStarts.value,
-    resolvedCommentStarts: expandedResolvedCommentStarts.value,
-    draft: review.draftAnchor && review.draftFile ? { fileId: review.draftFile.id, anchor: review.draftAnchor, mode: review.draftMode } : undefined,
-    side,
-  }));
+  return buildReviewDisplayRows(
+    rows.value,
+    buildReviewEntriesByEndLine({
+      fileId,
+      threads: fileThreads.value,
+      chatMessages: review.chatMessages,
+      collapsedCommentStarts: collapsedCommentStarts.value,
+      resolvedCommentStarts: expandedResolvedCommentStarts.value,
+      draft:
+        review.draftAnchor && review.draftFile
+          ? { fileId: review.draftFile.id, anchor: review.draftAnchor, mode: review.draftMode }
+          : undefined,
+      side,
+    }),
+  );
 };
 
 const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[]): RenderedRow[] => {
@@ -592,7 +651,14 @@ const {
   reopenThread,
   startSelectionComment,
   startSelectionChat,
-} = useReviewInteractions({ review, draftBody, collapsedCommentStarts, expandedResolvedCommentStarts, selectionDraft, clearNativeSelection });
+} = useReviewInteractions({
+  review,
+  draftBody,
+  collapsedCommentStarts,
+  expandedResolvedCommentStarts,
+  selectionDraft,
+  clearNativeSelection,
+});
 
 const openSearch = () => {
   searchOpen.value = true;
@@ -646,7 +712,13 @@ onBeforeUnmount(() => {
   scrollbars.cleanup();
 });
 
-const { hover: lspHover, hoverStyle: lspHoverStyle, queue: queueLspHover, clear: clearLspHover, cleanup: cleanupLspHover } = useLspHover({
+const {
+  hover: lspHover,
+  hoverStyle: lspHoverStyle,
+  queue: queueLspHover,
+  clear: clearLspHover,
+  cleanup: cleanupLspHover,
+} = useLspHover({
   client,
   target: () => props.target,
   diffTargetFingerprint,
@@ -672,7 +744,7 @@ const estimateDisplaySize = (items: DisplayRow[]) => (index: number) => estimate
 const scrollMarkersForRows = (items: DisplayRow[], side?: SyntaxSide): DiffScrollMarker[] => {
   return buildDiffScrollMarkers(items, {
     estimateSize: estimateDisplayItemSize,
-    kindForItem: (item) => item.kind === 'diff' && (item.row.kind === 'added' || item.row.kind === 'deleted') ? item.row.kind : undefined,
+    kindForItem: (item) => (item.kind === 'diff' && (item.row.kind === 'added' || item.row.kind === 'deleted') ? item.row.kind : undefined),
     side,
   });
 };
@@ -685,7 +757,7 @@ const leftVirtualizer = useVirtualizer(
     estimateSize: estimateDisplaySize(leftDisplayRows.value),
     overscan: virtualRowOverscan,
     useAnimationFrameWithResizeObserver: true,
-  }))
+  })),
 );
 
 const rightVirtualizer = useVirtualizer(
@@ -696,7 +768,7 @@ const rightVirtualizer = useVirtualizer(
     estimateSize: estimateDisplaySize(rightDisplayRows.value),
     overscan: virtualRowOverscan,
     useAnimationFrameWithResizeObserver: true,
-  }))
+  })),
 );
 
 const syncedSplitVirtualizer = useVirtualizer(
@@ -707,7 +779,7 @@ const syncedSplitVirtualizer = useVirtualizer(
     estimateSize: estimateDisplaySize(syncedSplitDisplayRows.value),
     overscan: virtualRowOverscan,
     useAnimationFrameWithResizeObserver: true,
-  }))
+  })),
 );
 
 const inlineVirtualizer = useVirtualizer(
@@ -718,7 +790,7 @@ const inlineVirtualizer = useVirtualizer(
     estimateSize: estimateDisplaySize(inlineDisplayRows.value),
     overscan: virtualRowOverscan,
     useAnimationFrameWithResizeObserver: true,
-  }))
+  })),
 );
 
 const leftVirtualRows = computed(() => leftVirtualizer.value.getVirtualItems());
@@ -734,13 +806,18 @@ const rightTotalSize = computed(() => rightVirtualizer.value.getTotalSize());
 const syncedSplitTotalSize = computed(() => syncedSplitVirtualizer.value.getTotalSize());
 const inlineTotalSize = computed(() => inlineVirtualizer.value.getTotalSize());
 const commentHoverDisabled = computed(() => {
-  return leftVirtualizer.value.isScrolling || rightVirtualizer.value.isScrolling || syncedSplitVirtualizer.value.isScrolling || inlineVirtualizer.value.isScrolling;
+  return (
+    leftVirtualizer.value.isScrolling ||
+    rightVirtualizer.value.isScrolling ||
+    syncedSplitVirtualizer.value.isScrolling ||
+    inlineVirtualizer.value.isScrolling
+  );
 });
 
 watch(
   [leftTotalSize, rightTotalSize, syncedSplitTotalSize, inlineTotalSize, () => props.viewMode, () => props.syncScroll],
   scrollbars.updateAfterRender,
-  { immediate: true, flush: 'post' }
+  { immediate: true, flush: 'post' },
 );
 
 const measureLeftElement = (element: unknown) => {
@@ -774,7 +851,11 @@ const scrollToActiveSearchMatch = () => {
   scrollbars.updateAfterRender();
 };
 
-const scrollVirtualizerToMatch = (virtualizer: { scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void }, displayRows: DisplayRow[], match: SearchMatch) => {
+const scrollVirtualizerToMatch = (
+  virtualizer: { scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void },
+  displayRows: DisplayRow[],
+  match: SearchMatch,
+) => {
   const displayIndex = displayRows.findIndex((item) => item.kind === 'diff' && item.key === `diff:${match.rowIndex}`);
   if (displayIndex === -1) return;
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
@@ -798,8 +879,18 @@ const runSyntaxQueue = () => {
     activeSyntaxRequests += 1;
     void (async () => {
       try {
-        const lines = await client.getSyntaxSpans(request.fileId, request.side, request.startLine, request.endLine, { context: request.context }, props.target);
-        const isCurrentRequest = request.generation === syntaxRequestGeneration && props.model?.fileId === request.fileId && props.model.context === request.context;
+        const lines = await client.getSyntaxSpans(
+          request.fileId,
+          request.side,
+          request.startLine,
+          request.endLine,
+          { context: request.context },
+          props.target,
+        );
+        const isCurrentRequest =
+          request.generation === syntaxRequestGeneration &&
+          props.model?.fileId === request.fileId &&
+          props.model.context === request.context;
         if (isCurrentRequest) {
           for (const line of lines) syntaxCache.set(syntaxKey(request.side, line.line), line.spans);
           syntaxVersion.value += 1;
@@ -1011,7 +1102,7 @@ watch(
   (enabled, wasEnabled) => {
     if (props.viewMode !== 'split' || enabled === wasEnabled) return;
 
-    const source = wasEnabled ? syncedSplitRef.value : leftRef.value ?? rightRef.value;
+    const source = wasEnabled ? syncedSplitRef.value : (leftRef.value ?? rightRef.value);
     const scrollTop = source?.scrollTop ?? 0;
     const scrollLeft = source?.scrollLeft ?? 0;
 
@@ -1032,7 +1123,7 @@ watch(
         }
       });
     });
-  }
+  },
 );
 
 watch(
@@ -1052,25 +1143,19 @@ watch(
     initialSyntaxGateActive.value = false;
     syntaxVersion.value += 1;
     startInitialSyntaxGate();
-  }
+  },
 );
 
-watch(
-  [normalizedSearchQuery, () => props.model?.fileId, () => props.model?.context, () => props.viewMode, () => props.syncScroll],
-  () => {
-    activeSearchIndex.value = 0;
-    if (searchMatches.value.length > 0) {
-      void nextTick(() => scrollToActiveSearchMatch());
-    }
+watch([normalizedSearchQuery, () => props.model?.fileId, () => props.model?.context, () => props.viewMode, () => props.syncScroll], () => {
+  activeSearchIndex.value = 0;
+  if (searchMatches.value.length > 0) {
+    void nextTick(() => scrollToActiveSearchMatch());
   }
-);
+});
 
-watch(
-  searchMatches,
-  (matches) => {
-    if (activeSearchIndex.value >= matches.length) activeSearchIndex.value = Math.max(0, matches.length - 1);
-  }
-);
+watch(searchMatches, (matches) => {
+  if (activeSearchIndex.value >= matches.length) activeSearchIndex.value = Math.max(0, matches.length - 1);
+});
 
 watch(
   [() => props.model, () => diffTargetFingerprint()],
@@ -1078,11 +1163,19 @@ watch(
     void loadLspStatus();
     void loadLspDiagnostics();
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 watch(
-  [leftVirtualRows, rightVirtualRows, syncedSplitVirtualRows, inlineVirtualRows, () => props.model?.syntax.grammarInstalled, () => props.viewMode, () => props.syncScroll],
+  [
+    leftVirtualRows,
+    rightVirtualRows,
+    syncedSplitVirtualRows,
+    inlineVirtualRows,
+    () => props.model?.syntax.grammarInstalled,
+    () => props.viewMode,
+    () => props.syncScroll,
+  ],
   () => {
     if (props.viewMode === 'split' && props.syncScroll) {
       requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'old');
@@ -1095,7 +1188,7 @@ watch(
       requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'new');
     }
   },
-  { immediate: true, flush: 'post' }
+  { immediate: true, flush: 'post' },
 );
 </script>
 
@@ -1258,9 +1351,8 @@ watch(
   white-space: nowrap;
 }
 
-.selecting-old-side :deep([data-review-side="new"]),
-.selecting-new-side :deep([data-review-side="old"]) {
+.selecting-old-side :deep([data-review-side='new']),
+.selecting-new-side :deep([data-review-side='old']) {
   user-select: none;
 }
-
 </style>
