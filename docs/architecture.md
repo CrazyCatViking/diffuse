@@ -52,6 +52,17 @@ diffuse rpc
 
 The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits messages without an `id` as events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
 
+The renderer and Electron process share the TypeScript contract in `app/src/lib/coreContract.ts`. That file defines the `CoreMethods` param/result map, the runtime `coreMethodNames` list used by Electron's whitelist, and the typed core event union consumed by the renderer. Zig remains the runtime authority for validation; TypeScript contracts keep the frontend, preload bridge, and Electron whitelist synchronized.
+
+Core maps JSON-RPC failures to standard error classes where possible:
+
+- `-32700` for parse errors, returned with `id: null`.
+- `-32601` for unknown methods.
+- `-32602` for invalid or missing params.
+- `-32000` for domain/runtime failures.
+
+The Electron RPC client preserves `error.code`, `error.message`, and optional `error.data` in `CoreRpcError`.
+
 Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event, and the main process opens a new `BrowserWindow` with its own core process for that repository.
 
 ## Renderer State
@@ -196,6 +207,8 @@ Review state is stored in the opened repository under `.diffuse/reviews`. The da
 The desktop app can start built-in opencode review runs for the active session. Zig core owns review run state in `runs/<agent-run-id>.json`. Electron acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
 
 Review data is intentionally plain JSON and Markdown so external agent harnesses can inspect or update it without linking against Diffuse.
+
+Review IDs that become path segments are validated by the core before path construction. Session ids, thread ids, run ids, agent-run ids, and chat message ids must be non-empty path segments containing only ASCII letters, digits, `.`, `_`, and `-`, with no separators or traversal names.
 
 Manual review comments and AI chat use the same persisted review files. The renderer creates human threads for line/selection comments, writes chat messages for user questions, and asks the Electron provider adapter for opencode responses when the user asks AI about a thread or selection.
 

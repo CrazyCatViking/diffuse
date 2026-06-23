@@ -7,8 +7,8 @@ type CoreRequest = <T>(method: string, params?: Record<string, unknown>) => Prom
 
 type ChangedFile = {
   id: string;
-  oldPath: string | null;
-  newPath: string | null;
+  oldPath?: string;
+  newPath?: string;
   status: string;
 };
 

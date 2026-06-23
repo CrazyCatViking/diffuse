@@ -10,8 +10,8 @@ export type OpenRepositoryResult = {
 
 export type ChangedFile = {
   id: string;
-  oldPath: string | null;
-  newPath: string | null;
+  oldPath?: string;
+  newPath?: string;
   status: 'added' | 'modified' | 'deleted' | 'renamed';
   additions: number;
   deletions: number;

@@ -910,12 +910,30 @@ fn getObjectRequiredString(value: std.json.Value, name: []const u8) ![]const u8 
     };
 }
 
+fn getObjectRequiredReviewId(value: std.json.Value, name: []const u8) ![]const u8 {
+    const id = try getObjectRequiredString(value, name);
+    try review.validatePathSegment(id);
+    return id;
+}
+
 fn getRequiredString(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
     const field = object.get(name) orelse return error.MissingParam;
     return switch (field) {
         .string => |text| text,
         else => error.InvalidParam,
     };
+}
+
+fn getRequiredReviewId(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
+    const id = try getRequiredString(object, name);
+    try review.validatePathSegment(id);
+    return id;
+}
+
+fn getReviewIdParam(request: json_rpc.Request, name: []const u8) ![]const u8 {
+    const id = try json_rpc.getStringParam(request, name);
+    try review.validatePathSegment(id);
+    return id;
 }
 
 fn getOptionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -1030,7 +1048,7 @@ fn getU32Param(request: json_rpc.Request, name: []const u8) !u32 {
     };
     const value = params_object.get(name) orelse return error.MissingParam;
     return switch (value) {
-        .integer => |number| @intCast(number),
+        .integer => |number| if (number >= 0 and number <= std.math.maxInt(u32)) @intCast(number) else error.InvalidParam,
         else => error.InvalidParam,
     };
 }

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import readline from 'node:readline';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { CoreEvent } from '../src/lib/coreContract';
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -8,11 +9,12 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
-export type CoreEvent = {
-  jsonrpc?: '2.0';
-  method: string;
-  params?: unknown;
-};
+export class CoreRpcError extends Error {
+  constructor(readonly code: number, message: string, readonly data?: unknown) {
+    super(message);
+    this.name = 'CoreRpcError';
+  }
+}
 
 export class CoreRequestTimeoutError extends Error {
   constructor(method: string) {
@@ -132,7 +134,7 @@ export class CoreRpcClient extends EventEmitter {
     this.pending.delete(message.id);
 
     if (message.error) {
-      pending.reject(new Error(message.error.message ?? 'Core request failed'));
+      pending.reject(new CoreRpcError(message.error.code ?? -32000, message.error.message ?? 'Core request failed', message.error.data));
     } else {
       pending.resolve(message.result);
     }

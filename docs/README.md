@@ -7,6 +7,7 @@ This directory contains the project documentation that should be readable direct
 | Document | Audience | Purpose |
 | --- | --- | --- |
 | [`architecture.md`](architecture.md) | Contributors | High-level map of app/core boundaries, runtime flow, persistence, and build wiring. |
+| [`refactor-report.md`](refactor-report.md) | Contributors | Current architecture assessment, risks, and prioritized cleanup plan. |
 | [`lsp.md`](lsp.md) | Users and contributors | Language server configuration, built-in defaults, diagnostics, install actions, and lifecycle. |
 | [`review-spec-v1.md`](review-spec-v1.md) | Contributors and integrations | File layout and JSON formats for `.diffuse/reviews`. |
 

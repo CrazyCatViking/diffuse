@@ -41,7 +41,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.pro
         if (trimmed.len == 0) continue;
 
         const request = json_rpc.parseRequest(allocator, trimmed) catch |err| {
-            try runtime.enqueueError(-1, -32700, @errorName(err));
+            try runtime.enqueueParseError(@errorName(err));
             continue;
         };
 
@@ -111,10 +111,18 @@ fn writerTask(runtime: *Runtime) std.Io.Cancelable!void {
 fn requestTask(server: *const RpcServer, runtime: *Runtime, request: json_rpc.Request) std.Io.Cancelable!void {
     defer request.deinit();
 
-    const response = buildResponse(server, runtime, request) catch |err| rpc_runtime.buildError(runtime.allocator, request.id, -32000, @errorName(err)) catch return;
+    const response = buildResponse(server, runtime, request) catch |err| rpc_runtime.buildError(runtime.allocator, request.id, errorCode(err), @errorName(err)) catch return;
     runtime.enqueue(response) catch |err| switch (err) {
         error.Closed => runtime.allocator.free(response),
         error.Canceled => return error.Canceled,
+    };
+}
+
+fn errorCode(err: anyerror) i64 {
+    return switch (err) {
+        error.MethodNotFound => -32601,
+        error.MissingParams, error.InvalidParams, error.MissingParam, error.InvalidParam, error.InvalidPathSegment => -32602,
+        else => -32000,
     };
 }
 

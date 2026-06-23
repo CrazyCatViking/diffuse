@@ -51,6 +51,11 @@ pub const Runtime = struct {
         const response = try buildError(runtime.allocator, id, code, message);
         try runtime.enqueue(response);
     }
+
+    pub fn enqueueParseError(runtime: *Runtime, message: []const u8) !void {
+        const response = try buildParseError(runtime.allocator, message);
+        try runtime.enqueue(response);
+    }
 };
 
 pub fn buildError(allocator: std.mem.Allocator, id: i64, code: i64, message: []const u8) ![]u8 {
@@ -58,5 +63,13 @@ pub fn buildError(allocator: std.mem.Allocator, id: i64, code: i64, message: []c
     errdefer response.deinit();
 
     try json_rpc.writeError(&response.writer, id, code, message);
+    return try response.toOwnedSlice();
+}
+
+pub fn buildParseError(allocator: std.mem.Allocator, message: []const u8) ![]u8 {
+    var response = std.Io.Writer.Allocating.init(allocator);
+    errdefer response.deinit();
+
+    try json_rpc.writeErrorNullId(&response.writer, -32700, message);
     return try response.toOwnedSlice();
 }

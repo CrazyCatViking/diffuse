@@ -41,6 +41,18 @@ rename <path>.tmp -> <path>
 
 Diffuse watches `.diffuse/reviews` and emits live UI updates when files change.
 
+IDs used as path segments must be safe file names. This applies to `<session-id>`, `<thread-id>`, `<run-id>`, `<agent-run-id>`, and `<message-id>`.
+
+Allowed path-segment IDs:
+
+- Must be non-empty.
+- Must be at most 200 bytes.
+- May contain only ASCII letters, digits, `.`, `_`, and `-`.
+- Must not be `.` or `..`.
+- Must not contain `/`, `\`, whitespace, or other separators/control characters.
+
+The core rejects RPC writes with invalid path-segment IDs before constructing persistence paths.
+
 ## Session
 
 `config.json` stores repository-local review agent configuration. If it is missing, Diffuse uses built-in defaults.
