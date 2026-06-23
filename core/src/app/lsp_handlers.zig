@@ -8,6 +8,7 @@ const runtime_mod = @import("rpc_runtime.zig");
 const types = @import("../protocol/types.zig");
 const events = @import("rpc_events.zig");
 const params = @import("rpc_params.zig");
+const repo_snapshot = @import("rpc_repo.zig");
 
 const Runtime = runtime_mod.Runtime;
 
@@ -26,12 +27,12 @@ fn getLspStatus(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Req
     const side_text = params.getOptionalStringParam(request, "side") orelse "new";
     const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
     const target = params.getDiffTarget(request);
-    const path = try resolvePathForSide(runtime.allocator, repo, target, file_id, side);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    var repo = snapshot.toRepository();
+
+    const path = try resolvePathForSide(runtime.allocator, &repo, target, file_id, side);
     defer runtime.allocator.free(path);
 
     try runtime.lsp_lock.lock(runtime.io);
@@ -89,12 +90,12 @@ fn getLspHover(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Requ
     const column = try params.getU32Param(request, "column");
     const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
     const target = params.getDiffTarget(request);
-    const path = try resolvePathForSide(runtime.allocator, repo, target, file_id, side);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    var repo = snapshot.toRepository();
+
+    const path = try resolvePathForSide(runtime.allocator, &repo, target, file_id, side);
     defer runtime.allocator.free(path);
     const source = try diff.sourceForSide(runtime.allocator, runtime.io, repo.root, path, side, target);
     defer runtime.allocator.free(source);
@@ -112,12 +113,12 @@ fn getLspDiagnostics(runtime: *Runtime, writer: *std.Io.Writer, request: json_rp
     const side_text = try json_rpc.getStringParam(request, "side");
     const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
     const target = params.getDiffTarget(request);
-    const path = try resolvePathForSide(runtime.allocator, repo, target, file_id, side);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    var repo = snapshot.toRepository();
+
+    const path = try resolvePathForSide(runtime.allocator, &repo, target, file_id, side);
     defer runtime.allocator.free(path);
     const source = try diff.sourceForSide(runtime.allocator, runtime.io, repo.root, path, side, target);
     defer runtime.allocator.free(source);

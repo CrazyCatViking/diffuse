@@ -6,6 +6,7 @@ const repository = @import("../core/repository.zig");
 const runtime_mod = @import("rpc_runtime.zig");
 const types = @import("../protocol/types.zig");
 const params = @import("rpc_params.zig");
+const repo_snapshot = @import("rpc_repo.zig");
 
 const Runtime = runtime_mod.Runtime;
 
@@ -23,24 +24,34 @@ fn getVersion(_: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
 
 fn openRepository(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const path = try json_rpc.getStringParam(request, "path");
+    var opened = try repository.open(runtime.allocator, runtime.io, path);
+    var moved = false;
+    errdefer if (!moved) opened.deinit();
+    const root = try runtime.allocator.dupe(u8, opened.root);
+    defer runtime.allocator.free(root);
+    const head = try runtime.allocator.dupe(u8, opened.head);
+    defer runtime.allocator.free(head);
+
     try runtime.session_lock.lock(runtime.io);
-    defer runtime.session_lock.unlock(runtime.io);
+    if (runtime.session.repo) |*repo| repo.deinit();
+    runtime.session.repo = opened;
+    moved = true;
+    runtime.session_lock.unlock(runtime.io);
 
     try runtime.lsp_lock.lock(runtime.io);
     defer runtime.lsp_lock.unlock(runtime.io);
     runtime.lsp_manager.deinit(runtime.io);
     runtime.lsp_manager = lsp.Manager.init(runtime.allocator);
 
-    const repo = try runtime.session.openRepository(path);
-    try runtime.repo_watcher.start(repo.root);
-    try types.writeJson(writer, types.openRepositoryResult(repo));
+    try runtime.repo_watcher.start(root);
+    try types.writeJson(writer, types.OpenRepositoryResult{ .root = root, .head = head });
 }
 
 fn getDiffTargetDefaults(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    var repo = snapshot.toRepository();
 
-    const repo = try runtime.session.requireRepo();
     var defaults = try repo.diffTargetDefaults();
     defer defaults.deinit(runtime.allocator);
 
@@ -48,11 +59,11 @@ fn getDiffTargetDefaults(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.
 }
 
 fn listChangedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
     const target = params.getDiffTarget(request);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    var repo = snapshot.toRepository();
+
     const files = try repo.listChangedFiles(target);
     defer repository.freeChangedFiles(runtime.allocator, files);
 
@@ -64,10 +75,10 @@ fn listChangedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
 }
 
 fn listBranches(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    var repo = snapshot.toRepository();
 
-    const repo = try runtime.session.requireRepo();
     const branches = try repo.listBranches();
     defer repository.freeBranches(runtime.allocator, branches);
 

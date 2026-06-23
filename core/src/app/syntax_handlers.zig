@@ -6,6 +6,7 @@ const runtime_mod = @import("rpc_runtime.zig");
 const types = @import("../protocol/types.zig");
 const events = @import("rpc_events.zig");
 const params = @import("rpc_params.zig");
+const repo_snapshot = @import("rpc_repo.zig");
 
 const Runtime = runtime_mod.Runtime;
 
@@ -81,13 +82,13 @@ fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.R
     const diff_context: diff.DiffContextMode = if (std.mem.eql(u8, context, "full")) .full else .diff;
     const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
     const grammar_root = try params.resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
     const target = params.getDiffTarget(request);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
+    const repo = snapshot.toRepository();
+
     try runtime.syntax_cache_lock.lock(runtime.io);
     defer runtime.syntax_cache_lock.unlock(runtime.io);
 

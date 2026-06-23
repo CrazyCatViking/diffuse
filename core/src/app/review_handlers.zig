@@ -6,6 +6,7 @@ const runtime_mod = @import("rpc_runtime.zig");
 const types = @import("../protocol/types.zig");
 const events = @import("rpc_events.zig");
 const params = @import("rpc_params.zig");
+const repo_snapshot = @import("rpc_repo.zig");
 
 const Runtime = runtime_mod.Runtime;
 
@@ -37,11 +38,10 @@ pub fn register(server: anytype) !void {
 }
 
 fn getReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    const repo = try runtime.session.requireRepo();
-    const config_json = try review.readConfig(runtime.allocator, runtime.io, repo.root);
+    const config_json = try review.readConfig(runtime.allocator, runtime.io, snapshot.root);
     defer runtime.allocator.free(config_json);
     try params.writeCompactJson(runtime.allocator, writer, config_json);
 }
@@ -62,11 +62,10 @@ fn saveReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
 }
 
 fn getActiveReviewSession(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    const repo = try runtime.session.requireRepo();
-    const session_json = try review.getActiveSession(runtime.allocator, runtime.io, repo.root);
+    const session_json = try review.getActiveSession(runtime.allocator, runtime.io, snapshot.root);
     defer if (session_json) |json| runtime.allocator.free(json);
 
     if (session_json) |json| try params.writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("null");
@@ -89,23 +88,20 @@ fn createReviewSession(runtime: *Runtime, writer: *std.Io.Writer, request: json_
 }
 
 fn listReviewSessions(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.Request) !void {
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    const repo = try runtime.session.requireRepo();
-    const sessions_json = try review.listSessions(runtime.allocator, runtime.io, repo.root);
+    const sessions_json = try review.listSessions(runtime.allocator, runtime.io, snapshot.root);
     defer runtime.allocator.free(sessions_json);
     try params.writeCompactJson(runtime.allocator, writer, sessions_json);
 }
 
 fn getReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
-    const progress_json = try review.readProgress(runtime.allocator, runtime.io, repo.root, session_id);
+    const progress_json = try review.readProgress(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer if (progress_json) |json| runtime.allocator.free(json);
 
     if (progress_json) |json| try params.writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("null");
@@ -146,24 +142,20 @@ fn saveReviewAgentState(runtime: *Runtime, writer: *std.Io.Writer, request: json
 
 fn getReviewAgentStates(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
-    const agents_json = try review.listAgentStates(runtime.allocator, runtime.io, repo.root, session_id);
+    const agents_json = try review.listAgentStates(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer runtime.allocator.free(agents_json);
     try params.writeCompactJson(runtime.allocator, writer, agents_json);
 }
 
 fn getReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
-    const runs_json = try review.listRuns(runtime.allocator, runtime.io, repo.root, session_id);
+    const runs_json = try review.listRuns(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer runtime.allocator.free(runs_json);
     try params.writeCompactJson(runtime.allocator, writer, runs_json);
 }
@@ -187,12 +179,10 @@ fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Re
 
 fn getReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
-    const reviewed_files_json = try review.readReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id);
+    const reviewed_files_json = try review.readReviewedFiles(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer if (reviewed_files_json) |json| runtime.allocator.free(json);
 
     if (reviewed_files_json) |json| try params.writeCompactJson(runtime.allocator, writer, json) else try writer.writeAll("{\"files\":{}}");
@@ -335,24 +325,20 @@ fn recoverStaleReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: js
 
 fn getReviewThreads(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
-    const threads_json = try review.listThreads(runtime.allocator, runtime.io, repo.root, session_id);
+    const threads_json = try review.listThreads(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer runtime.allocator.free(threads_json);
     try params.writeCompactJson(runtime.allocator, writer, threads_json);
 }
 
 fn getReviewChatMessages(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
-
-    const repo = try runtime.session.requireRepo();
-    const messages_json = try review.listChatMessages(runtime.allocator, runtime.io, repo.root, session_id);
+    const messages_json = try review.listChatMessages(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer runtime.allocator.free(messages_json);
     try params.writeCompactJson(runtime.allocator, writer, messages_json);
 }

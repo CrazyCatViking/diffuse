@@ -126,6 +126,9 @@ Requests can run concurrently. Responses and notifications are serialized throug
 - `review_handlers.zig` owns review persistence and agent review state RPCs.
 - `rpc_params.zig` owns shared parameter parsing, JSON conversion, diff target parsing, grammar-root resolution, and review ID validation helpers used by handlers.
 - `rpc_events.zig` owns shared event/progress emitters.
+- `rpc_repo.zig` owns short-lived repository snapshots used to copy stable repository root/head data under `session_lock` before handlers perform expensive work.
+
+Handlers should avoid holding `session_lock` while running Git, parsing diffs, resolving source text, highlighting, or doing read-only review filesystem work. The normal pattern is to snapshot the opened repository under `session_lock`, release the lock, and then use the snapshot for path/root data. Review write/update handlers still serialize through `session_lock` until review persistence has a separate write lock or merge strategy.
 
 Important methods include:
 
