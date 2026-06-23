@@ -59,7 +59,7 @@ fn getDiffTargetDefaults(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc.
 }
 
 fn listChangedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
-    const target = params.getDiffTarget(request);
+    const target = try params.getDiffTarget(request);
     var snapshot = try repo_snapshot.snapshot(runtime);
     defer snapshot.deinit();
     var repo = snapshot.toRepository();

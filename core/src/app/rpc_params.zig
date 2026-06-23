@@ -1,9 +1,16 @@
 const std = @import("std");
 
 const json_rpc = @import("../protocol/json_rpc.zig");
+const diff = @import("../core/diff.zig");
 const repository = @import("../core/repository.zig");
 const review = @import("../core/review.zig");
 const types = @import("../protocol/types.zig");
+
+pub const DiffRenderOptions = struct {
+    mode: []const u8,
+    context: []const u8,
+    diff_context: diff.DiffContextMode,
+};
 
 pub fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !?[]u8 {
     if (environ_map.get("DIFFUSE_GRAMMARS_DIR")) |path| return try allocator.dupe(u8, path);
@@ -11,31 +18,73 @@ pub fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.
     return try std.fs.path.join(allocator, &.{ home, ".diffuse", "grammars" });
 }
 
-pub fn getDiffOption(request: json_rpc.Request, name: []const u8) ?[]const u8 {
+pub fn getDiffRenderOptions(request: json_rpc.Request) !DiffRenderOptions {
+    const context = try getDiffContextText(request);
+    return .{
+        .mode = (try getDiffOptionEnum(request, "mode", &.{ "split", "inline" })) orelse "split",
+        .context = context,
+        .diff_context = diffContextMode(context),
+    };
+}
+
+pub fn getDiffContextText(request: json_rpc.Request) ![]const u8 {
+    return (try getDiffOptionEnum(request, "context", &.{ "diff", "full" })) orelse "diff";
+}
+
+pub fn getDiffContextMode(request: json_rpc.Request) !diff.DiffContextMode {
+    return diffContextMode(try getDiffContextText(request));
+}
+
+fn diffContextMode(context: []const u8) diff.DiffContextMode {
+    return if (std.mem.eql(u8, context, "full")) .full else .diff;
+}
+
+fn getDiffOptionEnum(request: json_rpc.Request, name: []const u8, allowed: []const []const u8) !?[]const u8 {
     const params = request.value.value.object.get("params") orelse return null;
     const params_object = switch (params) {
         .object => |object| object,
-        else => return null,
+        else => return error.InvalidParams,
     };
     const options = params_object.get("options") orelse return null;
     const options_object = switch (options) {
         .object => |object| object,
-        else => return null,
+        else => return error.InvalidParam,
     };
     const value = options_object.get(name) orelse return null;
-    return switch (value) {
-        .string => |text| text,
-        else => null,
-    };
+    return try enumString(value, allowed);
 }
 
-pub fn getOptionalStringParam(request: json_rpc.Request, name: []const u8) ?[]const u8 {
+pub fn getOptionalStringParam(request: json_rpc.Request, name: []const u8) !?[]const u8 {
     const params = request.value.value.object.get("params") orelse return null;
     const params_object = switch (params) {
         .object => |object| object,
-        else => return null,
+        else => return error.InvalidParams,
     };
-    return getOptionalString(params_object, name);
+    return try getOptionalStringStrict(params_object, name);
+}
+
+pub fn getSyntaxSideParam(request: json_rpc.Request, name: []const u8) !diff.SyntaxSide {
+    return syntaxSide(try json_rpc.getStringParam(request, name));
+}
+
+pub fn getOptionalSyntaxSideParam(request: json_rpc.Request, name: []const u8, default: diff.SyntaxSide) !diff.SyntaxSide {
+    const params = request.value.value.object.get("params") orelse return default;
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    const value = params_object.get(name) orelse return default;
+    const text = switch (value) {
+        .string => |inner| inner,
+        else => return error.InvalidParam,
+    };
+    return syntaxSide(text);
+}
+
+fn syntaxSide(text: []const u8) !diff.SyntaxSide {
+    if (std.mem.eql(u8, text, "old")) return .old;
+    if (std.mem.eql(u8, text, "new")) return .new;
+    return error.InvalidParam;
 }
 
 pub fn getObjectParam(request: json_rpc.Request, name: []const u8) !std.json.Value {
@@ -94,6 +143,15 @@ pub fn getOptionalString(object: std.json.ObjectMap, name: []const u8) ?[]const 
     return switch (field) {
         .string => |text| if (text.len == 0) null else text,
         else => null,
+    };
+}
+
+fn getOptionalStringStrict(object: std.json.ObjectMap, name: []const u8) !?[]const u8 {
+    const field = object.get(name) orelse return null;
+    return switch (field) {
+        .null => null,
+        .string => |text| if (text.len == 0) null else text,
+        else => error.InvalidParam,
     };
 }
 
@@ -157,39 +215,41 @@ pub fn writeCompactJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, js
     try std.json.Stringify.value(parsed.value, .{ .emit_null_optional_fields = false }, writer);
 }
 
-pub fn getDiffTarget(request: json_rpc.Request) repository.DiffTarget {
+pub fn getDiffTarget(request: json_rpc.Request) !repository.DiffTarget {
     const params = request.value.value.object.get("params") orelse return .{};
     const params_object = switch (params) {
         .object => |object| object,
-        else => return .{},
+        else => return error.InvalidParams,
     };
     const target = params_object.get("target") orelse return .{};
     const target_object = switch (target) {
         .object => |object| object,
-        else => return .{},
+        else => return error.InvalidParam,
     };
 
     return .{
-        .base = getObjectString(target_object, "base"),
-        .compare = getObjectString(target_object, "compare"),
-        .include_staged = getObjectBool(target_object, "includeStaged") orelse true,
-        .include_unstaged = getObjectBool(target_object, "includeUnstaged") orelse true,
+        .base = try getObjectString(target_object, "base"),
+        .compare = try getObjectString(target_object, "compare"),
+        .include_staged = (try getObjectBool(target_object, "includeStaged")) orelse true,
+        .include_unstaged = (try getObjectBool(target_object, "includeUnstaged")) orelse true,
     };
 }
 
-pub fn getObjectString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+pub fn getObjectString(object: std.json.ObjectMap, name: []const u8) !?[]const u8 {
     const value = object.get(name) orelse return null;
     return switch (value) {
+        .null => null,
         .string => |text| if (text.len == 0) null else text,
-        else => null,
+        else => error.InvalidParam,
     };
 }
 
-pub fn getObjectBool(object: std.json.ObjectMap, name: []const u8) ?bool {
+pub fn getObjectBool(object: std.json.ObjectMap, name: []const u8) !?bool {
     const value = object.get(name) orelse return null;
     return switch (value) {
+        .null => null,
         .bool => |enabled| enabled,
-        else => null,
+        else => error.InvalidParam,
     };
 }
 
@@ -204,4 +264,63 @@ pub fn getU32Param(request: json_rpc.Request, name: []const u8) !u32 {
         .integer => |number| if (number >= 0 and number <= std.math.maxInt(u32)) @intCast(number) else error.InvalidParam,
         else => error.InvalidParam,
     };
+}
+
+fn enumString(value: std.json.Value, allowed: []const []const u8) ![]const u8 {
+    const text = switch (value) {
+        .string => |inner| inner,
+        else => return error.InvalidParam,
+    };
+    for (allowed) |allowed_value| {
+        if (std.mem.eql(u8, text, allowed_value)) return text;
+    }
+    return error.InvalidParam;
+}
+
+test "rpc params validates diff render options" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getDiffRenderModel\",\"params\":{\"options\":{\"mode\":\"inline\",\"context\":\"full\"}}}");
+    defer request.deinit();
+
+    const options = try getDiffRenderOptions(request);
+    try std.testing.expectEqualStrings("inline", options.mode);
+    try std.testing.expectEqualStrings("full", options.context);
+    try std.testing.expectEqual(diff.DiffContextMode.full, options.diff_context);
+}
+
+test "rpc params rejects invalid diff render option enum" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getDiffRenderModel\",\"params\":{\"options\":{\"mode\":\"sideways\"}}}");
+    defer request.deinit();
+
+    try std.testing.expectError(error.InvalidParam, getDiffRenderOptions(request));
+}
+
+test "rpc params validates syntax side" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSyntaxSpans\",\"params\":{\"side\":\"old\"}}");
+    defer request.deinit();
+
+    try std.testing.expectEqual(diff.SyntaxSide.old, try getSyntaxSideParam(request, "side"));
+}
+
+test "rpc params rejects invalid syntax side" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSyntaxSpans\",\"params\":{\"side\":\"left\"}}");
+    defer request.deinit();
+
+    try std.testing.expectError(error.InvalidParam, getSyntaxSideParam(request, "side"));
+}
+
+test "rpc params rejects invalid diff target field types" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"listChangedFiles\",\"params\":{\"target\":{\"base\":42,\"includeStaged\":true}}}");
+    defer request.deinit();
+
+    try std.testing.expectError(error.InvalidParam, getDiffTarget(request));
+}
+
+test "rpc params rejects invalid u32 params" {
+    const negative = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSyntaxSpans\",\"params\":{\"line\":-1}}");
+    defer negative.deinit();
+    try std.testing.expectError(error.InvalidParam, getU32Param(negative, "line"));
+
+    const overflow = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSyntaxSpans\",\"params\":{\"line\":4294967296}}");
+    defer overflow.deinit();
+    try std.testing.expectError(error.InvalidParam, getU32Param(overflow, "line"));
 }

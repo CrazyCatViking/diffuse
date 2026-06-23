@@ -24,10 +24,9 @@ pub fn register(server: anytype) !void {
 
 fn getLspStatus(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
-    const side_text = params.getOptionalStringParam(request, "side") orelse "new";
-    const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
+    const side = try params.getOptionalSyntaxSideParam(request, "side", .new);
 
-    const target = params.getDiffTarget(request);
+    const target = try params.getDiffTarget(request);
     var snapshot = try repo_snapshot.snapshot(runtime);
     defer snapshot.deinit();
     var repo = snapshot.toRepository();
@@ -85,12 +84,11 @@ fn restartLspServer(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
 
 fn getLspHover(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
-    const side_text = try json_rpc.getStringParam(request, "side");
     const line = try params.getU32Param(request, "line");
     const column = try params.getU32Param(request, "column");
-    const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
+    const side = try params.getSyntaxSideParam(request, "side");
 
-    const target = params.getDiffTarget(request);
+    const target = try params.getDiffTarget(request);
     var snapshot = try repo_snapshot.snapshot(runtime);
     defer snapshot.deinit();
     var repo = snapshot.toRepository();
@@ -110,10 +108,9 @@ fn getLspHover(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Requ
 
 fn getLspDiagnostics(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
-    const side_text = try json_rpc.getStringParam(request, "side");
-    const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
+    const side = try params.getSyntaxSideParam(request, "side");
 
-    const target = params.getDiffTarget(request);
+    const target = try params.getDiffTarget(request);
     var snapshot = try repo_snapshot.snapshot(runtime);
     defer snapshot.deinit();
     var repo = snapshot.toRepository();

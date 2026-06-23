@@ -61,6 +61,8 @@ Core maps JSON-RPC failures to standard error classes where possible:
 - `-32602` for invalid or missing params.
 - `-32000` for domain/runtime failures.
 
+RPC params are validated at the core boundary. Omitted optional fields may still use documented defaults, but present invalid enum values or invalid field types are rejected as invalid params. This includes diff `mode`, diff `context`, syntax/LSP `side`, unsigned line/column values, and `DiffTarget` fields.
+
 The Electron RPC client preserves `error.code`, `error.message`, and optional `error.data` in `CoreRpcError`.
 
 Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event, and the main process opens a new `BrowserWindow` with its own core process for that repository.

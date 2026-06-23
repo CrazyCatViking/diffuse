@@ -63,7 +63,7 @@ fn listTreeSitterGrammars(runtime: *Runtime, writer: *std.Io.Writer, _: json_rpc
 }
 
 fn syncTreeSitterRegistry(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
-    const git_url = params.getOptionalStringParam(request, "gitUrl") orelse runtime.environ_map.get("DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL") orelse "https://github.com/CrazyCatViking/diffuse-tree-sitter.git";
+    const git_url = (try params.getOptionalStringParam(request, "gitUrl")) orelse runtime.environ_map.get("DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL") orelse "https://github.com/CrazyCatViking/diffuse-tree-sitter.git";
     const grammar_root = try params.resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
 
@@ -75,16 +75,14 @@ fn syncTreeSitterRegistry(runtime: *Runtime, writer: *std.Io.Writer, request: js
 
 fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
-    const side_text = try json_rpc.getStringParam(request, "side");
     const start_line = try params.getU32Param(request, "startLine");
     const end_line = try params.getU32Param(request, "endLine");
-    const context = params.getDiffOption(request, "context") orelse "diff";
-    const diff_context: diff.DiffContextMode = if (std.mem.eql(u8, context, "full")) .full else .diff;
-    const side: diff.SyntaxSide = if (std.mem.eql(u8, side_text, "old")) .old else .new;
+    const diff_context = try params.getDiffContextMode(request);
+    const side = try params.getSyntaxSideParam(request, "side");
 
     const grammar_root = try params.resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
-    const target = params.getDiffTarget(request);
+    const target = try params.getDiffTarget(request);
     var snapshot = try repo_snapshot.snapshot(runtime);
     defer snapshot.deinit();
     const repo = snapshot.toRepository();

@@ -15,18 +15,16 @@ pub fn register(server: anytype) !void {
 
 fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const file_id = try json_rpc.getStringParam(request, "fileId");
-    const mode = params.getDiffOption(request, "mode") orelse "split";
-    const context = params.getDiffOption(request, "context") orelse "diff";
-    const diff_context: diff.DiffContextMode = if (std.mem.eql(u8, context, "full")) .full else .diff;
+    const options = try params.getDiffRenderOptions(request);
 
     const grammar_root = try params.resolveGrammarRoot(runtime.allocator, runtime.environ_map);
     defer if (grammar_root) |path| runtime.allocator.free(path);
-    const target = params.getDiffTarget(request);
+    const target = try params.getDiffTarget(request);
     var snapshot = try repo_snapshot.snapshot(runtime);
     defer snapshot.deinit();
     const repo = snapshot.toRepository();
 
-    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root, .target = target });
+    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = options.diff_context, .grammar_root = grammar_root, .target = target });
     defer model.deinit(runtime.allocator);
 
     var rows: std.ArrayList(types.DiffRow) = .empty;
@@ -35,8 +33,8 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
 
     try types.writeJson(writer, types.DiffRenderModel{
         .fileId = model.file_id,
-        .mode = mode,
-        .context = context,
+        .mode = options.mode,
+        .context = options.context,
         .syntax = types.syntaxStatus(model.syntax_status),
         .rows = rows.items,
     });
