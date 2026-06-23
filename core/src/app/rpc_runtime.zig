@@ -16,6 +16,7 @@ pub const Runtime = struct {
     repo_watcher: repository_watcher.RepositoryWatcher,
     syntax_cache_lock: std.Io.Mutex = .init,
     lsp_lock: std.Io.Mutex = .init,
+    review_lock: std.Io.Mutex = .init,
     session_lock: std.Io.RwLock = .init,
     outbound_buffer: [128][]u8 = undefined,
     outbound: std.Io.Queue([]u8),
@@ -29,6 +30,7 @@ pub const Runtime = struct {
         runtime.lsp_manager = lsp.Manager.init(allocator);
         runtime.syntax_cache_lock = .init;
         runtime.lsp_lock = .init;
+        runtime.review_lock = .init;
         runtime.session_lock = .init;
         runtime.outbound_buffer = undefined;
         runtime.outbound = .init(&runtime.outbound_buffer);

@@ -109,6 +109,7 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 
 - `session` stores the currently opened repository.
 - `session_lock` protects repository session access.
+- `review_lock` serializes review persistence writes and read-modify-write updates under `.diffuse/reviews`.
 - `syntax_cache` stores dynamically loaded Tree-sitter parser libraries and queries.
 - `syntax_cache_lock` protects the syntax cache.
 - `repo_watcher` watches the opened repository and emits `repository/changed` or `review/changed` notifications on Linux.
@@ -128,7 +129,7 @@ Requests can run concurrently. Responses and notifications are serialized throug
 - `rpc_events.zig` owns shared event/progress emitters.
 - `rpc_repo.zig` owns short-lived repository snapshots used to copy stable repository root/head data under `session_lock` before handlers perform expensive work.
 
-Handlers should avoid holding `session_lock` while running Git, parsing diffs, resolving source text, highlighting, or doing read-only review filesystem work. The normal pattern is to snapshot the opened repository under `session_lock`, release the lock, and then use the snapshot for path/root data. Review write/update handlers still serialize through `session_lock` until review persistence has a separate write lock or merge strategy.
+Handlers should avoid holding `session_lock` while running Git, parsing diffs, resolving source text, highlighting, or doing review filesystem work. The normal pattern is to snapshot the opened repository under `session_lock`, release the lock, and then use the snapshot for path/root data. Review write/update handlers acquire `review_lock` after snapshotting so review persistence remains serialized without blocking unrelated session readers.
 
 Important methods include:
 

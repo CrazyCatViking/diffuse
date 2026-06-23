@@ -50,14 +50,15 @@ fn saveReviewConfig(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
     const config = try params.getObjectParam(request, "config");
     const config_json = try params.stringifyJsonValue(runtime.allocator, config);
     defer runtime.allocator.free(config_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeConfig(runtime.allocator, runtime.io, repo.root, config_json);
+    const saved = try review.writeConfig(runtime.allocator, runtime.io, snapshot.root, config_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, "", "config.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, "", "config.updated");
     try writer.writeAll(saved);
 }
 
@@ -76,14 +77,15 @@ fn createReviewSession(runtime: *Runtime, writer: *std.Io.Writer, request: json_
     const session_id = try params.getObjectRequiredReviewId(session, "id");
     const session_json = try params.stringifyJsonValue(runtime.allocator, session);
     defer runtime.allocator.free(session_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.createSession(runtime.allocator, runtime.io, repo.root, session_id, session_json);
+    const saved = try review.createSession(runtime.allocator, runtime.io, snapshot.root, session_id, session_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "session.created");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "session.created");
     try writer.writeAll(saved);
 }
 
@@ -112,14 +114,15 @@ fn saveReviewProgress(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
     const progress = try params.getObjectParam(request, "progress");
     const progress_json = try params.stringifyJsonValue(runtime.allocator, progress);
     defer runtime.allocator.free(progress_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeProgress(runtime.allocator, runtime.io, repo.root, session_id, progress_json);
+    const saved = try review.writeProgress(runtime.allocator, runtime.io, snapshot.root, session_id, progress_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "progress.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "progress.updated");
     try writer.writeAll(saved);
 }
 
@@ -129,14 +132,15 @@ fn saveReviewAgentState(runtime: *Runtime, writer: *std.Io.Writer, request: json
     const agent_run_id = try params.getObjectRequiredReviewId(agent, "id");
     const agent_json = try params.stringifyJsonValue(runtime.allocator, agent);
     defer runtime.allocator.free(agent_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeAgentState(runtime.allocator, runtime.io, repo.root, session_id, agent_run_id, agent_json);
+    const saved = try review.writeAgentState(runtime.allocator, runtime.io, snapshot.root, session_id, agent_run_id, agent_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "agent.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "agent.updated");
     try writer.writeAll(saved);
 }
 
@@ -166,14 +170,15 @@ fn saveReviewRun(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Re
     const run_id = try params.getObjectRequiredReviewId(run, "id");
     const run_json = try params.stringifyJsonValue(runtime.allocator, run);
     defer runtime.allocator.free(run_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeRun(runtime.allocator, runtime.io, repo.root, session_id, run_id, run_json);
+    const saved = try review.writeRun(runtime.allocator, runtime.io, snapshot.root, session_id, run_id, run_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "run.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "run.updated");
     try writer.writeAll(saved);
 }
 
@@ -193,26 +198,28 @@ fn saveReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rp
     const reviewed_files = try params.getObjectParam(request, "reviewedFiles");
     const reviewed_files_json = try params.stringifyJsonValue(runtime.allocator, reviewed_files);
     defer runtime.allocator.free(reviewed_files_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lock(runtime.io);
-    defer runtime.session_lock.unlock(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id, reviewed_files_json);
+    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, snapshot.root, session_id, reviewed_files_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "reviewed-files.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "reviewed-files.updated");
     try writer.writeAll(saved);
 }
 
 fn updateReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
     const update = try params.getObjectParam(request, "update");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lock(runtime.io);
-    defer runtime.session_lock.unlock(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const current_json = try review.readReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id) orelse try runtime.allocator.dupe(u8, "{\"files\":{}}");
+    const current_json = try review.readReviewedFiles(runtime.allocator, runtime.io, snapshot.root, session_id) orelse try runtime.allocator.dupe(u8, "{\"files\":{}}");
     defer runtime.allocator.free(current_json);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, runtime.allocator, current_json, .{});
@@ -263,20 +270,21 @@ fn updateReviewedFiles(runtime: *Runtime, writer: *std.Io.Writer, request: json_
 
     const reviewed_files_json = try params.stringifyJsonValue(runtime.allocator, parsed.value);
     defer runtime.allocator.free(reviewed_files_json);
-    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, repo.root, session_id, reviewed_files_json);
+    const saved = try review.writeReviewedFiles(runtime.allocator, runtime.io, snapshot.root, session_id, reviewed_files_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "reviewed-files.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "reviewed-files.updated");
     try writer.writeAll(saved);
 }
 
 fn recoverStaleReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.Request) !void {
     const session_id = try params.getReviewIdParam(request, "sessionId");
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const runs_json = try review.listRuns(runtime.allocator, runtime.io, repo.root, session_id);
+    const runs_json = try review.listRuns(runtime.allocator, runtime.io, snapshot.root, session_id);
     defer runtime.allocator.free(runs_json);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, runtime.allocator, runs_json, .{});
@@ -314,12 +322,12 @@ fn recoverStaleReviewRuns(runtime: *Runtime, writer: *std.Io.Writer, request: js
 
         const run_json = try params.stringifyJsonValue(runtime.allocator, item.*);
         defer runtime.allocator.free(run_json);
-        const saved = try review.writeRun(runtime.allocator, runtime.io, repo.root, session_id, run_id, run_json);
+        const saved = try review.writeRun(runtime.allocator, runtime.io, snapshot.root, session_id, run_id, run_json);
         defer runtime.allocator.free(saved);
         recovered += 1;
     }
 
-    if (recovered > 0) try events.emitReviewChanged(runtime, repo.root, session_id, "runs.recovered");
+    if (recovered > 0) try events.emitReviewChanged(runtime, snapshot.root, session_id, "runs.recovered");
     try writer.print("{{\"recovered\":{d}}}", .{recovered});
 }
 
@@ -349,14 +357,15 @@ fn saveReviewChatMessage(runtime: *Runtime, writer: *std.Io.Writer, request: jso
     const message_id = try params.getObjectRequiredReviewId(message, "id");
     const message_json = try params.stringifyJsonValue(runtime.allocator, message);
     defer runtime.allocator.free(message_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeChatMessage(runtime.allocator, runtime.io, repo.root, session_id, message_id, message_json);
+    const saved = try review.writeChatMessage(runtime.allocator, runtime.io, snapshot.root, session_id, message_id, message_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "chat.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "chat.updated");
     try writer.writeAll(saved);
 }
 
@@ -366,14 +375,15 @@ fn saveReviewThread(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
     const thread_id = try params.getObjectRequiredReviewId(thread, "id");
     const thread_json = try params.stringifyJsonValue(runtime.allocator, thread);
     defer runtime.allocator.free(thread_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, thread_id, thread_json);
+    const saved = try review.writeThread(runtime.allocator, runtime.io, snapshot.root, session_id, thread_id, thread_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "thread.updated");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "thread.updated");
     try writer.writeAll(saved);
 }
 
@@ -383,14 +393,15 @@ fn addReviewComment(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc
     const comment_id = try params.getObjectRequiredReviewId(comment, "id");
     const comment_json = try params.stringifyJsonValue(runtime.allocator, comment);
     defer runtime.allocator.free(comment_json);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, comment_id, comment_json);
+    const saved = try review.writeThread(runtime.allocator, runtime.io, snapshot.root, session_id, comment_id, comment_json);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "thread.created");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "thread.created");
     try writer.writeAll(saved);
 }
 
@@ -455,12 +466,14 @@ fn addReviewCommentPayload(runtime: *Runtime, writer: *std.Io.Writer, request: j
     const owned = try thread_json.toOwnedSlice();
     defer runtime.allocator.free(owned);
 
-    try runtime.session_lock.lockShared(runtime.io);
-    defer runtime.session_lock.unlockShared(runtime.io);
+    var snapshot = try repo_snapshot.snapshot(runtime);
+    defer snapshot.deinit();
 
-    const repo = try runtime.session.requireRepo();
-    const saved = try review.writeThread(runtime.allocator, runtime.io, repo.root, session_id, thread_id, owned);
+    try runtime.review_lock.lock(runtime.io);
+    defer runtime.review_lock.unlock(runtime.io);
+
+    const saved = try review.writeThread(runtime.allocator, runtime.io, snapshot.root, session_id, thread_id, owned);
     defer runtime.allocator.free(saved);
-    try events.emitReviewChanged(runtime, repo.root, session_id, "thread.created");
+    try events.emitReviewChanged(runtime, snapshot.root, session_id, "thread.created");
     try writer.writeAll(saved);
 }
