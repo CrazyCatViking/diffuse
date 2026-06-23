@@ -54,6 +54,8 @@ The client tracks pending requests by numeric `id`, resolves them when a matchin
 
 The renderer and Electron process share the TypeScript contract in `app/src/lib/coreContract.ts`. That file defines the `CoreMethods` param/result map, the runtime `coreMethodNames` list used by Electron's whitelist, and the typed core event union consumed by the renderer. Zig remains the runtime authority for validation; TypeScript contracts keep the frontend, preload bridge, and Electron whitelist synchronized.
 
+`scripts/check-rpc-contract.mjs` compares Zig `server.handle(...)` registrations in `core/src/app/*_handlers.zig` with `coreMethodNames` in `app/src/lib/coreContract.ts`. It runs as part of `just build` and `pnpm build` so app/core method drift fails verification early.
+
 Core maps JSON-RPC failures to standard error classes where possible:
 
 - `-32700` for parse errors, returned with `id: null`.

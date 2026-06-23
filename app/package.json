@@ -6,7 +6,8 @@
   "main": "out/main/main.js",
   "scripts": {
     "dev": "electron-vite dev -- --ozone-platform=wayland",
-    "build": "vue-tsc --noEmit && electron-vite build",
+    "check:rpc-contract": "node ../scripts/check-rpc-contract.mjs",
+    "build": "pnpm check:rpc-contract && vue-tsc --noEmit && electron-vite build",
     "package": "pnpm build && node scripts/prepare-electron-package.mjs && electron-builder --dir",
     "dist": "pnpm build && node scripts/prepare-electron-package.mjs && electron-builder",
     "preview": "electron-vite preview"
