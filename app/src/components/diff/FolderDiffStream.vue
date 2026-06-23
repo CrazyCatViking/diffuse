@@ -35,8 +35,8 @@
           </template>
           <div v-else-if="entry.item.kind === 'empty'" class="empty-file">No diff for this file.</div>
           <template v-else-if="entry.item.kind === 'row' && viewMode === 'split'">
-            <DiffRenderedRow
-              mode="split"
+            <DiffComposedRow
+              composition-mode="split"
               :row="entry.diffRow"
               :review-row="entry.reviewRow"
               :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'"
@@ -70,8 +70,8 @@
             />
           </template>
           <template v-else-if="entry.item.kind === 'row'">
-            <DiffRenderedRow
-              mode="inline"
+            <DiffComposedRow
+              composition-mode="inline"
               :row="entry.diffRow"
               :review-row="entry.reviewRow"
               review-class="inline"
@@ -126,7 +126,7 @@
 <script setup lang="ts">
 import type { CSSProperties } from 'vue';
 import type { DiffViewMode, ReviewAnchor, ReviewChatMessage, ReviewThread, SyntaxSide } from '../../lib/protocol';
-import DiffRenderedRow from './DiffRenderedRow.vue';
+import DiffComposedRow from './DiffComposedRow.vue';
 import DiffScrollbar, { type DiffScrollMarker } from './DiffScrollbar.vue';
 import DiffViewerOverlays from './DiffViewerOverlays.vue';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';

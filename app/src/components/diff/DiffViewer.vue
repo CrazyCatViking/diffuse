@@ -3,25 +3,34 @@
     <div class="diff-header">
       <div class="file-meta">
         <span>{{ model?.fileId ?? 'No file selected' }}</span>
+
         <span v-if="model" class="row-count">{{ rows.length }} rows</span>
+
         <span v-if="hasNewChanges" class="update-status">
           New changes available
+
           <button class="load-latest" type="button" :disabled="loading" @click="emit('loadLatest')">Load latest</button>
         </span>
+
         <span v-if="syntaxMessage" class="syntax-status">
           {{ syntaxMessage }}
+
           <button class="install-grammar" type="button" :disabled="installingGrammar" @click="emit('installGrammar')">
             {{ installingGrammar ? 'Installing...' : 'Install' }}
           </button>
+
           <span v-if="grammarInstallStep" class="install-step">{{ grammarInstallStep }}</span>
         </span>
+
         <span v-if="lspStatusMessage" class="lsp-status" :class="lspStatusClass" :title="lspStatusTitle">
           {{ lspStatusMessage }}
         </span>
+
         <span v-if="lspDiagnosticsMessage" class="lsp-diagnostics" :class="lspDiagnosticsClass">
           {{ lspDiagnosticsMessage }}
         </span>
       </div>
+
       <DiffViewControls
         search-enabled
         show-sync-scroll
@@ -97,6 +106,7 @@
       @resolve="resolveThread"
       @reopen="reopenThread"
     />
+
     <DiffViewerOverlays
       :show-selection-toolbar="Boolean(selectionDraft)"
       :selection-style="selectionBubbleStyle"
@@ -113,7 +123,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useClient } from '../../lib/useClient';
 import type {
-  ChangedFile,
   DiffContextMode,
   DiffRenderModel,
   DiffRow,

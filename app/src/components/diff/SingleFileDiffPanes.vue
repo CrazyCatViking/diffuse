@@ -4,6 +4,8 @@
   <div v-else-if="!model" class="message">Select a changed file to view its diff.</div>
   <div v-else-if="rowsLength === 0" class="message">No unstaged diff for this file.</div>
   <div v-else-if="initialSyntaxGateActive" class="syntax-gate" />
+
+  <!--Split synced mode-->
   <div v-else-if="viewMode === 'split' && syncScroll" class="pane-shell" :class="{ 'has-diff-scroll': hasSyncedSplitScroll }">
     <div
       :ref="(element) => setPaneRef('syncedSplit', element)"
@@ -22,8 +24,8 @@
           :ref="entry.diffRow ? undefined : measureSyncedSplitElement"
           :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
         >
-          <DiffRenderedRow
-            mode="split"
+          <DiffComposedRow
+            composition-mode="split"
             :row="entry.diffRow"
             :review-row="entry.reviewRow"
             :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'"
@@ -60,6 +62,7 @@
         </div>
       </div>
     </div>
+
     <DiffScrollbar
       v-if="hasSyncedSplitScroll"
       :markers="syncedSplitMarkers"
@@ -68,6 +71,8 @@
       @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'syncedSplit')"
     />
   </div>
+
+  <!--Split desynced mode-->
   <div v-else-if="viewMode === 'split'" class="split-view">
     <div class="pane-shell old-pane-shell" :class="{ 'has-diff-scroll': hasLeftScroll }">
       <div
@@ -87,8 +92,8 @@
             :ref="entry.diffRow ? undefined : measureLeftElement"
             :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
           >
-            <DiffRenderedRow
-              mode="pane"
+            <DiffComposedRow
+              composition-mode="pane"
               pane-side="old"
               :row="entry.diffRow"
               :review-row="entry.reviewRow"
@@ -120,6 +125,7 @@
           </div>
         </div>
       </div>
+
       <DiffScrollbar
         v-if="hasLeftScroll"
         :markers="leftMarkers"
@@ -128,6 +134,7 @@
         @thumb-pointer-down="emit('scrollbarThumbPointerDown', $event, 'left')"
       />
     </div>
+
     <div class="pane-shell" :class="{ 'has-diff-scroll': hasRightScroll }">
       <div
         :ref="(element) => setPaneRef('right', element)"
@@ -146,8 +153,8 @@
             :ref="entry.diffRow ? undefined : measureRightElement"
             :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
           >
-            <DiffRenderedRow
-              mode="pane"
+            <DiffComposedRow
+              composition-mode="pane"
               pane-side="new"
               :row="entry.diffRow"
               :review-row="entry.reviewRow"
@@ -179,6 +186,7 @@
           </div>
         </div>
       </div>
+
       <DiffScrollbar
         v-if="hasRightScroll"
         :markers="rightMarkers"
@@ -188,6 +196,8 @@
       />
     </div>
   </div>
+
+  <!--Inline mode-->
   <div v-else class="pane-shell" :class="{ 'has-diff-scroll': hasInlineScroll }">
     <div
       :ref="(element) => setPaneRef('inline', element)"
@@ -206,8 +216,8 @@
           :ref="entry.diffRow ? undefined : measureInlineElement"
           :style="{ transform: `translateY(${entry.virtualRow.start}px)` }"
         >
-          <DiffRenderedRow
-            mode="inline"
+          <DiffComposedRow
+            composition-mode="inline"
             :row="entry.diffRow"
             :review-row="entry.reviewRow"
             review-class="inline"
@@ -241,6 +251,7 @@
         </div>
       </div>
     </div>
+
     <DiffScrollbar
       v-if="hasInlineScroll"
       :markers="inlineMarkers"
@@ -254,7 +265,7 @@
 <script setup lang="ts">
 import type { CSSProperties } from 'vue';
 import type { DiffRenderModel, DiffViewMode, ReviewAnchor, ReviewChatMessage, ReviewThread, SyntaxSide } from '../../lib/protocol';
-import DiffRenderedRow from './DiffRenderedRow.vue';
+import DiffComposedRow from './DiffComposedRow.vue';
 import DiffScrollbar, { type DiffScrollMarker } from './DiffScrollbar.vue';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
 
