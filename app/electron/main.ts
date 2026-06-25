@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
@@ -153,6 +153,7 @@ function parseLaunchRepository(args: string[], cwd = process.cwd()): string | un
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   createWindow(parseLaunchRepository(process.argv));
 
   app.on('activate', () => {

@@ -31,6 +31,8 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 
 `app/electron/main.ts` creates browser windows, owns one `CoreRpcClient` per window, and registers IPC handlers. `app/electron/coreProcess.ts` resolves the core executable in this order:
 
+The main process disables Electron's default application menu before creating windows. Window chrome should stay owned by the operating system and Diffuse's renderer UI rather than Electron's built-in menu template.
+
 - `DIFFUSE_CORE_EXECUTABLE` when set and pointing at an existing file.
 - Development build paths such as `core/zig-out/bin/diffuse`.
 - Native Electron package resources under `process.resourcesPath`.

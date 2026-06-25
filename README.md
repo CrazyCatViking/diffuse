@@ -180,6 +180,8 @@ If Diffuse is already running, another `diffuse /path/to/repository` command ope
 
 The desktop app also accepts the packaged-app launch argument `--open-repository <path>`.
 
+Diffuse disables Electron's default application menu so the desktop window only shows the app UI.
+
 Useful CLI commands:
 
 ```sh
