@@ -207,6 +207,8 @@ diffuse diff --repo /path/to/repository --file src/example.ts
 
 ## Reviewing Changes
 
+When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository.
+
 After opening a repository, Diffuse shows changed files in a collapsible folder tree. Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder.
 
 The compare bar supports two main modes:

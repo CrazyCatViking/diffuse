@@ -1,7 +1,7 @@
 <template>
-  <section class="diff-target-bar">
+  <Toolbar class="diff-target-bar" density="compact">
     <div class="intro">
-      <span class="eyebrow">Compare</span>
+      <Badge tone="accent">Compare</Badge>
 
       <span class="description">{{ description }}</span>
     </div>
@@ -9,7 +9,7 @@
     <label class="ref-field source-field">
       <span>Source</span>
 
-      <select v-model="sourceRef" @change="applySelection">
+      <select v-model="sourceRef" :disabled="loading" @change="applySelection">
         <option :value="workingTreeValue">Working tree</option>
 
         <option v-for="option in refOptions" :key="`source-${option.value}`" :value="option.value">
@@ -23,18 +23,23 @@
     <label class="ref-field target-field">
       <span>Target</span>
 
-      <select v-model="targetRef" @change="applySelection">
+      <select v-model="targetRef" :disabled="loading" @change="applySelection">
         <option v-for="option in refOptions" :key="`target-${option.value}`" :value="option.value">
           {{ option.label }}
         </option>
       </select>
     </label>
-  </section>
+
+    <Button variant="ghost" size="sm" :disabled="loading" @click="emit('reset')">Reset</Button>
+  </Toolbar>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { BranchInfo, DiffTarget, DiffTargetDefaults } from '../../lib/protocol';
+import Button from '../Button.vue';
+import Badge from '../ui/Badge.vue';
+import Toolbar from '../ui/Toolbar.vue';
 
 const props = defineProps<{
   target: DiffTarget;
@@ -89,31 +94,25 @@ const applySelection = () => {
 
 <style scoped lang="scss">
 .diff-target-bar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
   min-width: 0;
-  padding: 10px 12px;
-  border-bottom: 1px solid #252a35;
-  background: #121722;
 }
 
 .intro {
   display: grid;
-  min-width: 220px;
+  gap: var(--space-3);
+  min-width: 240px;
   margin-right: auto;
 }
 
 .ref-field {
   display: grid;
-  gap: 4px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
-.eyebrow,
 .ref-field span {
-  color: #7e8aa0;
-  font-size: 10px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -121,8 +120,8 @@ const applySelection = () => {
 
 .description {
   overflow: hidden;
-  color: #cbd5e1;
-  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -130,22 +129,26 @@ const applySelection = () => {
 .against {
   align-self: end;
   padding-bottom: 7px;
-  color: #7e8aa0;
-  font-size: 12px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-label);
 }
 
 select {
   width: 220px;
   height: 32px;
-  color: #f5f7fb;
-  background: #171c27;
-  border: 1px solid #2a3140;
-  border-radius: 999px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-pill);
   padding: 0 9px;
 
   &:focus {
-    border-color: #4b7bec;
+    border-color: var(--color-border-focus);
     outline: none;
+  }
+
+  &:disabled {
+    opacity: 0.6;
   }
 }
 

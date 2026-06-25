@@ -1,7 +1,11 @@
 <template>
   <CodeHunkRow v-if="row.kind === 'hunk'" :text="row.hunkText ?? ''" :mode="mode" />
 
-  <div v-else-if="mode === 'neutral' && row.inlineLine" class="diff-row neutral" :class="[row.kind, { 'comment-hover-disabled': commentHoverDisabled }]">
+  <div
+    v-else-if="mode === 'neutral' && row.inlineLine"
+    class="diff-row neutral"
+    :class="[row.kind, { 'comment-hover-disabled': commentHoverDisabled }]"
+  >
     <CodeLineNumber
       side="old"
       :line-number="row.oldLine?.lineNumber"
@@ -38,7 +42,7 @@
   <CodeLine
     v-else-if="sideLine"
     :line="sideLine"
-    :kind="row.kind"
+    :kind="sideKind"
     :mode="mode"
     :comment-hover-disabled="commentHoverDisabled"
     @comment="emit('comment', $event)"
@@ -73,6 +77,12 @@ const emit = defineEmits<{
 }>();
 
 const sideLine = computed(() => (props.mode === 'old' ? props.row.oldLine : props.mode === 'new' ? props.row.newLine : undefined));
+
+const sideKind = computed(() => {
+  if (props.mode === 'old' && props.row.kind === 'added') return 'context';
+  if (props.mode === 'new' && props.row.kind === 'deleted') return 'context';
+  return props.row.kind;
+});
 
 const emitLineComment = (line: CodeLineModel | undefined, event: MouseEvent) => {
   if (!line?.side || !line.lineNumber) return;

@@ -1,10 +1,14 @@
 <template>
-  <header class="top-bar">
+  <Toolbar class="top-bar">
     <Row justify="between">
       <Row justify="start">
-        <div class="brand">Diffuse</div>
+        <div class="brand">
+          <span class="brand-mark">D</span>
 
-        <Button :disabled="loading" @click="$emit('openRepository')">
+          <span>Diffuse</span>
+        </div>
+
+        <Button size="sm" :disabled="loading" @click="$emit('openRepository')">
           {{ loading ? 'Opening...' : 'Open Repository' }}
         </Button>
 
@@ -12,19 +16,23 @@
       </Row>
 
       <Row justify="end">
-        <Button @click="$emit('openSettings')"> Settings </Button>
+        <Button v-if="repoPath" variant="secondary" size="sm" :disabled="loading" @click="$emit('refresh')">Refresh</Button>
 
-        <div class="status" :class="{ error }">
+        <Button variant="ghost" size="sm" @click="$emit('openSettings')">Settings</Button>
+
+        <Badge :tone="error ? 'danger' : version ? 'success' : 'neutral'" :title="error ?? undefined">
           {{ error ?? (version ? `core ${version}` : 'connecting') }}
-        </div>
+        </Badge>
       </Row>
     </Row>
-  </header>
+  </Toolbar>
 </template>
 
 <script setup lang="ts">
 import Button from '../Button.vue';
 import Row from '../Row.vue';
+import Badge from '../ui/Badge.vue';
+import Toolbar from '../ui/Toolbar.vue';
 
 defineProps<{
   repoPath?: string;
@@ -41,37 +49,34 @@ defineEmits<{
 </script>
 
 <style scoped lang="scss">
-.top-bar {
-  height: auto;
-  padding: 1rem;
-  border-bottom: 1px solid #252a35;
-  background: #151821;
-}
-
 .brand {
-  color: #f5f7fb;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--color-text-primary);
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--color-text-on-accent);
+  background: linear-gradient(135deg, var(--color-accent), #745cff);
+  border-radius: var(--radius-2);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .repo-path {
   min-width: 0;
   overflow: hidden;
-  color: #98a2b3;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-body);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.status {
-  color: #8bd5a3;
-  font-size: 12px;
-
-  &.error {
-    max-width: 360px;
-    overflow: hidden;
-    color: #ff8d8d;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 </style>

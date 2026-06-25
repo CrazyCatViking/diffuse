@@ -21,6 +21,16 @@
 
     <SettingsView v-if="showSettings" @close="showSettings = false" />
 
+    <main v-else-if="!repo.repository" class="start-screen">
+      <RepositoryStartView
+        :repositories="repo.recentRepositories"
+        :loading="repo.loading"
+        :error="repo.error"
+        @open-new="openNewRepository"
+        @open-recent="openRecentRepository"
+      />
+    </main>
+
     <template v-else>
       <DiffTargetBar
         :target="repo.diffTarget"
@@ -116,6 +126,7 @@ import DiffViewer from './components/diff/DiffViewer.vue';
 import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
+import RepositoryStartView from './components/repositories/RepositoryStartView.vue';
 import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
 import SettingsView from './components/settings/SettingsView.vue';
 import type { ChangedFile, DiffTarget } from './lib/protocol';
@@ -314,11 +325,17 @@ watch(
   }
 }
 
+.start-screen {
+  grid-row: 2 / -1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .resize-handle {
   position: relative;
   min-height: 0;
   cursor: col-resize;
-  background: #151821;
+  background: var(--color-bg-shell);
 
   &::before {
     position: absolute;
@@ -327,15 +344,15 @@ watch(
     left: 2px;
     width: 1px;
     content: '';
-    background: #252a35;
+    background: var(--color-border-subtle);
   }
 
   &:hover,
   .resizing & {
-    background: #202635;
+    background: var(--color-bg-hover);
 
     &::before {
-      background: #4b7bec;
+      background: var(--color-accent);
     }
   }
 }

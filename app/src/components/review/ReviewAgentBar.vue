@@ -1,8 +1,8 @@
 <template>
   <section class="review-agent-shell">
-    <div class="review-agent-bar">
+    <Toolbar class="review-agent-bar" density="compact" borderless>
       <div class="review-agent-copy">
-        <span class="label">AI review</span>
+        <Badge tone="ai">AI review</Badge>
 
         <span class="message">{{ message }}</span>
 
@@ -12,15 +12,17 @@
       <div class="review-agent-actions">
         <span v-if="progressText" class="progress">{{ progressText }}</span>
 
-        <Button :disabled="sessions.length === 0 && runs.length === 0" @click="showHistory = !showHistory">History</Button>
+        <Button variant="secondary" size="sm" :disabled="sessions.length === 0 && runs.length === 0" @click="showHistory = !showHistory">
+          History
+        </Button>
 
-        <Button :disabled="loading || !enabled" @click="emit('newSession')">New session</Button>
+        <Button variant="secondary" size="sm" :disabled="loading || !enabled" @click="emit('newSession')">New session</Button>
 
-        <Button v-if="activeRun" :disabled="loading" @click="emit('stop')">Stop review</Button>
+        <Button v-if="activeRun" variant="danger" size="sm" :disabled="loading" @click="emit('stop')">Stop review</Button>
 
-        <Button v-else :disabled="loading || !enabled" @click="emit('start')">Start AI review</Button>
+        <Button v-else variant="ai" size="sm" :disabled="loading || !enabled" @click="emit('start')">Start AI review</Button>
       </div>
-    </div>
+    </Toolbar>
 
     <div v-if="showHistory" class="review-history">
       <div class="history-column">
@@ -54,6 +56,8 @@
 import { computed, ref } from 'vue';
 import type { ReviewAgentState, ReviewProgress, ReviewRun, ReviewSession } from '../../lib/protocol';
 import Button from '../Button.vue';
+import Badge from '../ui/Badge.vue';
+import Toolbar from '../ui/Toolbar.vue';
 
 const props = defineProps<{
   enabled: boolean;
@@ -123,47 +127,34 @@ const formatDate = (value: string) => {
 
 <style scoped lang="scss">
 .review-agent-shell {
-  border-bottom: 1px solid #252a35;
-  background: #111722;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-shell);
 }
 
 .review-agent-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
   min-width: 0;
-  padding: 0.65rem 1rem;
 }
 
 .review-agent-copy,
 .review-agent-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: var(--space-5);
   min-width: 0;
-}
-
-.label {
-  color: #f5f7fb;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .message {
   min-width: 0;
   overflow: hidden;
-  color: #98a2b3;
-  font-size: 13px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .progress {
-  color: #8bd5a3;
-  font-size: 12px;
+  color: var(--color-success);
+  font-size: var(--font-size-label);
   white-space: nowrap;
 }
 
@@ -172,12 +163,12 @@ const formatDate = (value: string) => {
   max-width: 160px;
   overflow: hidden;
   padding: 2px 6px;
-  color: #8b95a7;
-  background: #202635;
-  border: 1px solid #2d3545;
-  border-radius: 999px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  font-size: 11px;
+  color: var(--color-text-subtle);
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -185,19 +176,19 @@ const formatDate = (value: string) => {
 .review-history {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  gap: var(--space-7);
   padding: 0 1rem 0.75rem;
 }
 
 .history-column {
   display: grid;
-  gap: 0.35rem;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .history-title {
-  color: #f5f7fb;
-  font-size: 11px;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -206,10 +197,10 @@ const formatDate = (value: string) => {
 .history-row {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-7);
   min-width: 0;
-  color: #98a2b3;
-  font-size: 12px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
 }
 
 .history-row.current {
@@ -225,7 +216,7 @@ const formatDate = (value: string) => {
 
 .history-row span:last-child,
 .history-empty {
-  color: #697386;
+  color: var(--color-text-disabled);
   white-space: nowrap;
 }
 </style>

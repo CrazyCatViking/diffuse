@@ -1,0 +1,80 @@
+:root {
+  color-scheme: dark;
+
+  --color-bg-app: #0d1118;
+  --color-bg-shell: #111722;
+  --color-bg-panel: #151b26;
+  --color-bg-panel-raised: #1a2230;
+  --color-bg-inset: #0f141d;
+  --color-bg-hover: #202939;
+  --color-bg-active: #24314a;
+  --color-bg-selected: #24406f;
+  --color-bg-overlay: rgba(5, 7, 12, 0.72);
+
+  --color-border-subtle: #202838;
+  --color-border-default: #2a3446;
+  --color-border-strong: #3a465c;
+  --color-border-focus: #5c83c7;
+
+  --color-text-primary: #f5f7fb;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted: #98a2b3;
+  --color-text-subtle: #7e8aa0;
+  --color-text-disabled: #697386;
+  --color-text-on-accent: #ffffff;
+
+  --color-accent: #4b7bec;
+  --color-accent-hover: #5b8cff;
+  --color-accent-muted: rgba(75, 123, 236, 0.16);
+  --color-review: #f0c36a;
+  --color-review-muted: rgba(240, 195, 106, 0.14);
+  --color-ai: #8fb3ff;
+  --color-ai-muted: rgba(143, 179, 255, 0.14);
+  --color-success: #8bd5a3;
+  --color-success-muted: rgba(91, 184, 119, 0.14);
+  --color-warning: #f0b86a;
+  --color-warning-muted: rgba(240, 184, 106, 0.14);
+  --color-danger: #ff8d8d;
+  --color-danger-muted: rgba(255, 107, 107, 0.14);
+  --color-info: #8fd6ff;
+  --color-info-muted: rgba(77, 166, 255, 0.14);
+
+  --color-diff-added-bg: rgba(51, 145, 87, 0.16);
+  --color-diff-deleted-bg: rgba(221, 83, 83, 0.16);
+  --color-diff-hunk-bg: rgba(75, 123, 236, 0.14);
+
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 24px;
+  --space-10: 32px;
+
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 8px;
+  --radius-4: 10px;
+  --radius-5: 12px;
+  --radius-6: 16px;
+  --radius-pill: 999px;
+
+  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Monaco, monospace;
+  --font-size-caption: 11px;
+  --font-size-label: 12px;
+  --font-size-body: 13px;
+  --font-size-body-lg: 14px;
+  --font-size-heading-sm: 16px;
+  --font-size-heading-lg: 26px;
+  --line-height-code: 24px;
+
+  --shadow-popover: 0 18px 48px rgba(0, 0, 0, 0.42);
+  --shadow-dialog: 0 24px 80px rgba(0, 0, 0, 0.45);
+  --shadow-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  --transition-fast: 120ms ease;
+}
