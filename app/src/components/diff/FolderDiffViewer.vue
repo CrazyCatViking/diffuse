@@ -2,7 +2,7 @@
   <section ref="rootRef" class="folder-diff-viewer">
     <div class="folder-header">
       <div class="folder-meta">
-        <span>{{ folderPath }}</span>
+        <span class="folder-path">{{ folderPath }}</span>
 
         <span class="file-count">{{ files.length }} file{{ files.length === 1 ? '' : 's' }}</span>
       </div>
@@ -624,34 +624,38 @@ onBeforeUnmount(() => {
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  background: #111318;
+  background: var(--color-bg-app);
 }
 
 .folder-header {
   display: flex;
-  gap: 12px;
+  gap: var(--space-6);
   align-items: center;
   justify-content: space-between;
-}
-
-.folder-header {
-  padding: 10px 14px;
-  border-bottom: 1px solid #252a35;
-  background: #151821;
+  padding: var(--space-5) var(--space-6);
+  background: var(--color-bg-shell);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .folder-meta {
   display: flex;
-  gap: 10px;
+  gap: var(--space-5);
   align-items: center;
   min-width: 0;
-  color: #f5f7fb;
+  color: var(--color-text-primary);
   font-weight: 650;
 }
 
+.folder-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-count {
-  color: #7e8aa0;
-  font-size: 12px;
+  flex: 0 0 auto;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-label);
   font-weight: 500;
 }
 </style>

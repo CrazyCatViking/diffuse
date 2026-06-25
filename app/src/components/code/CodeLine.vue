@@ -57,7 +57,13 @@ const selectableText = computed(() => (isSelectable.value ? props.line.text : un
 
 const emitComment = (event: MouseEvent) => {
   if (!props.line.side || !props.line.lineNumber) return;
-  emit('comment', { side: props.line.side, line: props.line.lineNumber, text: props.line.text, clientX: event.clientX, clientY: event.clientY });
+  emit('comment', {
+    side: props.line.side,
+    line: props.line.lineNumber,
+    text: props.line.text,
+    clientX: event.clientX,
+    clientY: event.clientY,
+  });
 };
 
 const emitToggleComments = () => {
@@ -70,12 +76,12 @@ const emitToggleComments = () => {
 .code-line {
   position: relative;
   display: grid;
-  height: 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.025);
+  height: var(--line-height-code);
+  border-bottom: 1px solid var(--color-border-hairline);
   box-sizing: border-box;
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 12px;
-  line-height: 24px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-code);
 
   &.old,
   &.new {
@@ -84,14 +90,14 @@ const emitToggleComments = () => {
 }
 
 .code-line.added {
-  background: rgba(63, 185, 80, 0.1);
+  background: var(--color-diff-added-bg);
 }
 
 .code-line.deleted {
-  background: rgba(248, 81, 73, 0.1);
+  background: var(--color-diff-deleted-bg);
 }
 
 .code-line.context {
-  background: #111318;
+  background: var(--color-bg-code);
 }
 </style>

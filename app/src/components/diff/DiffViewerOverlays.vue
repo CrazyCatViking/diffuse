@@ -52,12 +52,12 @@ const emit = defineEmits<{
   z-index: 6;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
-  background: rgba(19, 23, 32, 0.98);
-  border: 1px solid #3a4356;
-  border-radius: 7px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-bg-panel-raised);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-popover);
 }
 
 .selection-toolbar button {
@@ -71,8 +71,8 @@ const emit = defineEmits<{
   font: inherit;
 
   &:hover {
-    background: rgba(240, 195, 106, 0.12);
-    border-radius: 5px;
+    background: var(--color-review-muted);
+    border-radius: var(--radius-2);
   }
 }
 
@@ -82,7 +82,7 @@ const emit = defineEmits<{
   left: 5px;
   width: 11px;
   height: 8px;
-  border: 2px solid #f0c36a;
+  border: 2px solid var(--color-review);
   border-radius: 5px;
 
   &::after {
@@ -91,8 +91,8 @@ const emit = defineEmits<{
     bottom: -5px;
     width: 4px;
     height: 4px;
-    border-right: 2px solid #f0c36a;
-    border-bottom: 2px solid #f0c36a;
+    border-right: 2px solid var(--color-review);
+    border-bottom: 2px solid var(--color-review);
     content: '';
   }
 }
@@ -103,7 +103,7 @@ const emit = defineEmits<{
   left: 5px;
   width: 12px;
   height: 12px;
-  color: #8fb3ff;
+  color: var(--color-ai);
 
   &::before,
   &::after {
@@ -118,7 +118,7 @@ const emit = defineEmits<{
     width: 2px;
     height: 12px;
     border-radius: 999px;
-    box-shadow: 0 0 8px rgba(143, 179, 255, 0.55);
+    box-shadow: 0 0 8px var(--color-ai-muted);
   }
 
   &::after {
@@ -136,23 +136,23 @@ const emit = defineEmits<{
   z-index: 20;
   max-width: 420px;
   max-height: 260px;
-  padding: 10px 12px;
+  padding: var(--space-5) var(--space-6);
   overflow: auto;
-  color: #e9eef8;
-  background: rgba(12, 16, 24, 0.98);
-  border: 1px solid #344159;
-  border-radius: 10px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  color: var(--color-text-primary);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-popover);
   pointer-events: none;
 
   &.loading {
-    color: #98a2b3;
+    color: var(--color-text-muted);
   }
 
   pre {
     margin: 0;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
     line-height: 1.45;
     white-space: pre-wrap;
   }

@@ -75,16 +75,16 @@ const reviewProps = computed(() => ({
 <style scoped lang="scss">
 .inline-review-row {
   min-height: 0;
-  background: #10141c;
+  background: var(--color-bg-code);
 }
 
 .inline-review-row.inline {
-  padding: 10px 18px 12px 128px;
+  padding: var(--space-5) 18px var(--space-6) 128px;
 }
 
 .inline-review-row.old,
 .inline-review-row.new {
-  padding: 10px 16px 12px 64px;
+  padding: var(--space-5) var(--space-7) var(--space-6) 64px;
 }
 
 .inline-review-row.synced-split {
@@ -102,6 +102,6 @@ const reviewProps = computed(() => ({
 }
 
 .review-cell {
-  padding: 10px 16px 12px 64px;
+  padding: var(--space-5) var(--space-7) var(--space-6) 64px;
 }
 </style>

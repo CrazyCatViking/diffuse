@@ -6,6 +6,8 @@
   --color-bg-panel: #151b26;
   --color-bg-panel-raised: #1a2230;
   --color-bg-inset: #0f141d;
+  --color-bg-code: #111318;
+  --color-bg-line-number: #12151d;
   --color-bg-hover: #202939;
   --color-bg-active: #24314a;
   --color-bg-selected: #24406f;
@@ -15,6 +17,7 @@
   --color-border-default: #2a3446;
   --color-border-strong: #3a465c;
   --color-border-focus: #5c83c7;
+  --color-border-hairline: rgba(255, 255, 255, 0.025);
 
   --color-text-primary: #f5f7fb;
   --color-text-secondary: #cbd5e1;
@@ -42,6 +45,10 @@
   --color-diff-added-bg: rgba(51, 145, 87, 0.16);
   --color-diff-deleted-bg: rgba(221, 83, 83, 0.16);
   --color-diff-hunk-bg: rgba(75, 123, 236, 0.14);
+
+  --color-scrollbar-track: #151923;
+  --color-scrollbar-thumb: rgba(152, 162, 179, 0.42);
+  --color-scrollbar-thumb-hover: rgba(174, 183, 198, 0.58);
 
   --space-1: 2px;
   --space-2: 4px;

@@ -14,49 +14,64 @@
 
       <span class="search-count">{{ searchStatus }}</span>
 
-      <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Previous match" @click="emit('moveSearch', -1)">
-        Prev
-      </button>
+      <Button variant="ghost" size="sm" :disabled="!hasSearchMatches" title="Previous match" @click="emit('moveSearch', -1)"> Prev </Button>
 
-      <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Next match" @click="emit('moveSearch', 1)">
-        Next
-      </button>
+      <Button variant="ghost" size="sm" :disabled="!hasSearchMatches" title="Next match" @click="emit('moveSearch', 1)"> Next </Button>
     </div>
 
-    <button v-else-if="searchEnabled" class="control" type="button" title="Search file (Ctrl+F or /)" @click="emit('openSearch')">
+    <Button v-else-if="searchEnabled" variant="ghost" size="sm" title="Search file (Ctrl+F or /)" @click="emit('openSearch')">
       Search
-    </button>
+    </Button>
 
-    <button class="control" :class="{ active: viewMode === 'split' }" type="button" @click="emit('update:viewMode', 'split')">Split</button>
+    <div class="mode-group" role="group" aria-label="Diff layout">
+      <Button
+        variant="secondary"
+        size="sm"
+        :pressed="viewMode === 'split'"
+        :aria-pressed="viewMode === 'split'"
+        @click="emit('update:viewMode', 'split')"
+      >
+        Split
+      </Button>
 
-    <button class="control" :class="{ active: viewMode === 'inline' }" type="button" @click="emit('update:viewMode', 'inline')">
-      Inline
-    </button>
+      <Button
+        variant="secondary"
+        size="sm"
+        :pressed="viewMode === 'inline'"
+        :aria-pressed="viewMode === 'inline'"
+        @click="emit('update:viewMode', 'inline')"
+      >
+        Inline
+      </Button>
+    </div>
 
-    <button
+    <Button
       v-if="showSyncScroll && viewMode === 'split'"
-      class="control"
-      :class="{ active: syncScroll }"
-      type="button"
+      variant="secondary"
+      size="sm"
+      :pressed="syncScroll"
+      :aria-pressed="syncScroll"
       @click="emit('update:syncScroll', !syncScroll)"
     >
       {{ syncScroll ? 'Synced' : 'Desynced' }}
-    </button>
+    </Button>
 
-    <button
-      class="control"
-      :class="{ active: contextMode === 'full' }"
-      type="button"
+    <Button
+      variant="secondary"
+      size="sm"
+      :pressed="contextMode === 'full'"
+      :aria-pressed="contextMode === 'full'"
       @click="emit('update:contextMode', contextMode === 'full' ? 'diff' : 'full')"
     >
       {{ contextMode === 'full' ? 'Full file' : 'Diff only' }}
-    </button>
+    </Button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue';
 import type { DiffContextMode, DiffViewMode } from '../../lib/protocol';
+import Button from '../Button.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -112,74 +127,53 @@ watch(
 .controls {
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   min-width: 0;
-  gap: 8px;
-}
-
-.control {
-  height: 26px;
-  padding: 0 10px;
-  color: #98a2b3;
-  background: #111722;
-  border: 1px solid #2a3140;
-  border-radius: 7px;
-  cursor: pointer;
-  font: inherit;
-
-  &.active {
-    color: #f5f7fb;
-    background: #24406f;
-    border-color: #3865ad;
-  }
+  gap: var(--space-4);
 }
 
 .search-box {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px;
-  background: #0f141d;
-  border: 1px solid #2a3140;
-  border-radius: 8px;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-1);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-3);
+}
+
+.mode-group {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-3);
 }
 
 .search-input {
-  width: 190px;
-  height: 22px;
-  padding: 0 8px;
-  color: #f5f7fb;
-  background: #111722;
-  border: 1px solid #30394b;
-  border-radius: 6px;
+  width: min(220px, 28vw);
+  height: 26px;
+  padding: 0 var(--space-4);
+  color: var(--color-text-primary);
+  background: var(--color-bg-shell);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-2);
   font: inherit;
   outline: none;
 
   &:focus {
-    border-color: #5c83c7;
-    box-shadow: 0 0 0 2px rgba(92, 131, 199, 0.18);
+    border-color: var(--color-border-focus);
+    box-shadow: 0 0 0 2px var(--color-accent-muted);
   }
 }
 
 .search-count {
   min-width: 54px;
-  color: #98a2b3;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
   text-align: center;
-}
-
-.search-button {
-  height: 22px;
-  padding: 0 8px;
-  color: #d7e6ff;
-  background: #162238;
-  border: 1px solid #334765;
-  border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
-
-  &:disabled {
-    cursor: default;
-    opacity: 0.5;
-  }
 }
 </style>

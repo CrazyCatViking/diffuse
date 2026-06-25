@@ -1,5 +1,7 @@
 <template>
-  <pre class="code"><template v-for="(fragment, index) in fragments" :key="index"><span v-if="fragment.style" :style="fragment.style">{{ fragment.text }}</span><template v-else>{{ fragment.text }}</template></template></pre>
+  <pre
+    class="code"
+  ><template v-for="(fragment, index) in fragments" :key="index"><span v-if="fragment.style" :style="fragment.style">{{ fragment.text }}</span><template v-else>{{ fragment.text }}</template></template></pre>
 </template>
 
 <script setup lang="ts">

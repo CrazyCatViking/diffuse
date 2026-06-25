@@ -60,10 +60,10 @@ const emit = defineEmits<{
 <style scoped lang="scss">
 .line-number {
   position: relative;
-  padding: 0 10px 0 30px;
-  color: #596273;
-  background: #12151d;
-  border-right: 1px solid #252a35;
+  padding: 0 var(--space-5) 0 var(--space-10);
+  color: var(--color-text-disabled);
+  background: var(--color-bg-line-number);
+  border-right: 1px solid var(--color-border-subtle);
   text-align: right;
   user-select: none;
 }
@@ -87,8 +87,8 @@ const emit = defineEmits<{
   opacity: 0;
   transform: translateX(-4px);
   transition:
-    opacity 120ms ease,
-    transform 120ms ease;
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 :global(.code-line:hover:not(.comment-hover-disabled)) .comment-bubble,
@@ -104,7 +104,7 @@ const emit = defineEmits<{
   left: 4px;
   width: 10px;
   height: 8px;
-  border: 2px solid #f0c36a;
+  border: 2px solid var(--color-review);
   border-radius: 5px;
 
   &::after {
@@ -113,17 +113,17 @@ const emit = defineEmits<{
     bottom: -5px;
     width: 4px;
     height: 4px;
-    border-right: 2px solid #f0c36a;
-    border-bottom: 2px solid #f0c36a;
+    border-right: 2px solid var(--color-review);
+    border-bottom: 2px solid var(--color-review);
     content: '';
   }
 }
 
 .collapsed-comment-indicator .comment-icon {
-  border-color: #8fb3ff;
+  border-color: var(--color-ai);
 
   &::after {
-    border-color: #8fb3ff;
+    border-color: var(--color-ai);
   }
 }
 </style>

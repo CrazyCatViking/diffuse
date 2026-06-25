@@ -2,7 +2,7 @@
   <section ref="rootRef" class="diff-viewer" :class="selectionSideClass" @pointerdown.capture="lockSelectionSide">
     <div class="diff-header">
       <div class="file-meta">
-        <span>{{ model?.fileId ?? 'No file selected' }}</span>
+        <span class="file-name">{{ model?.fileId ?? 'No file selected' }}</span>
 
         <span v-if="model" class="row-count">{{ rows.length }} rows</span>
 
@@ -1237,129 +1237,118 @@ watch(
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   height: 100%;
-  background: #111318;
+  background: var(--color-bg-app);
   overflow: hidden;
 }
 
 .diff-header {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-7);
   min-width: 0;
   height: 40px;
-  padding: 0 14px;
   align-items: center;
-  color: #98a2b3;
-  background: #151821;
-  border-bottom: 1px solid #252a35;
-  font-size: 12px;
+  padding: 0 var(--space-6);
+  color: var(--color-text-muted);
+  background: var(--color-bg-shell);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-label);
 }
 
 .file-meta {
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 8px;
+  gap: var(--space-4);
+  overflow: hidden;
 }
 
-.file-meta {
+.file-name {
   overflow: hidden;
-
-  span:first-child {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-count {
   flex: 0 0 auto;
-  color: #687386;
+  color: var(--color-text-disabled);
+}
+
+.syntax-status,
+.lsp-status,
+.lsp-diagnostics,
+.update-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
 }
 
 .syntax-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  color: #d3a45f;
-  background: rgba(211, 164, 95, 0.12);
-  border: 1px solid rgba(211, 164, 95, 0.2);
-  border-radius: 999px;
+  color: var(--color-warning);
+  background: var(--color-warning-muted);
+  border-color: rgba(240, 184, 106, 0.25);
 }
 
 .lsp-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  color: #aeb7c6;
+  color: var(--color-text-muted);
   background: rgba(143, 151, 166, 0.1);
-  border: 1px solid rgba(143, 151, 166, 0.18);
-  border-radius: 999px;
+  border-color: rgba(143, 151, 166, 0.18);
 
   &.ready {
-    color: #a8e6c1;
-    background: rgba(94, 192, 127, 0.12);
-    border-color: rgba(94, 192, 127, 0.25);
+    color: var(--color-success);
+    background: var(--color-success-muted);
+    border-color: rgba(91, 184, 119, 0.25);
   }
 
   &.missing {
-    color: #f3c98b;
-    background: rgba(211, 164, 95, 0.12);
-    border-color: rgba(211, 164, 95, 0.22);
+    color: var(--color-warning);
+    background: var(--color-warning-muted);
+    border-color: rgba(240, 184, 106, 0.25);
   }
 
   &.loading {
-    color: #98a2b3;
+    color: var(--color-text-muted);
   }
 }
 
 .lsp-diagnostics {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  color: #aeb7c6;
+  color: var(--color-text-muted);
   background: rgba(143, 151, 166, 0.1);
-  border: 1px solid rgba(143, 151, 166, 0.18);
-  border-radius: 999px;
+  border-color: rgba(143, 151, 166, 0.18);
 
   &.error {
-    color: #ffb4b4;
-    background: rgba(255, 107, 107, 0.12);
+    color: var(--color-danger);
+    background: var(--color-danger-muted);
     border-color: rgba(255, 107, 107, 0.25);
   }
 
   &.warning {
-    color: #f3c98b;
-    background: rgba(211, 164, 95, 0.12);
-    border-color: rgba(211, 164, 95, 0.22);
+    color: var(--color-warning);
+    background: var(--color-warning-muted);
+    border-color: rgba(240, 184, 106, 0.25);
   }
 
   &.loading {
-    color: #98a2b3;
+    color: var(--color-text-muted);
   }
 }
 
 .update-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  color: #8fd6ff;
-  background: rgba(77, 166, 255, 0.12);
-  border: 1px solid rgba(77, 166, 255, 0.24);
-  border-radius: 999px;
+  color: var(--color-info);
+  background: var(--color-info-muted);
+  border-color: rgba(77, 166, 255, 0.25);
 }
 
 .install-grammar,
 .load-latest {
-  padding: 0 6px;
-  border-radius: 999px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
   cursor: pointer;
   font: inherit;
 
@@ -1370,21 +1359,21 @@ watch(
 }
 
 .install-grammar {
-  color: #f3c98b;
-  background: rgba(211, 164, 95, 0.16);
-  border: 1px solid rgba(211, 164, 95, 0.28);
+  color: var(--color-warning);
+  background: rgba(240, 184, 106, 0.16);
+  border: 1px solid rgba(240, 184, 106, 0.28);
 }
 
 .load-latest {
-  color: #d7f1ff;
-  background: rgba(77, 166, 255, 0.16);
+  color: var(--color-info);
+  background: var(--color-info-muted);
   border: 1px solid rgba(77, 166, 255, 0.32);
 }
 
 .install-step {
   max-width: 220px;
   overflow: hidden;
-  color: #aeb7c6;
+  color: var(--color-text-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

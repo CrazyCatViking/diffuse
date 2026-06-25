@@ -37,7 +37,13 @@ export const buildRenderedDiffRowFields = (
   const oldSyntaxSpans = oldLine ? options.syntaxSpansForLine('old', oldLine) : undefined;
   const newSyntaxSpans = newLine ? options.syntaxSpansForLine('new', newLine) : undefined;
   const inlineSyntaxSpans =
-    diffRow?.kind === 'deleted' ? (oldLine ? options.syntaxSpansForLine('old', oldLine) : undefined) : newLine ? options.syntaxSpansForLine('new', newLine) : undefined;
+    diffRow?.kind === 'deleted'
+      ? oldLine
+        ? options.syntaxSpansForLine('old', oldLine)
+        : undefined
+      : newLine
+        ? options.syntaxSpansForLine('new', newLine)
+        : undefined;
   const oldCommentCount = oldLine ? options.commentCountForLine('old', oldLine) : 0;
   const newCommentCount = newLine ? options.commentCountForLine('new', newLine) : 0;
   const oldCommentsExpanded = Boolean(oldLine && options.commentsExpandedForLine('old', oldLine));

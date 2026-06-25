@@ -1,8 +1,23 @@
 <template>
   <aside class="changed-files">
-    <div class="pane-title">Changed Files</div>
+    <header class="pane-header">
+      <div>
+        <Badge tone="review">Workspace</Badge>
 
-    <div v-if="files.length === 0" class="empty">No changed files</div>
+        <h2>Changed files</h2>
+      </div>
+
+      <Badge tone="neutral">{{ files.length }} {{ files.length === 1 ? 'file' : 'files' }}</Badge>
+    </header>
+
+    <EmptyState
+      v-if="files.length === 0"
+      class="sidebar-empty"
+      align="start"
+      bordered
+      title="No changed files"
+      description="Pick another compare target or refresh after editing files."
+    />
 
     <template v-else>
       <template v-for="node in visibleNodes" :key="node.key">
@@ -54,6 +69,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { ChangedFile } from '../../lib/protocol';
+import Badge from '../ui/Badge.vue';
+import EmptyState from '../ui/EmptyState.vue';
 import ChangedFileRow from './ChangedFileRow.vue';
 
 type TreeFolder = {
@@ -181,55 +198,73 @@ const sortTree = (nodes: TreeNode[]) => {
 .changed-files {
   min-width: 0;
   height: 100%;
-  padding: 12px;
+  padding: var(--space-6);
   overflow: auto;
-  border-right: 1px solid #252a35;
-  background: #151821;
+  background: var(--color-bg-shell);
+  border-right: 1px solid var(--color-border-subtle);
 }
 
-.pane-title {
-  margin-bottom: 10px;
-  color: #7e8aa0;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.pane-header {
+  display: flex;
+  gap: var(--space-6);
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: var(--space-6);
 }
 
-.empty {
-  color: #6e7685;
-  font-size: 13px;
+h2 {
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-heading-sm);
+  line-height: 1.2;
+}
+
+.sidebar-empty {
+  padding: var(--space-7);
+
+  :deep(h1) {
+    font-size: var(--font-size-heading-sm);
+  }
+
+  :deep(p) {
+    font-size: var(--font-size-body);
+  }
 }
 
 .folder-row {
   display: grid;
   grid-template-columns: 16px calc(18px + (var(--depth) * 16px)) minmax(0, 1fr);
-  gap: 8px;
+  gap: var(--space-4);
   align-items: center;
   width: 100%;
-  padding: 7px 10px;
-  color: #aab4c5;
+  padding: var(--space-4) var(--space-5);
+  color: var(--color-text-secondary);
   background: transparent;
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-3);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 
   &:hover {
-    background: #202635;
+    background: var(--color-bg-hover);
   }
 
   &.active {
-    background: #202635;
+    background: var(--color-bg-active);
+    border-color: var(--color-border-default);
   }
 }
 
 .folder-row.reviewed .folder-name {
-  color: #92d6a4;
+  color: var(--color-success);
 }
 
 .review-checkbox {
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: #4b7bec;
+  accent-color: var(--color-accent);
   cursor: pointer;
 }
 
@@ -253,7 +288,7 @@ const sortTree = (nodes: TreeNode[]) => {
   border-radius: 5px;
 
   &:hover {
-    background: #2a3140;
+    background: var(--color-bg-active);
   }
 }
 
@@ -262,14 +297,14 @@ const sortTree = (nodes: TreeNode[]) => {
 }
 
 .chevron {
-  color: #7e8aa0;
+  color: var(--color-text-subtle);
   font-size: 15px;
   line-height: 1;
 }
 
 .folder-name {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-size-body);
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;

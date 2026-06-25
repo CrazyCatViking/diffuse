@@ -1,11 +1,21 @@
 <template>
-  <div v-if="status.loading" class="message">Loading diff...</div>
+  <EmptyState v-if="status.loading" class="diff-state" title="Loading diff" description="Reading file changes and syntax context." />
 
-  <div v-else-if="status.error" class="message error">{{ status.error }}</div>
+  <EmptyState v-else-if="status.error" class="diff-state error-state" title="Could not load diff" :description="status.error" bordered />
 
-  <div v-else-if="!status.hasModel" class="message">Select a changed file to view its diff.</div>
+  <EmptyState
+    v-else-if="!status.hasModel"
+    class="diff-state"
+    title="Select a changed file"
+    description="Choose a file or folder from the review workspace."
+  />
 
-  <div v-else-if="status.rowsLength === 0" class="message">No unstaged diff for this file.</div>
+  <EmptyState
+    v-else-if="status.rowsLength === 0"
+    class="diff-state"
+    title="No diff for this file"
+    description="The selected compare target has no visible changes for this file."
+  />
 
   <div v-else-if="status.initialSyntaxGateActive" class="syntax-gate" />
 
@@ -48,6 +58,7 @@
 
 <script setup lang="ts">
 import type { DiffViewMode } from '../../lib/protocol';
+import EmptyState from '../ui/EmptyState.vue';
 import DiffPane from './DiffPane.vue';
 import type { DiffPaneActions, DiffPaneKey, DiffPaneModel, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 
@@ -70,18 +81,23 @@ defineProps<{
 </script>
 
 <style scoped lang="scss">
-.message {
-  padding: 24px;
-  color: #7e8aa0;
+.diff-state {
+  min-height: 0;
+  height: 100%;
+  background: var(--color-bg-app);
+}
 
-  &.error {
-    color: #ff8d8d;
+.error-state {
+  color: var(--color-danger);
+
+  :deep(h1) {
+    color: var(--color-danger);
   }
 }
 
 .syntax-gate {
   min-height: 0;
-  background: #111318;
+  background: var(--color-bg-app);
 }
 
 .split-view {

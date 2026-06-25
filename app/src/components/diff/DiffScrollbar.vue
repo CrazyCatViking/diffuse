@@ -34,8 +34,8 @@ const emit = defineEmits<{
   z-index: 4;
   width: 18px;
   height: 100%;
-  background: #151923;
-  border-left: 1px solid #252a35;
+  background: var(--color-scrollbar-track);
+  border-left: 1px solid var(--color-border-subtle);
   cursor: default;
   user-select: none;
 }
@@ -48,12 +48,12 @@ const emit = defineEmits<{
 
   &.added {
     right: 0;
-    background: rgba(60, 179, 113, 0.16);
+    background: var(--color-diff-added-bg);
   }
 
   &.deleted {
     left: 0;
-    background: rgba(255, 99, 99, 0.16);
+    background: var(--color-diff-deleted-bg);
   }
 }
 
@@ -63,12 +63,12 @@ const emit = defineEmits<{
   left: 0;
   z-index: 1;
   min-height: 24px;
-  background: rgba(152, 162, 179, 0.42);
-  transition: background 120ms ease;
+  background: var(--color-scrollbar-thumb);
+  transition: background var(--transition-fast);
   will-change: top;
 
   &:hover {
-    background: rgba(174, 183, 198, 0.58);
+    background: var(--color-scrollbar-thumb-hover);
   }
 }
 </style>

@@ -69,13 +69,15 @@ const diagnosticKey = (diagnostic: LspDiagnostic) => {
   outline: none;
 
   &.error {
-    background: #ff6b6b;
+    background: var(--color-danger);
   }
+
   &.warning {
-    background: #f0b86a;
+    background: var(--color-warning);
   }
+
   &.info {
-    background: #8fb3ff;
+    background: var(--color-ai);
   }
 }
 
@@ -84,46 +86,47 @@ const diagnosticKey = (diagnostic: LspDiagnostic) => {
   top: 13px;
   right: -4px;
   display: grid;
-  gap: 8px;
+  gap: var(--space-4);
   width: min(360px, 72vw);
   max-height: 260px;
-  padding: 10px;
+  padding: var(--space-5);
   overflow: auto;
-  color: #d7deea;
+  color: var(--color-text-secondary);
   line-height: 1.45;
   text-align: left;
   white-space: normal;
-  background: #171b24;
-  border: 1px solid #30384a;
-  border-radius: 10px;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.36);
+  background: var(--color-bg-panel-raised);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-popover);
 }
 
 .diagnostic-item {
   display: grid;
-  gap: 4px;
-  padding-left: 8px;
-  border-left: 2px solid #8fb3ff;
+  gap: var(--space-2);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--color-ai);
 
   &.error {
-    border-left-color: #ff6b6b;
+    border-left-color: var(--color-danger);
   }
+
   &.warning {
-    border-left-color: #f0b86a;
+    border-left-color: var(--color-warning);
   }
 }
 
 .diagnostic-header {
   display: flex;
-  gap: 8px;
-  color: #98a2b3;
-  font-size: 11px;
+  gap: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .diagnostic-message {
-  color: #f5f7fb;
-  font-size: 12px;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-label);
 }
 </style>

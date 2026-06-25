@@ -67,7 +67,7 @@ const setPaneRef = (element: unknown) => {
 const rowKey = (entry: DiffRenderedEntry) => `${props.pane.keyPrefix ?? ''}${String(entry.virtualRow.key)}`;
 
 const reviewClass = (entry: DiffRenderedEntry) => {
-  if (!entry.reviewRow) return props.pane.compositionMode === 'split' ? 'synced-split' : props.pane.paneSide ?? 'inline';
+  if (!entry.reviewRow) return props.pane.compositionMode === 'split' ? 'synced-split' : (props.pane.paneSide ?? 'inline');
   if (props.pane.compositionMode === 'split') return ['synced-split', entry.reviewRow.anchor.side];
   return props.pane.paneSide ?? 'inline';
 };
@@ -102,13 +102,13 @@ const reviewClass = (entry: DiffRenderedEntry) => {
   }
 
   &::-webkit-scrollbar-track {
-    background: #151923;
+    background: var(--color-scrollbar-track);
   }
 
   &::-webkit-scrollbar-thumb {
-    background: #4b5568;
-    border: 4px solid #151923;
-    border-radius: 999px;
+    background: var(--color-scrollbar-thumb);
+    border: 4px solid var(--color-scrollbar-track);
+    border-radius: var(--radius-pill);
   }
 }
 

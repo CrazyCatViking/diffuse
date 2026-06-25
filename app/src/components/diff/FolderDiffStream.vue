@@ -1,9 +1,14 @@
 <template>
-  <div v-if="loading" class="message">Loading folder diff...</div>
+  <EmptyState v-if="loading" class="folder-state" title="Loading folder diff" description="Reading changed files in this folder." />
 
-  <div v-else-if="error" class="message error">{{ error }}</div>
+  <EmptyState v-else-if="error" class="folder-state error-state" title="Could not load folder diff" :description="error" bordered />
 
-  <div v-else-if="modelsLength === 0" class="message">No diffs in this folder.</div>
+  <EmptyState
+    v-else-if="modelsLength === 0"
+    class="folder-state"
+    title="No diffs in this folder"
+    description="The selected compare target has no visible changes here."
+  />
 
   <div v-else class="folder-diffs-shell" :class="{ 'has-diff-scroll': hasFolderScroll }">
     <div
@@ -81,6 +86,7 @@
 <script setup lang="ts">
 import type { CSSProperties } from 'vue';
 import type { DiffViewMode, SyntaxSide } from '../../lib/protocol';
+import EmptyState from '../ui/EmptyState.vue';
 import DiffComposedRow from './DiffComposedRow.vue';
 import DiffScrollbar, { type DiffScrollMarker } from './DiffScrollbar.vue';
 import DiffViewerOverlays from './DiffViewerOverlays.vue';
@@ -135,19 +141,25 @@ const rowLayout = (entry: RenderedEntry, compositionMode: 'split' | 'inline') =>
   compositionMode,
   commentHoverDisabled: props.commentHoverDisabled,
   actions: {
-    comment: (payload: { side: SyntaxSide; line: number; text: string; clientX: number; clientY: number }) => emit('comment', entry.fileId, payload),
+    comment: (payload: { side: SyntaxSide; line: number; text: string; clientX: number; clientY: number }) =>
+      emit('comment', entry.fileId, payload),
     toggleComments: (payload: { side: SyntaxSide; line: number }) => emit('toggleComments', payload),
   } satisfies Pick<DiffPaneActions, 'comment' | 'toggleComments'>,
 });
 </script>
 
 <style scoped lang="scss">
-.message {
-  padding: 24px;
-  color: #7e8aa0;
+.folder-state {
+  min-height: 0;
+  height: 100%;
+  background: var(--color-bg-app);
+}
 
-  &.error {
-    color: #ff8d8d;
+.error-state {
+  color: var(--color-danger);
+
+  :deep(h1) {
+    color: var(--color-danger);
   }
 }
 
@@ -179,13 +191,13 @@ const rowLayout = (entry: RenderedEntry, compositionMode: 'split' | 'inline') =>
   }
 
   &::-webkit-scrollbar-track {
-    background: #151923;
+    background: var(--color-scrollbar-track);
   }
 
   &::-webkit-scrollbar-thumb {
-    background: #4b5568;
-    border: 4px solid #151923;
-    border-radius: 999px;
+    background: var(--color-scrollbar-thumb);
+    border: 4px solid var(--color-scrollbar-track);
+    border-radius: var(--radius-pill);
   }
 }
 
@@ -210,38 +222,39 @@ const rowLayout = (entry: RenderedEntry, compositionMode: 'split' | 'inline') =>
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-6);
   height: 36px;
-  padding: 0 14px;
-  color: #f5f7fb;
-  background: #171b25;
-  border-top: 1px solid #252a35;
-  border-bottom: 1px solid #252a35;
+  padding: 0 var(--space-6);
+  color: var(--color-text-primary);
+  background: var(--color-bg-panel);
+  border-top: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
   font-weight: 650;
 }
 
 .file-row-count {
-  color: #7e8aa0;
-  font-size: 12px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-label);
   font-weight: 500;
 }
 
 .diagnostic-summary {
   margin-left: auto;
-  color: #8fb3ff;
-  font-size: 12px;
+  color: var(--color-ai);
+  font-size: var(--font-size-label);
   font-weight: 700;
 
   &.error {
-    color: #ff8d8d;
+    color: var(--color-danger);
   }
+
   &.warning {
-    color: #f0b86a;
+    color: var(--color-warning);
   }
 }
 
 .empty-file {
-  padding: 18px 22px;
-  color: #7e8aa0;
+  padding: var(--space-8) var(--space-9);
+  color: var(--color-text-subtle);
 }
 </style>
