@@ -4,6 +4,7 @@
       <div class="header">
         <div>
           <h1 id="recent-repositories-title">Open Repository</h1>
+
           <p>Choose a recent repository or open a new folder.</p>
         </div>
 
@@ -21,12 +22,14 @@
           @click="$emit('openRecent', repository.path)"
         >
           <span class="repo-name">{{ repository.name }}</span>
+
           <span class="repo-path">{{ repository.path }}</span>
         </button>
       </div>
 
       <div v-else class="empty">
         <div class="empty-title">No recent repositories</div>
+
         <div class="empty-copy">Use Open New to pick your first repository.</div>
       </div>
     </section>

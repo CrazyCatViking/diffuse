@@ -16,8 +16,10 @@
       <span v-for="diagnostic in diagnostics" :key="diagnosticKey(diagnostic)" class="diagnostic-item" :class="diagnostic.severity">
         <span class="diagnostic-header">
           <span>{{ diagnostic.severity }}</span>
+
           <span v-if="diagnostic.source || diagnostic.code">{{ diagnosticSource(diagnostic) }}</span>
         </span>
+
         <span class="diagnostic-message">{{ diagnostic.message }}</span>
       </span>
     </span>

@@ -18,8 +18,11 @@
       @click.stop
       @change="$emit('setReviewed', { fileId: file.id, reviewed: ($event.target as HTMLInputElement).checked })"
     />
+
     <span class="status">{{ file.status[0].toUpperCase() }}</span>
+
     <span class="path" :title="file.newPath ?? file.oldPath ?? file.id">{{ name }}</span>
+
     <span class="counts">+{{ file.additions }} -{{ file.deletions }}</span>
   </div>
 </template>

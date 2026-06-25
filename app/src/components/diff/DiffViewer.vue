@@ -52,59 +52,14 @@
     </div>
 
     <SingleFileDiffPanes
-      v-model:draft-body="draftBody"
-      :loading="loading"
-      :error="error"
-      :model="model"
-      :rows-length="rows.length"
-      :initial-syntax-gate-active="initialSyntaxGateActive"
+      :status="paneStatus"
       :view-mode="viewMode"
       :sync-scroll="syncScroll"
-      :left-rendered-rows="leftRenderedRows"
-      :right-rendered-rows="rightRenderedRows"
-      :synced-split-rendered-rows="syncedSplitRenderedRows"
-      :inline-rendered-rows="inlineRenderedRows"
-      :left-total-size="leftTotalSize"
-      :right-total-size="rightTotalSize"
-      :synced-split-total-size="syncedSplitTotalSize"
-      :inline-total-size="inlineTotalSize"
-      :has-left-scroll="hasLeftScroll"
-      :has-right-scroll="hasRightScroll"
-      :has-synced-split-scroll="hasSyncedSplitScroll"
-      :has-inline-scroll="hasInlineScroll"
-      :left-markers="leftMarkers"
-      :right-markers="rightMarkers"
-      :synced-split-markers="syncedSplitMarkers"
-      :inline-markers="inlineMarkers"
-      :left-thumb-style="leftThumbStyle"
-      :right-thumb-style="rightThumbStyle"
-      :synced-split-thumb-style="syncedSplitThumbStyle"
-      :inline-thumb-style="inlineThumbStyle"
+      :panes="paneModels"
       :comment-hover-disabled="commentHoverDisabled"
-      :review-error="review.error"
-      :chat-messages-for-entry="chatMessagesForEntry"
-      :agent-responding-for-entry="agentRespondingForEntry"
-      :measure-left-element="measureLeftElement"
-      :measure-right-element="measureRightElement"
-      :measure-synced-split-element="measureSyncedSplitElement"
-      :measure-inline-element="measureInlineElement"
-      @pane-ref="setPaneRef"
-      @scroll="onPaneScroll"
-      @pointer-move="queueLspHover"
-      @mouse-leave="clearLspHover"
-      @mouse-up="captureSelectionComment"
-      @scrollbar-track-pointer-down="onScrollbarTrackPointerDown"
-      @scrollbar-thumb-pointer-down="onScrollbarThumbPointerDown"
-      @comment="startLineComment"
-      @toggle-comments="toggleComments"
-      @submit="submitComment"
-      @submit-chat-draft="submitChatDraft"
-      @cancel="cancelDraft"
-      @reply="addReply"
-      @chat="askAiInThread"
-      @collapse="collapseThread"
-      @resolve="resolveThread"
-      @reopen="reopenThread"
+      :review="reviewUi"
+      :review-actions="reviewActions"
+      :actions="paneActions"
     />
 
     <DiffViewerOverlays
@@ -156,6 +111,7 @@ import { supportsLspFile, useLspHover } from './useLspHover';
 import { useDiffSelection } from './useDiffSelection';
 import { buildRenderedDiffRowFields } from './diffRenderedRows';
 import SingleFileDiffPanes from './SingleFileDiffPanes.vue';
+import type { DiffPaneActions, DiffPaneModel, DiffRenderedEntry, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 
 const props = defineProps<{
   model?: DiffRenderModel;
@@ -236,32 +192,9 @@ type SyntaxPageRequest = {
 
 type PaneKey = 'left' | 'right' | 'syncedSplit' | 'inline';
 
-type VirtualRow = {
-  index: number;
-  key: unknown;
-  start: number;
-};
+type VirtualRow = DiffRenderedEntry['virtualRow'];
 
-type RenderedRow = {
-  virtualRow: VirtualRow;
-  item?: DisplayRow;
-  diffRow?: DiffRow;
-  reviewRow?: InlineReviewEntry;
-  oldSyntaxSpans?: SyntaxSpan[];
-  newSyntaxSpans?: SyntaxSpan[];
-  inlineSyntaxSpans?: SyntaxSpan[];
-  oldCommentCount: number;
-  newCommentCount: number;
-  oldCommentsExpanded: boolean;
-  newCommentsExpanded: boolean;
-  oldReviewHighlights: ReviewTextHighlight[];
-  newReviewHighlights: ReviewTextHighlight[];
-  inlineReviewHighlights: ReviewTextHighlight[];
-  oldSearchHighlights: SearchTextHighlight[];
-  newSearchHighlights: SearchTextHighlight[];
-  inlineSearchHighlights: SearchTextHighlight[];
-  newDiagnostics: LspDiagnostic[];
-};
+type RenderedRow = DiffRenderedEntry;
 
 type SearchMatch = {
   rowIndex: number;
@@ -614,6 +547,7 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
   return virtualRows.map((virtualRow) => {
     const item = displayRows[virtualRow.index];
     const fields = buildRenderedDiffRowFields(item, {
+      fileId: props.model?.fileId,
       syntaxSpansForLine: (side, line) => syntaxCache.get(syntaxKey(side, line)),
       commentCountForLine: (side, line) => commentCountByStart.value.get(commentStartKey(side, line)) ?? 0,
       commentsExpandedForLine: commentsExpandedForStart,
@@ -668,6 +602,27 @@ const {
   selectionDraft,
   clearNativeSelection,
 });
+
+const reviewUi = computed<DiffReviewUi>(() => ({
+  draftBody: draftBody.value,
+  error: review.error,
+  chatMessagesForEntry,
+  agentRespondingForEntry,
+}));
+
+const reviewActions: DiffReviewActions = {
+  updateDraftBody: (value) => {
+    draftBody.value = value;
+  },
+  submit: submitComment,
+  submitChatDraft,
+  cancel: cancelDraft,
+  reply: addReply,
+  chat: askAiInThread,
+  collapse: collapseThread,
+  resolve: resolveThread,
+  reopen: reopenThread,
+};
 
 const openSearch = () => {
   searchOpen.value = true;
@@ -844,6 +799,68 @@ const measureSyncedSplitElement = (element: unknown) => {
 const measureInlineElement = (element: unknown) => {
   inlineVirtualizer.value.measureElement(element instanceof Element ? element : null);
 };
+
+const paneStatus = computed(() => ({
+  loading: props.loading,
+  error: props.error,
+  hasModel: Boolean(props.model),
+  rowsLength: rows.value.length,
+  initialSyntaxGateActive: initialSyntaxGateActive.value,
+}));
+
+const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => ({
+  left: {
+    key: 'left',
+    compositionMode: 'pane',
+    paneSide: 'old',
+    rows: leftRenderedRows.value,
+    totalSize: leftTotalSize.value,
+    hasScroll: hasLeftScroll.value,
+    markers: leftMarkers.value,
+    thumbStyle: leftThumbStyle.value,
+    shellClass: 'old-pane-shell',
+    paneClass: 'old-pane',
+    keyPrefix: 'old-',
+    measureElement: measureLeftElement,
+  },
+  right: {
+    key: 'right',
+    compositionMode: 'pane',
+    paneSide: 'new',
+    rows: rightRenderedRows.value,
+    totalSize: rightTotalSize.value,
+    hasScroll: hasRightScroll.value,
+    markers: rightMarkers.value,
+    thumbStyle: rightThumbStyle.value,
+    paneClass: 'new-pane',
+    keyPrefix: 'new-',
+    measureElement: measureRightElement,
+  },
+  syncedSplit: {
+    key: 'syncedSplit',
+    compositionMode: 'split',
+    rows: syncedSplitRenderedRows.value,
+    totalSize: syncedSplitTotalSize.value,
+    hasScroll: hasSyncedSplitScroll.value,
+    markers: syncedSplitMarkers.value,
+    thumbStyle: syncedSplitThumbStyle.value,
+    paneClass: 'synced-split-view',
+    spacerClass: 'synced-split-spacer',
+    measureElement: measureSyncedSplitElement,
+  },
+  inline: {
+    key: 'inline',
+    compositionMode: 'inline',
+    rows: inlineRenderedRows.value,
+    totalSize: inlineTotalSize.value,
+    hasScroll: hasInlineScroll.value,
+    markers: inlineMarkers.value,
+    thumbStyle: inlineThumbStyle.value,
+    paneClass: 'inline-view',
+    spacerClass: 'inline-spacer',
+    measureElement: measureInlineElement,
+  },
+}));
 
 const scrollToActiveSearchMatch = () => {
   const match = activeSearchMatch.value;
@@ -1104,6 +1121,18 @@ const onScrollbarTrackPointerDown = (event: PointerEvent, pane: PaneKey) => {
 
 const onScrollbarThumbPointerDown = (event: PointerEvent, pane: PaneKey) => {
   scrollbars.onThumbPointerDown(event, pane);
+};
+
+const paneActions: DiffPaneActions = {
+  paneRef: setPaneRef,
+  scroll: onPaneScroll,
+  pointerMove: queueLspHover,
+  mouseLeave: clearLspHover,
+  mouseUp: captureSelectionComment,
+  scrollbarTrackPointerDown: onScrollbarTrackPointerDown,
+  scrollbarThumbPointerDown: onScrollbarThumbPointerDown,
+  comment: startLineComment,
+  toggleComments,
 };
 
 watch(

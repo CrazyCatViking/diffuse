@@ -14,6 +14,7 @@
         @reopen="emit('reopen', $event)"
       />
     </div>
+
     <InlineReviewBox
       v-else
       v-bind="reviewProps"

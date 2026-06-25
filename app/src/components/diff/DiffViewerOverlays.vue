@@ -8,6 +8,7 @@
     >
       <span class="comment-icon" aria-hidden="true" />
     </button>
+
     <button
       type="button"
       title="Ask AI about selection"
@@ -17,8 +18,10 @@
       <span class="ai-icon" aria-hidden="true" />
     </button>
   </div>
+
   <div v-if="lspHover.visible" class="lsp-hover" :class="{ loading: lspHover.loading }" :style="lspHoverStyle">
     <div v-if="lspHover.loading">Loading hover...</div>
+
     <pre v-else>{{ lspHover.contents }}</pre>
   </div>
 </template>

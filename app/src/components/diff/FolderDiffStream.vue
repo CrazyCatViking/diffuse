@@ -1,7 +1,10 @@
 <template>
   <div v-if="loading" class="message">Loading folder diff...</div>
+
   <div v-else-if="error" class="message error">{{ error }}</div>
+
   <div v-else-if="modelsLength === 0" class="message">No diffs in this folder.</div>
+
   <div v-else class="folder-diffs-shell" :class="{ 'has-diff-scroll': hasFolderScroll }">
     <div
       :ref="setScrollRef"
@@ -23,7 +26,9 @@
           <template v-if="entry.item.kind === 'file'">
             <header class="file-header">
               <span>{{ entry.model.fileId }}</span>
+
               <span class="file-row-count">{{ entry.model.rows.length }} rows</span>
+
               <span
                 v-if="diagnosticSummary(entry.model.fileId)"
                 class="diagnostic-summary"
@@ -36,70 +41,20 @@
           <div v-else-if="entry.item.kind === 'empty'" class="empty-file">No diff for this file.</div>
           <template v-else-if="entry.item.kind === 'row' && viewMode === 'split'">
             <DiffComposedRow
-              composition-mode="split"
-              :row="entry.diffRow"
-              :review-row="entry.reviewRow"
+              :entry="entry"
+              :layout="rowLayout(entry, 'split')"
+              :review="review"
+              :review-actions="reviewActions"
               :review-class="entry.reviewRow ? ['synced-split', entry.reviewRow.anchor.side] : 'synced-split'"
-              :file-id="entry.fileId"
-              :old-syntax-spans="entry.oldSyntaxSpans"
-              :new-syntax-spans="entry.newSyntaxSpans"
-              :old-comment-count="entry.oldCommentCount"
-              :new-comment-count="entry.newCommentCount"
-              :old-comments-expanded="entry.oldCommentsExpanded"
-              :new-comments-expanded="entry.newCommentsExpanded"
-              :old-review-highlights="entry.oldReviewHighlights"
-              :new-review-highlights="entry.newReviewHighlights"
-              :old-diagnostics="[]"
-              :new-diagnostics="entry.newDiagnostics"
-              :comment-hover-disabled="commentHoverDisabled"
-              :draft-body="draftBody"
-              :chat-messages="chatMessagesForEntry(entry)"
-              :agent-responding="agentRespondingForEntry(entry)"
-              :error="reviewError"
-              @comment="emit('comment', entry.fileId, $event)"
-              @toggle-comments="emit('toggleComments', $event)"
-              @update:draft-body="emit('update:draftBody', $event)"
-              @submit="emit('submit')"
-              @submit-chat-draft="emit('submitChatDraft')"
-              @cancel="emit('cancel')"
-              @reply="emit('reply', $event)"
-              @chat="emit('chat', $event)"
-              @collapse="emit('collapse', $event)"
-              @resolve="emit('resolve', $event)"
-              @reopen="emit('reopen', $event)"
             />
           </template>
           <template v-else-if="entry.item.kind === 'row'">
             <DiffComposedRow
-              composition-mode="inline"
-              :row="entry.diffRow"
-              :review-row="entry.reviewRow"
+              :entry="entry"
+              :layout="rowLayout(entry, 'inline')"
+              :review="review"
+              :review-actions="reviewActions"
               review-class="inline"
-              :file-id="entry.fileId"
-              :inline-syntax-spans="entry.inlineSyntaxSpans"
-              :old-comment-count="entry.oldCommentCount"
-              :new-comment-count="entry.newCommentCount"
-              :old-comments-expanded="entry.oldCommentsExpanded"
-              :new-comments-expanded="entry.newCommentsExpanded"
-              :inline-review-highlights="entry.inlineReviewHighlights"
-              :old-diagnostics="[]"
-              :new-diagnostics="entry.newDiagnostics"
-              :comment-hover-disabled="commentHoverDisabled"
-              :draft-body="draftBody"
-              :chat-messages="chatMessagesForEntry(entry)"
-              :agent-responding="agentRespondingForEntry(entry)"
-              :error="reviewError"
-              @comment="emit('comment', entry.fileId, $event)"
-              @toggle-comments="emit('toggleComments', $event)"
-              @update:draft-body="emit('update:draftBody', $event)"
-              @submit="emit('submit')"
-              @submit-chat-draft="emit('submitChatDraft')"
-              @cancel="emit('cancel')"
-              @reply="emit('reply', $event)"
-              @chat="emit('chat', $event)"
-              @collapse="emit('collapse', $event)"
-              @resolve="emit('resolve', $event)"
-              @reopen="emit('reopen', $event)"
             />
           </template>
         </div>
@@ -125,14 +80,17 @@
 
 <script setup lang="ts">
 import type { CSSProperties } from 'vue';
-import type { DiffViewMode, ReviewAnchor, ReviewChatMessage, ReviewThread, SyntaxSide } from '../../lib/protocol';
+import type { DiffViewMode, SyntaxSide } from '../../lib/protocol';
 import DiffComposedRow from './DiffComposedRow.vue';
 import DiffScrollbar, { type DiffScrollMarker } from './DiffScrollbar.vue';
 import DiffViewerOverlays from './DiffViewerOverlays.vue';
-import type { InlineReviewEntry } from './InlineReviewBox.vue';
+import type { DiffPaneActions, DiffRenderedEntry, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 
-type RenderedEntry = Record<string, any>;
-type ReviewReplyPayload = { thread: ReviewThread; body: string };
+type RenderedEntry = DiffRenderedEntry & {
+  fileId: string;
+  item: { kind: 'file' | 'empty' | 'row' };
+  model: { fileId: string; rows: unknown[] };
+};
 
 const props = defineProps<{
   loading: boolean;
@@ -145,14 +103,12 @@ const props = defineProps<{
   folderMarkers: DiffScrollMarker[];
   folderThumbStyle: CSSProperties;
   commentHoverDisabled: boolean;
-  draftBody: string;
-  reviewError?: string;
+  review: DiffReviewUi;
+  reviewActions: DiffReviewActions;
   showSelectionToolbar: boolean;
   selectionStyle: CSSProperties;
   lspHover: { visible: boolean; loading: boolean; contents: string };
   lspHoverStyle: CSSProperties;
-  chatMessagesForEntry: (entry: InlineReviewEntry) => ReviewChatMessage[];
-  agentRespondingForEntry: (entry: InlineReviewEntry) => boolean;
   diagnosticSummary: (fileId: string) => { label: string; className: string } | undefined;
   measureFolderElement: (element: unknown) => void;
 }>();
@@ -169,32 +125,20 @@ const emit = defineEmits<{
   chatSelection: [];
   comment: [fileId: string, payload: { side: SyntaxSide; line: number; text: string; clientX: number; clientY: number }];
   toggleComments: [payload: { side: SyntaxSide; line: number }];
-  'update:draftBody': [value: string];
-  submit: [];
-  submitChatDraft: [];
-  cancel: [];
-  reply: [payload: ReviewReplyPayload];
-  chat: [payload: ReviewReplyPayload];
-  collapse: [anchor: ReviewAnchor];
-  resolve: [thread: ReviewThread];
-  reopen: [thread: ReviewThread];
 }>();
-
-const renderedEntry = (entry: RenderedEntry) => entry.reviewRow as InlineReviewEntry | undefined;
-
-const chatMessagesForEntry = (entry: RenderedEntry) => {
-  const reviewRow = renderedEntry(entry);
-  return reviewRow ? props.chatMessagesForEntry(reviewRow) : [];
-};
-
-const agentRespondingForEntry = (entry: RenderedEntry) => {
-  const reviewRow = renderedEntry(entry);
-  return reviewRow ? props.agentRespondingForEntry(reviewRow) : false;
-};
 
 const setScrollRef = (element: unknown) => {
   emit('scrollRef', element instanceof Element ? element : null);
 };
+
+const rowLayout = (entry: RenderedEntry, compositionMode: 'split' | 'inline') => ({
+  compositionMode,
+  commentHoverDisabled: props.commentHoverDisabled,
+  actions: {
+    comment: (payload: { side: SyntaxSide; line: number; text: string; clientX: number; clientY: number }) => emit('comment', entry.fileId, payload),
+    toggleComments: (payload: { side: SyntaxSide; line: number }) => emit('toggleComments', payload),
+  } satisfies Pick<DiffPaneActions, 'comment' | 'toggleComments'>,
+});
 </script>
 
 <style scoped lang="scss">

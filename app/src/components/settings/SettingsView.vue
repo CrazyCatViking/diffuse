@@ -3,7 +3,9 @@
     <header class="settings-header">
       <div>
         <div class="eyebrow">Settings</div>
+
         <h1>Tree-sitter Grammars</h1>
+
         <p>Manage syntax grammars used for highlighting diffs.</p>
       </div>
 
@@ -14,6 +16,7 @@
       <div class="panel-header">
         <div>
           <h2>Syntax Theme</h2>
+
           <p>Choose a built-in syntax theme or define your own colors.</p>
         </div>
       </div>
@@ -28,6 +31,7 @@
           @click="settings.setSyntaxTheme(theme.id)"
         >
           <span class="theme-name">{{ theme.name }}</span>
+
           <span class="theme-swatches">
             <span v-for="color in swatchColors(theme.colors)" :key="color" class="swatch" :style="{ background: color }" />
           </span>
@@ -37,6 +41,7 @@
       <div v-if="settings.selectedSyntaxThemeId === 'custom'" class="custom-theme">
         <label v-for="field in customColorFields" :key="field.key" class="color-field">
           <span>{{ field.label }}</span>
+
           <span class="color-controls">
             <input
               class="color-swatch-input"
@@ -44,6 +49,7 @@
               :value="settings.customSyntaxTheme[field.key]"
               @input="setCustomSyntaxColor(field.key, $event)"
             />
+
             <input
               class="hex-input"
               type="text"
@@ -60,6 +66,7 @@
 
       <div class="theme-preview" aria-label="Syntax theme preview">
         <div class="preview-title">Preview</div>
+
         <HighlightedCode v-for="line in previewLines" :key="line.text" :text="line.text" :spans="line.spans" />
       </div>
     </section>
@@ -68,19 +75,25 @@
       <div class="panel-header">
         <div>
           <h2>Language Servers</h2>
+
           <p>Configure LSP servers used for hover information and diagnostics in diffs.</p>
         </div>
+
         <div class="panel-actions">
           <Button :disabled="!lspConfigInfo?.configPath" @click="openLspConfig">Open Config</Button>
+
           <Button :disabled="lspLoading" @click="loadLspConfigInfo">{{ lspLoading ? 'Refreshing...' : 'Refresh' }}</Button>
         </div>
       </div>
 
       <div v-if="lspError" class="message error">{{ lspError }}</div>
+
       <div v-else-if="lspLoading && !lspConfigInfo" class="message">Loading language servers...</div>
+
       <template v-else-if="lspConfigInfo">
         <div class="config-path-row">
           <span>Config file</span>
+
           <code>{{ lspConfigInfo.configPath ?? 'No home directory available' }}</code>
         </div>
 
@@ -89,27 +102,38 @@
             <div class="lsp-meta">
               <div class="lsp-title">
                 <span class="grammar-name">{{ server.language }}</span>
+
                 <span class="badge" :class="server.installed ? 'installed' : 'warning'">{{ server.installed ? 'Ready' : 'Missing' }}</span>
+
                 <span class="badge" :class="lspSessionBadgeClass(server)">{{ lspSessionLabel(server) }}</span>
+
                 <span class="badge">{{ server.configSource }}</span>
               </div>
+
               <div class="grammar-details">
                 <span>{{ server.serverId }}</span>
+
                 <span :title="lspCommand(server)">{{ lspCommand(server) }}</span>
               </div>
+
               <div v-if="server.lastError" class="lsp-error" :title="server.lastError">Last error: {{ server.lastError }}</div>
+
               <div v-if="server.running || server.lastError" class="lsp-session-actions">
                 <Button type="button" :disabled="restartingLspServer === server.serverId" @click="restartLspServer(server)">
                   {{ restartingLspServer === server.serverId ? 'Restarting...' : 'Restart Server' }}
                 </Button>
               </div>
+
               <div v-if="!server.installed && server.install" class="lsp-install-guide">
                 <div class="install-summary">{{ server.install.description }}</div>
+
                 <div class="install-command">
                   <code>{{ lspInstallCommand(server) }}</code>
+
                   <Button type="button" @click="copyLspInstallCommand(server)">{{
                     copiedLspLanguage === server.language ? 'Copied' : 'Copy'
                   }}</Button>
+
                   <Button
                     v-if="server.install.safeToRun"
                     type="button"
@@ -119,7 +143,9 @@
                     {{ installingLspServer === server.serverId ? 'Installing...' : 'Install' }}
                   </Button>
                 </div>
+
                 <div v-if="server.install.note" class="install-note">{{ server.install.note }}</div>
+
                 <div v-if="installingLspServer === server.serverId && lspInstallStep" class="install-step">{{ lspInstallStep }}</div>
               </div>
             </div>

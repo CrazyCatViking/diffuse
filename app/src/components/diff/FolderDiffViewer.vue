@@ -3,6 +3,7 @@
     <div class="folder-header">
       <div class="folder-meta">
         <span>{{ folderPath }}</span>
+
         <span class="file-count">{{ files.length }} file{{ files.length === 1 ? '' : 's' }}</span>
       </div>
 
@@ -15,7 +16,6 @@
     </div>
 
     <FolderDiffStream
-      v-model:draft-body="draftBody"
       :loading="loading"
       :error="error"
       :models-length="models.length"
@@ -26,13 +26,12 @@
       :folder-markers="folderMarkers"
       :folder-thumb-style="folderThumbStyle"
       :comment-hover-disabled="commentHoverDisabled"
-      :review-error="review.error"
+      :review="reviewUi"
+      :review-actions="reviewActions"
       :show-selection-toolbar="Boolean(selectionDraft)"
       :selection-style="selectionBubbleStyle"
       :lsp-hover="lspHover"
       :lsp-hover-style="lspHoverStyle"
-      :chat-messages-for-entry="chatMessagesForEntry"
-      :agent-responding-for-entry="agentRespondingForEntry"
       :diagnostic-summary="diagnosticSummary"
       :measure-folder-element="measureFolderElement"
       @scroll-ref="setFolderScrollRef"
@@ -46,14 +45,6 @@
       @chat-selection="startSelectionChat"
       @comment="startLineComment"
       @toggle-comments="toggleComments"
-      @submit="submitComment"
-      @submit-chat-draft="submitChatDraft"
-      @cancel="cancelDraft"
-      @reply="addReply"
-      @chat="askAiInThread"
-      @collapse="collapseThread"
-      @resolve="resolveThread"
-      @reopen="reopenThread"
     />
   </section>
 </template>
@@ -77,6 +68,7 @@ import { useClient } from '../../lib/useClient';
 import { useReviewStore } from '../../stores/review';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
 import type { ReviewTextHighlight } from './HighlightedCode.vue';
+import type { DiffCodeRowModel, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 import {
   buildDisplayRows as buildReviewDisplayRows,
   buildReviewEntriesByEndLine,
@@ -141,18 +133,8 @@ type FolderRenderedRow = {
   model: DiffRenderModel;
   fileId: string;
   diffRow?: DiffRow;
+  diff?: DiffCodeRowModel;
   reviewRow?: InlineReviewEntry;
-  oldSyntaxSpans?: SyntaxSpan[];
-  newSyntaxSpans?: SyntaxSpan[];
-  inlineSyntaxSpans?: SyntaxSpan[];
-  oldCommentCount: number;
-  newCommentCount: number;
-  oldCommentsExpanded: boolean;
-  newCommentsExpanded: boolean;
-  oldReviewHighlights: ReviewTextHighlight[];
-  newReviewHighlights: ReviewTextHighlight[];
-  inlineReviewHighlights: ReviewTextHighlight[];
-  newDiagnostics: LspDiagnostic[];
 };
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -298,6 +280,7 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
     const model = item.model ?? models.value.find((candidate) => candidate.fileId === item.fileId) ?? emptyModel();
     const fileId = item.fileId ?? model.fileId;
     const fields = buildRenderedDiffRowFields(item.item, {
+      fileId,
       syntaxSpansForLine: (side, line) => syntaxSpans.value[syntaxKey(fileId, side, line)],
       commentCountForLine: (side, line) => threadCountsByStart.value.get(fileCommentStartKey(fileId, side, line)) ?? 0,
       commentsExpandedForLine: (side, line) => expandedCommentStarts.value.has(fileCommentStartKey(fileId, side, line)),
@@ -576,6 +559,27 @@ const {
   selectionDraft,
   clearNativeSelection,
 });
+
+const reviewUi = computed<DiffReviewUi>(() => ({
+  draftBody: draftBody.value,
+  error: review.error,
+  chatMessagesForEntry,
+  agentRespondingForEntry,
+}));
+
+const reviewActions: DiffReviewActions = {
+  updateDraftBody: (value) => {
+    draftBody.value = value;
+  },
+  submit: submitComment,
+  submitChatDraft,
+  cancel: cancelDraft,
+  reply: addReply,
+  chat: askAiInThread,
+  collapse: collapseThread,
+  resolve: resolveThread,
+  reopen: reopenThread,
+};
 
 const {
   hover: lspHover,

@@ -11,21 +11,28 @@
         @keydown.enter.prevent="emit('moveSearch', $event.shiftKey ? -1 : 1)"
         @keydown.esc.prevent="emit('closeSearch')"
       />
+
       <span class="search-count">{{ searchStatus }}</span>
+
       <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Previous match" @click="emit('moveSearch', -1)">
         Prev
       </button>
+
       <button class="search-button" type="button" :disabled="!hasSearchMatches" title="Next match" @click="emit('moveSearch', 1)">
         Next
       </button>
     </div>
+
     <button v-else-if="searchEnabled" class="control" type="button" title="Search file (Ctrl+F or /)" @click="emit('openSearch')">
       Search
     </button>
+
     <button class="control" :class="{ active: viewMode === 'split' }" type="button" @click="emit('update:viewMode', 'split')">Split</button>
+
     <button class="control" :class="{ active: viewMode === 'inline' }" type="button" @click="emit('update:viewMode', 'inline')">
       Inline
     </button>
+
     <button
       v-if="showSyncScroll && viewMode === 'split'"
       class="control"
@@ -35,6 +42,7 @@
     >
       {{ syncScroll ? 'Synced' : 'Desynced' }}
     </button>
+
     <button
       class="control"
       :class="{ active: contextMode === 'full' }"

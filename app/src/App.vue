@@ -62,6 +62,7 @@
           @set-reviewed="setFileReviewed"
           @set-folder-reviewed="setFolderReviewed"
         />
+
         <div
           class="resize-handle"
           role="separator"
@@ -72,6 +73,7 @@
           :aria-valuemax="maxFileTreeWidth"
           @pointerdown="startFileTreeResize"
         />
+
         <FolderDiffViewer
           v-if="selectedFolder"
           :folder-path="selectedFolder.path"
@@ -82,6 +84,7 @@
           @update:view-mode="diff.setViewMode($event)"
           @update:context-mode="diff.setContextMode($event)"
         />
+
         <DiffViewer
           v-else
           :model="diff.current"

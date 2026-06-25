@@ -2,13 +2,16 @@
   <section class="diff-target-bar">
     <div class="intro">
       <span class="eyebrow">Compare</span>
+
       <span class="description">{{ description }}</span>
     </div>
 
     <label class="ref-field source-field">
       <span>Source</span>
+
       <select v-model="sourceRef" @change="applySelection">
         <option :value="workingTreeValue">Working tree</option>
+
         <option v-for="option in refOptions" :key="`source-${option.value}`" :value="option.value">
           {{ option.label }}
         </option>
@@ -19,6 +22,7 @@
 
     <label class="ref-field target-field">
       <span>Target</span>
+
       <select v-model="targetRef" @change="applySelection">
         <option v-for="option in refOptions" :key="`target-${option.value}`" :value="option.value">
           {{ option.label }}

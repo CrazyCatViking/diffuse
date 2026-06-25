@@ -1,7 +1,9 @@
 <template>
   <aside class="changed-files">
     <div class="pane-title">Changed Files</div>
+
     <div v-if="files.length === 0" class="empty">No changed files</div>
+
     <template v-else>
       <template v-for="node in visibleNodes" :key="node.key">
         <div
@@ -19,6 +21,7 @@
             @click.stop
             @change="setFolderReviewed(node, ($event.target as HTMLInputElement).checked)"
           />
+
           <button
             class="chevron-button"
             type="button"
@@ -27,6 +30,7 @@
           >
             <span class="chevron">{{ collapsedFolders.has(node.key) ? '›' : '⌄' }}</span>
           </button>
+
           <button class="folder-select" type="button" :title="node.path" @click="selectFolder(node)">
             <span class="folder-name">{{ node.name }}</span>
           </button>

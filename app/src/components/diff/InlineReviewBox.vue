@@ -8,24 +8,32 @@
   >
     <div v-if="entry.kind === 'thread'" class="review-box-header">
       <span v-if="entry.thread.status === 'resolved'" class="resolved-label">Resolved</span>
+
       <span v-else class="thread-label">Thread</span>
+
       <span v-if="error" class="review-error">{{ error }}</span>
+
       <div class="thread-actions">
         <button type="button" @click="emit('collapse', entry.anchor)">Collapse</button>
+
         <button v-if="entry.thread.status === 'open'" type="button" @click="emit('resolve', entry.thread)">Resolve</button>
+
         <button v-else type="button" @click="emit('reopen', entry.thread)">Reopen</button>
       </div>
     </div>
 
     <form v-if="entry.kind === 'draft'" class="comment-composer" @submit.prevent="submitDraft">
       <div class="composer-author">You</div>
+
       <textarea
         :value="draftBody"
         :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
         @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)"
       />
+
       <div class="composer-actions">
         <button type="button" @click="emit('cancel')">Cancel</button>
+
         <button type="submit" :disabled="draftBody.trim().length === 0 || agentResponding">
           {{ entry.mode === 'chat' ? 'Ask AI' : 'Comment' }}
         </button>
@@ -36,10 +44,13 @@
       <div v-for="message in timelineMessages" :key="message.id" class="message" :class="{ chat: message.kind === 'chat' }">
         <div class="message-meta">
           <strong>{{ message.author }}</strong>
+
           <time>{{ formatTime(message.createdAt) }}</time>
         </div>
+
         <p>{{ message.body }}</p>
       </div>
+
       <form class="reply-composer" @submit.prevent="submitReply">
         <textarea
           ref="replyTextareaRef"
@@ -51,8 +62,10 @@
           @input="resizeReplyTextarea"
           @keydown.enter.exact.prevent="submitReply"
         />
+
         <div class="reply-actions">
           <button type="button" :disabled="replyBody.trim().length === 0 || agentResponding" @click="submitChat">Ask AI</button>
+
           <button type="submit" :disabled="replyBody.trim().length === 0 || agentResponding">Send</button>
         </div>
       </form>
