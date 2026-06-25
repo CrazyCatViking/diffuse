@@ -4,10 +4,7 @@
       <Row justify="start">
         <div class="brand">Diffuse</div>
 
-        <Button 
-          :disabled="loading" 
-          @click="$emit('openRepository')"
-        >
+        <Button :disabled="loading" @click="$emit('openRepository')">
           {{ loading ? 'Opening...' : 'Open Repository' }}
         </Button>
 
@@ -15,9 +12,7 @@
       </Row>
 
       <Row justify="end">
-        <Button @click="$emit('openSettings')">
-          Settings
-        </Button>
+        <Button @click="$emit('openSettings')"> Settings </Button>
 
         <div class="status" :class="{ error }">
           {{ error ?? (version ? `core ${version}` : 'connecting') }}

@@ -3,15 +3,21 @@
     <div class="review-agent-bar">
       <div class="review-agent-copy">
         <span class="label">AI review</span>
+
         <span class="message">{{ message }}</span>
+
         <span v-if="session" class="session-id" :title="session.id">{{ shortSessionId }}</span>
       </div>
 
       <div class="review-agent-actions">
         <span v-if="progressText" class="progress">{{ progressText }}</span>
+
         <Button :disabled="sessions.length === 0 && runs.length === 0" @click="showHistory = !showHistory">History</Button>
+
         <Button :disabled="loading || !enabled" @click="emit('newSession')">New session</Button>
+
         <Button v-if="activeRun" :disabled="loading" @click="emit('stop')">Stop review</Button>
+
         <Button v-else :disabled="loading || !enabled" @click="emit('start')">Start AI review</Button>
       </div>
     </div>
@@ -19,18 +25,24 @@
     <div v-if="showHistory" class="review-history">
       <div class="history-column">
         <span class="history-title">Sessions</span>
+
         <span v-if="recentSessions.length === 0" class="history-empty">No review sessions yet</span>
+
         <div v-for="item in recentSessions" :key="item.id" class="history-row" :class="{ current: item.id === session?.id }">
           <span>{{ item.title ?? item.id }}<template v-if="item.id === session?.id"> (current)</template></span>
+
           <span>{{ formatDate(item.updatedAt) }}</span>
         </div>
       </div>
 
       <div class="history-column">
         <span class="history-title">Runs</span>
+
         <span v-if="recentRuns.length === 0" class="history-empty">No agent runs yet</span>
+
         <div v-for="item in recentRuns" :key="item.id" class="history-row">
           <span>{{ item.provider }} · {{ item.status }}</span>
+
           <span>{{ formatDate(item.updatedAt) }}</span>
         </div>
       </div>
@@ -85,7 +97,7 @@ const liveAgentMessage = computed(() => {
   return undefined;
 });
 
-const truncateStatus = (value: string) => value.length > 150 ? `${value.slice(0, 147)}...` : value;
+const truncateStatus = (value: string) => (value.length > 150 ? `${value.slice(0, 147)}...` : value);
 
 const shortSessionId = computed(() => props.session?.id.replace(/^session-/, '').slice(0, 12));
 

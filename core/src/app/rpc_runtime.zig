@@ -16,6 +16,7 @@ pub const Runtime = struct {
     repo_watcher: repository_watcher.RepositoryWatcher,
     syntax_cache_lock: std.Io.Mutex = .init,
     lsp_lock: std.Io.Mutex = .init,
+    review_lock: std.Io.Mutex = .init,
     session_lock: std.Io.RwLock = .init,
     outbound_buffer: [128][]u8 = undefined,
     outbound: std.Io.Queue([]u8),
@@ -29,6 +30,7 @@ pub const Runtime = struct {
         runtime.lsp_manager = lsp.Manager.init(allocator);
         runtime.syntax_cache_lock = .init;
         runtime.lsp_lock = .init;
+        runtime.review_lock = .init;
         runtime.session_lock = .init;
         runtime.outbound_buffer = undefined;
         runtime.outbound = .init(&runtime.outbound_buffer);
@@ -51,6 +53,11 @@ pub const Runtime = struct {
         const response = try buildError(runtime.allocator, id, code, message);
         try runtime.enqueue(response);
     }
+
+    pub fn enqueueParseError(runtime: *Runtime, message: []const u8) !void {
+        const response = try buildParseError(runtime.allocator, message);
+        try runtime.enqueue(response);
+    }
 };
 
 pub fn buildError(allocator: std.mem.Allocator, id: i64, code: i64, message: []const u8) ![]u8 {
@@ -58,5 +65,13 @@ pub fn buildError(allocator: std.mem.Allocator, id: i64, code: i64, message: []c
     errdefer response.deinit();
 
     try json_rpc.writeError(&response.writer, id, code, message);
+    return try response.toOwnedSlice();
+}
+
+pub fn buildParseError(allocator: std.mem.Allocator, message: []const u8) ![]u8 {
+    var response = std.Io.Writer.Allocating.init(allocator);
+    errdefer response.deinit();
+
+    try json_rpc.writeErrorNullId(&response.writer, -32700, message);
     return try response.toOwnedSlice();
 }

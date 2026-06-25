@@ -5,9 +5,9 @@
 </template>
 
 <script setup lang="ts">
-  const props = defineProps<{
-    justify?: 'start' | 'center' | 'end' | 'between' | 'around'
-  }>();
+const props = defineProps<{
+  justify?: 'start' | 'center' | 'end' | 'between' | 'around';
+}>();
 </script>
 
 <style scoped lang="scss">

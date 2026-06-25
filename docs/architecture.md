@@ -52,6 +52,21 @@ diffuse rpc
 
 The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits messages without an `id` as events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
 
+The renderer and Electron process share the TypeScript contract in `app/src/lib/coreContract.ts`. That file defines the `CoreMethods` param/result map, the runtime `coreMethodNames` list used by Electron's whitelist, and the typed core event union consumed by the renderer. Zig remains the runtime authority for validation; TypeScript contracts keep the frontend, preload bridge, and Electron whitelist synchronized.
+
+`scripts/check-rpc-contract.mjs` compares Zig `server.handle(...)` registrations in `core/src/app/*_handlers.zig` with `coreMethodNames` in `app/src/lib/coreContract.ts`. It runs as part of `just build` and `pnpm build` so app/core method drift fails verification early.
+
+Core maps JSON-RPC failures to standard error classes where possible:
+
+- `-32700` for parse errors, returned with `id: null`.
+- `-32601` for unknown methods.
+- `-32602` for invalid or missing params.
+- `-32000` for domain/runtime failures.
+
+RPC params are validated at the core boundary. Omitted optional fields may still use documented defaults, but present invalid enum values or invalid field types are rejected as invalid params. This includes diff `mode`, diff `context`, syntax/LSP `side`, unsigned line/column values, and `DiffTarget` fields.
+
+The Electron RPC client preserves `error.code`, `error.message`, and optional `error.data` in `CoreRpcError`.
+
 Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event, and the main process opens a new `BrowserWindow` with its own core process for that repository.
 
 ## Renderer State
@@ -98,6 +113,7 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 
 - `session` stores the currently opened repository.
 - `session_lock` protects repository session access.
+- `review_lock` serializes review persistence writes and read-modify-write updates under `.diffuse/reviews`.
 - `syntax_cache` stores dynamically loaded Tree-sitter parser libraries and queries.
 - `syntax_cache_lock` protects the syntax cache.
 - `repo_watcher` watches the opened repository and emits `repository/changed` or `review/changed` notifications on Linux.
@@ -106,7 +122,20 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 
 Requests can run concurrently. Responses and notifications are serialized through the outbound queue so only the writer task writes to `stdout`.
 
-Handlers are registered in `core/src/app/rpc_handlers.zig`. Important methods include:
+`core/src/app/rpc_handlers.zig` coordinates domain handler registration. Handler implementations are split by responsibility:
+
+- `repository_handlers.zig` owns version, repository open, branch, target-default, and changed-file RPCs.
+- `diff_handlers.zig` owns diff render model RPCs.
+- `syntax_handlers.zig` owns syntax span and Tree-sitter grammar RPCs.
+- `lsp_handlers.zig` owns language-server status, install, hover, diagnostics, and restart RPCs.
+- `review_handlers.zig` owns review persistence and agent review state RPCs.
+- `rpc_params.zig` owns shared parameter parsing, JSON conversion, diff target parsing, grammar-root resolution, and review ID validation helpers used by handlers.
+- `rpc_events.zig` owns shared event/progress emitters.
+- `rpc_repo.zig` owns short-lived repository snapshots used to copy stable repository root/head data under `session_lock` before handlers perform expensive work.
+
+Handlers should avoid holding `session_lock` while running Git, parsing diffs, resolving source text, highlighting, or doing review filesystem work. The normal pattern is to snapshot the opened repository under `session_lock`, release the lock, and then use the snapshot for path/root data. Review write/update handlers acquire `review_lock` after snapshotting so review persistence remains serialized without blocking unrelated session readers.
+
+Important methods include:
 
 - `getVersion`
 - `openRepository`
@@ -196,6 +225,8 @@ Review state is stored in the opened repository under `.diffuse/reviews`. The da
 The desktop app can start built-in opencode review runs for the active session. Zig core owns review run state in `runs/<agent-run-id>.json`. Electron acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
 
 Review data is intentionally plain JSON and Markdown so external agent harnesses can inspect or update it without linking against Diffuse.
+
+Review IDs that become path segments are validated by the core before path construction. Session ids, thread ids, run ids, agent-run ids, and chat message ids must be non-empty path segments containing only ASCII letters, digits, `.`, `_`, and `-`, with no separators or traversal names.
 
 Manual review comments and AI chat use the same persisted review files. The renderer creates human threads for line/selection comments, writes chat messages for user questions, and asks the Electron provider adapter for opencode responses when the user asks AI about a thread or selection.
 

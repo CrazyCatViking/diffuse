@@ -1,0 +1,115 @@
+<template>
+  <CodeHunkRow v-if="row.kind === 'hunk'" :text="row.hunkText ?? ''" :mode="mode" />
+
+  <div v-else-if="mode === 'neutral' && row.inlineLine" class="diff-row neutral" :class="[row.kind, { 'comment-hover-disabled': commentHoverDisabled }]">
+    <CodeLineNumber
+      side="old"
+      :line-number="row.oldLine?.lineNumber"
+      :comment-count="row.oldLine?.commentCount ?? 0"
+      :comments-expanded="row.oldLine?.commentsExpanded ?? false"
+      :diagnostics="row.oldLine?.diagnostics ?? []"
+      title="Add old-side comment"
+      @comment="emitLineComment(row.oldLine, $event)"
+      @toggle-comments="emitToggleComments(row.oldLine)"
+    />
+
+    <CodeLineNumber
+      side="new"
+      :line-number="row.newLine?.lineNumber"
+      :comment-count="row.newLine?.commentCount ?? 0"
+      :comments-expanded="row.newLine?.commentsExpanded ?? false"
+      :diagnostics="row.newLine?.diagnostics ?? []"
+      title="Add new-side comment"
+      @comment="emitLineComment(row.newLine, $event)"
+      @toggle-comments="emitToggleComments(row.newLine)"
+    />
+
+    <CodeText
+      :text="row.inlineLine.text"
+      :spans="row.inlineLine.syntaxSpans"
+      :highlights="row.inlineLine.highlights"
+      :data-review-side="row.inlineLine.side"
+      :data-review-line="row.inlineLine.lineNumber"
+      :data-review-file-id="row.inlineLine.fileId"
+      :data-review-text="row.inlineLine.text"
+    />
+  </div>
+
+  <CodeLine
+    v-else-if="sideLine"
+    :line="sideLine"
+    :kind="row.kind"
+    :mode="mode"
+    :comment-hover-disabled="commentHoverDisabled"
+    @comment="emit('comment', $event)"
+    @toggle-comments="emit('toggleComments', $event)"
+  />
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue';
+import type { SyntaxSide } from '../../lib/protocol';
+import CodeHunkRow from '../code/CodeHunkRow.vue';
+import CodeLine from '../code/CodeLine.vue';
+import CodeLineNumber from '../code/CodeLineNumber.vue';
+import CodeText from '../code/CodeText.vue';
+import type { CodeLineCommentPayload, CodeLineModel, CodeLineToggleCommentsPayload } from '../code/codeModels';
+import type { DiffCodeRowModel } from './diffViewModels';
+
+const props = withDefaults(
+  defineProps<{
+    mode: SyntaxSide | 'neutral';
+    row: DiffCodeRowModel;
+    commentHoverDisabled?: boolean;
+  }>(),
+  {
+    commentHoverDisabled: false,
+  },
+);
+
+const emit = defineEmits<{
+  comment: [payload: CodeLineCommentPayload];
+  toggleComments: [payload: CodeLineToggleCommentsPayload];
+}>();
+
+const sideLine = computed(() => (props.mode === 'old' ? props.row.oldLine : props.mode === 'new' ? props.row.newLine : undefined));
+
+const emitLineComment = (line: CodeLineModel | undefined, event: MouseEvent) => {
+  if (!line?.side || !line.lineNumber) return;
+  emit('comment', { side: line.side, line: line.lineNumber, text: line.text, clientX: event.clientX, clientY: event.clientY });
+};
+
+const emitToggleComments = (line: CodeLineModel | undefined) => {
+  if (!line?.side || !line.lineNumber) return;
+  emit('toggleComments', { side: line.side, line: line.lineNumber });
+};
+</script>
+
+<style scoped lang="scss">
+.diff-row {
+  position: relative;
+  display: grid;
+  height: 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.025);
+  box-sizing: border-box;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 24px;
+
+  &.neutral {
+    grid-template-columns: 64px 64px minmax(0, 1fr);
+  }
+}
+
+.diff-row.added {
+  background: rgba(63, 185, 80, 0.1);
+}
+
+.diff-row.deleted {
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.diff-row.context {
+  background: #111318;
+}
+</style>

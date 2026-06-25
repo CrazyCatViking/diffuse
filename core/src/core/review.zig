@@ -7,6 +7,7 @@ const progress_file = "progress.json";
 const reviewed_files_file = "reviewed-files.json";
 const config_file = "config.json";
 const max_reviewed_files_bytes = 16 * 1024 * 1024;
+const max_path_segment_bytes = 200;
 
 const default_config = "{\"provider\":\"opencode\",\"maxParallelAgents\":1,\"promptInstructions\":\"Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations.\"}";
 
@@ -24,6 +25,7 @@ pub fn getActiveSession(allocator: std.mem.Allocator, io: std.Io, repo_root: []c
 
     const session_id = std.mem.trim(u8, session_id_raw, "\r\n\t ");
     if (session_id.len == 0) return null;
+    try validatePathSegment(session_id);
 
     return readSession(allocator, io, repo_root, session_id) catch |err| switch (err) {
         error.FileNotFound => return null,
@@ -32,6 +34,7 @@ pub fn getActiveSession(allocator: std.mem.Allocator, io: std.Io, repo_root: []c
 }
 
 pub fn createSession(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, session_json: []const u8) ![]u8 {
+    try validatePathSegment(session_id);
     try ensureReviewsDir(allocator, io, repo_root);
     try writeSession(allocator, io, repo_root, session_id, session_json);
 
@@ -186,6 +189,7 @@ pub fn writeReviewedFiles(allocator: std.mem.Allocator, io: std.Io, repo_root: [
 
 pub fn writeAgentState(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, agent_run_id: []const u8, agent_json: []const u8) ![]u8 {
     try ensureSessionDir(allocator, io, repo_root, session_id);
+    try validatePathSegment(agent_run_id);
     const dir_path = try agentsDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(dir_path);
     try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
@@ -262,6 +266,7 @@ pub fn listRuns(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8,
 
 pub fn writeRun(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, run_id: []const u8, run_json: []const u8) ![]u8 {
     try ensureSessionDir(allocator, io, repo_root, session_id);
+    try validatePathSegment(run_id);
     const dir_path = try runsDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(dir_path);
     try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
@@ -307,6 +312,7 @@ pub fn listChatMessages(allocator: std.mem.Allocator, io: std.Io, repo_root: []c
 
 pub fn writeChatMessage(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, message_id: []const u8, message_json: []const u8) ![]u8 {
     try ensureSessionDir(allocator, io, repo_root, session_id);
+    try validatePathSegment(message_id);
     const dir_path = try chatMessagesDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(dir_path);
     try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
@@ -326,6 +332,7 @@ fn ensureReviewsDir(allocator: std.mem.Allocator, io: std.Io, repo_root: []const
 }
 
 fn ensureSessionDir(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8) !void {
+    try validatePathSegment(session_id);
     try ensureReviewsDir(allocator, io, repo_root);
     const path = try sessionDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(path);
@@ -345,6 +352,7 @@ fn sessionDirPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u
 }
 
 fn threadPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, session_id: []const u8, thread_id: []const u8) ![]u8 {
+    try validatePathSegment(thread_id);
     const dir_path = try threadsDirPath(allocator, io, repo_root, session_id);
     defer allocator.free(dir_path);
     try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
@@ -411,8 +419,33 @@ fn reviewsRoot(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) 
     return std.fs.path.join(allocator, &.{ repo_root, reviews_dir });
 }
 
+pub fn validatePathSegment(segment: []const u8) !void {
+    if (segment.len == 0 or segment.len > max_path_segment_bytes) return error.InvalidPathSegment;
+    if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return error.InvalidPathSegment;
+
+    for (segment) |byte| switch (byte) {
+        'a'...'z', 'A'...'Z', '0'...'9', '-', '_', '.' => {},
+        else => return error.InvalidPathSegment,
+    };
+}
+
 fn sessionsRoot(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) ![]u8 {
     const reviews_root = try reviewsRoot(allocator, io, repo_root);
     defer allocator.free(reviews_root);
     return std.fs.path.join(allocator, &.{ reviews_root, sessions_dir });
+}
+
+test "review path segment validation accepts safe ids" {
+    try validatePathSegment("session-2026_06_23.1");
+    try validatePathSegment("run_abc-123");
+}
+
+test "review path segment validation rejects traversal and separators" {
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment(""));
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment("."));
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment(".."));
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment("../escape"));
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment("nested/id"));
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment("nested\\id"));
+    try std.testing.expectError(error.InvalidPathSegment, validatePathSegment("contains space"));
 }

@@ -7,8 +7,8 @@ type CoreRequest = <T>(method: string, params?: Record<string, unknown>) => Prom
 
 type ChangedFile = {
   id: string;
-  oldPath: string | null;
-  newPath: string | null;
+  oldPath?: string;
+  newPath?: string;
   status: string;
 };
 
@@ -132,7 +132,13 @@ export class ReviewAgentRunner {
     return this.status();
   }
 
-  private async startRun(request: ReviewAgentStartRequest, config: ReviewConfig, files: ChangedFile[], index: number, total: number): Promise<void> {
+  private async startRun(
+    request: ReviewAgentStartRequest,
+    config: ReviewConfig,
+    files: ChangedFile[],
+    index: number,
+    total: number,
+  ): Promise<void> {
     const run: ActiveRun = {
       id: createId('agent-run'),
       sessionId: request.sessionId,
@@ -146,7 +152,13 @@ export class ReviewAgentRunner {
 
     await this.saveRun(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
     await this.saveAgentState(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
-    await this.saveProgress(run, 'planning', `Preparing review shard ${index}/${total} for ${files.length} changed file${files.length === 1 ? '' : 's'}`, files, []);
+    await this.saveProgress(
+      run,
+      'planning',
+      `Preparing review shard ${index}/${total} for ${files.length} changed file${files.length === 1 ? '' : 's'}`,
+      files,
+      [],
+    );
 
     const prompt = reviewPrompt(run, files, config, index, total);
     await writePrompt(request.repositoryRoot, request.sessionId, run.id, prompt);
@@ -196,18 +208,20 @@ export class ReviewAgentRunner {
   async stop(): Promise<ReviewAgentStatus> {
     if (this.activeRuns.size === 0) return { running: false };
 
-    await Promise.all([...this.activeRuns.values()].map(async (run) => {
-      run.stopping = true;
-      await this.saveRun(run, 'cancelling', 'Stopping opencode review');
-      await this.saveAgentState(run, 'cancelled', 'Stopping opencode review');
-      if (run.opencode && run.opencodeSessionId) {
-        await run.opencode.client.session.abort({
-          path: { id: run.opencodeSessionId },
-          query: { directory: run.repositoryRoot },
-          throwOnError: true,
-        });
-      }
-    }));
+    await Promise.all(
+      [...this.activeRuns.values()].map(async (run) => {
+        run.stopping = true;
+        await this.saveRun(run, 'cancelling', 'Stopping opencode review');
+        await this.saveAgentState(run, 'cancelled', 'Stopping opencode review');
+        if (run.opencode && run.opencodeSessionId) {
+          await run.opencode.client.session.abort({
+            path: { id: run.opencodeSessionId },
+            query: { directory: run.repositoryRoot },
+            throwOnError: true,
+          });
+        }
+      }),
+    );
     return this.status();
   }
 
@@ -239,7 +253,8 @@ export class ReviewAgentRunner {
         body: {
           agent: process.env.DIFFUSE_OPENCODE_AGENT ?? config.agent,
           model: opencodeModel(config),
-          system: 'You answer Diffuse code review thread questions. Do not edit files. Be concise, concrete, and reference the existing thread/diff context. If you find a new actionable issue, say so plainly, but do not create review comments from chat.',
+          system:
+            'You answer Diffuse code review thread questions. Do not edit files. Be concise, concrete, and reference the existing thread/diff context. If you find a new actionable issue, say so plainly, but do not create review comments from chat.',
           parts: [{ type: 'text', text: reviewChatPrompt(request, diff) }],
         },
         throwOnError: true,
@@ -315,7 +330,12 @@ export class ReviewAgentRunner {
     }
   }
 
-  private async finishRun(run: ActiveRun, files: ChangedFile[], status: 'completed' | 'failed' | 'cancelled', message: string): Promise<void> {
+  private async finishRun(
+    run: ActiveRun,
+    files: ChangedFile[],
+    status: 'completed' | 'failed' | 'cancelled',
+    message: string,
+  ): Promise<void> {
     this.activeRuns.delete(run.id);
     this.closeRun(run);
     await this.saveRun(run, status, message);
@@ -370,8 +390,14 @@ export class ReviewAgentRunner {
     });
   }
 
-  private async saveProgress(run: ActiveRun, status: string, message: string, pendingFiles: ChangedFile[] | string[], completedFiles: string[]): Promise<void> {
-    const pending = pendingFiles.map((file) => typeof file === 'string' ? file : filePath(file));
+  private async saveProgress(
+    run: ActiveRun,
+    status: string,
+    message: string,
+    pendingFiles: ChangedFile[] | string[],
+    completedFiles: string[],
+  ): Promise<void> {
+    const pending = pendingFiles.map((file) => (typeof file === 'string' ? file : filePath(file)));
     await this.coreRequest('saveReviewProgress', {
       sessionId: run.sessionId,
       progress: {
@@ -424,7 +450,14 @@ class ReviewToolBridge {
   }
 }
 
-const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files: ChangedFile[], token: string, request: IncomingMessage, response: ServerResponse): Promise<void> => {
+const handleToolRequest = async (
+  coreRequest: CoreRequest,
+  run: ActiveRun,
+  files: ChangedFile[],
+  token: string,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> => {
   try {
     if (request.method !== 'POST') return writeJson(response, 405, { error: 'Method not allowed' });
     if (request.headers.authorization !== `Bearer ${token}`) return writeJson(response, 401, { error: 'Unauthorized' });
@@ -433,7 +466,13 @@ const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files
     if (request.url === '/add-comment') {
       const result = await coreRequest('addReviewCommentPayload', { sessionId: run.sessionId, runId: run.id, comment: body });
       const file = typeof body.filePath === 'string' ? body.filePath : undefined;
-      await saveBridgeAgentState(coreRequest, run, 'recording-finding', file, file ? `Adding a review comment for ${file}` : 'Adding a review comment');
+      await saveBridgeAgentState(
+        coreRequest,
+        run,
+        'recording-finding',
+        file,
+        file ? `Adding a review comment for ${file}` : 'Adding a review comment',
+      );
       return writeJson(response, 200, result);
     }
 
@@ -443,12 +482,21 @@ const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files
     }
 
     if (request.url === '/set-agent-state') {
-      const result = await coreRequest('saveReviewAgentState', { sessionId: run.sessionId, agent: { ...body, id: run.id, provider: 'opencode' } });
+      const result = await coreRequest('saveReviewAgentState', {
+        sessionId: run.sessionId,
+        agent: { ...body, id: run.id, provider: 'opencode' },
+      });
       return writeJson(response, 200, result);
     }
 
     if (request.url === '/changed-files') {
-      await saveBridgeAgentState(coreRequest, run, 'listing-files', undefined, `Planning review across ${files.length} changed file${files.length === 1 ? '' : 's'}`);
+      await saveBridgeAgentState(
+        coreRequest,
+        run,
+        'listing-files',
+        undefined,
+        `Planning review across ${files.length} changed file${files.length === 1 ? '' : 's'}`,
+      );
       return writeJson(response, 200, files);
     }
 
@@ -469,7 +517,13 @@ const handleToolRequest = async (coreRequest: CoreRequest, run: ActiveRun, files
   }
 };
 
-const saveBridgeAgentState = async (coreRequest: CoreRequest, run: ActiveRun, phase: string, currentFile: string | undefined, summary: string): Promise<void> => {
+const saveBridgeAgentState = async (
+  coreRequest: CoreRequest,
+  run: ActiveRun,
+  phase: string,
+  currentFile: string | undefined,
+  summary: string,
+): Promise<void> => {
   const now = new Date().toISOString();
   await coreRequest('saveReviewAgentState', {
     sessionId: run.sessionId,
@@ -493,7 +547,7 @@ const readJsonBody = (request: IncomingMessage): Promise<Record<string, unknown>
     request.on('end', () => {
       try {
         const text = Buffer.concat(chunks).toString('utf8');
-        resolve(text ? JSON.parse(text) as Record<string, unknown> : {});
+        resolve(text ? (JSON.parse(text) as Record<string, unknown>) : {});
       } catch (error) {
         reject(error);
       }
@@ -668,11 +722,13 @@ ${fileList}
 };
 
 const reviewChatPrompt = (request: ReviewChatRequest, diff: unknown): string => {
-  const threadMessages = request.thread.messages.map((message) => `- ${message.authorId}: ${message.body}`).join('\n') || '- No thread messages';
-  const chatMessages = (request.chatMessages ?? [])
-    .filter((message) => message.context?.threadIds?.includes(request.thread.id))
-    .map((message) => `- ${message.role}: ${message.body}`)
-    .join('\n') || '- No prior chat messages';
+  const threadMessages =
+    request.thread.messages.map((message) => `- ${message.authorId}: ${message.body}`).join('\n') || '- No thread messages';
+  const chatMessages =
+    (request.chatMessages ?? [])
+      .filter((message) => message.context?.threadIds?.includes(request.thread.id))
+      .map((message) => `- ${message.role}: ${message.body}`)
+      .join('\n') || '- No prior chat messages';
 
   return `Answer this Diffuse review thread question.
 
@@ -723,4 +779,4 @@ const partitionFiles = (files: ChangedFile[], count: number): ChangedFile[][] =>
 
 const createId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
 
-const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));

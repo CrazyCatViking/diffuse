@@ -18,9 +18,16 @@ if (process.platform !== 'win32') {
   await chmod(destinationCore, 0o755);
 }
 
-await writeFile(join(resourcesDir, 'metadata.json'), `${JSON.stringify({
-  version: packageJson.version,
-  source: 'electron-builder'
-}, null, 2)}\n`);
+await writeFile(
+  join(resourcesDir, 'metadata.json'),
+  `${JSON.stringify(
+    {
+      version: packageJson.version,
+      source: 'electron-builder',
+    },
+    null,
+    2,
+  )}\n`,
+);
 
 console.log(`Prepared Electron package resources from ${sourceCore}`);

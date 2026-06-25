@@ -1,5 +1,14 @@
 <template>
-  <div class="file-row" :class="{ active, reviewed }" :style="{ '--depth': depth }" role="button" tabindex="0" @click="$emit('select', file.id)" @keydown.enter="$emit('select', file.id)" @keydown.space.prevent="$emit('select', file.id)">
+  <div
+    class="file-row"
+    :class="{ active, reviewed }"
+    :style="{ '--depth': depth }"
+    role="button"
+    tabindex="0"
+    @click="$emit('select', file.id)"
+    @keydown.enter="$emit('select', file.id)"
+    @keydown.space.prevent="$emit('select', file.id)"
+  >
     <input
       class="review-checkbox"
       type="checkbox"
@@ -9,8 +18,11 @@
       @click.stop
       @change="$emit('setReviewed', { fileId: file.id, reviewed: ($event.target as HTMLInputElement).checked })"
     />
+
     <span class="status">{{ file.status[0].toUpperCase() }}</span>
+
     <span class="path" :title="file.newPath ?? file.oldPath ?? file.id">{{ name }}</span>
+
     <span class="counts">+{{ file.additions }} -{{ file.deletions }}</span>
   </div>
 </template>
@@ -83,5 +95,4 @@ defineEmits<{
   color: #8b95a7;
   font-size: 12px;
 }
-
 </style>

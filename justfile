@@ -4,6 +4,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPoli
 [unix]
 build:
     ./scripts/requirements.sh build
+    node scripts/check-rpc-contract.mjs
     (cd core && zig build)
     (cd app && pnpm install --frozen-lockfile)
     (cd app && pnpm build)
@@ -15,6 +16,7 @@ build:
     if (-not (Get-Command zig -ErrorAction SilentlyContinue)) { throw 'Missing required command: zig' }
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'Missing required command: node' }
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw 'Missing required command: pnpm' }
+    node scripts/check-rpc-contract.mjs
     Push-Location core; zig build; Pop-Location
     Push-Location app; pnpm install --frozen-lockfile; pnpm build; Pop-Location
 

@@ -126,7 +126,8 @@ export const useSettingsStore = defineStore('settings', () => {
 
 const loadThemeId = (): SyntaxThemeId => {
   const value = window.localStorage.getItem(syntaxThemeStorageKey);
-  if (value === 'github-dark' || value === 'solarized-dark' || value === 'nord' || value === 'high-contrast' || value === 'custom') return value;
+  if (value === 'github-dark' || value === 'solarized-dark' || value === 'nord' || value === 'high-contrast' || value === 'custom')
+    return value;
   return 'github-dark';
 };
 

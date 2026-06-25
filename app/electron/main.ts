@@ -2,8 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } f
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
-import { CoreRequestTimeoutError, type CoreEvent, type CoreRpcClient } from './coreRpcClient';
+import { CoreRequestTimeoutError, type CoreRpcClient } from './coreRpcClient';
 import { ReviewAgentRunner } from './reviewAgentRunner';
+import { coreMethodNames, type CoreEvent, type CoreMethod, type CoreMethods } from '../src/lib/coreContract';
 
 type WindowState = {
   window: BrowserWindow;
@@ -19,49 +20,7 @@ if (!app.requestSingleInstanceLock({ cwd: process.cwd() })) {
   app.exit(0);
 }
 
-const allowedCoreMethods = new Set([
-  'getVersion',
-  'openRepository',
-  'getDiffTargetDefaults',
-  'listBranches',
-  'listChangedFiles',
-  'getDiffRenderModel',
-  'getSyntaxSpans',
-  'getLspConfigInfo',
-  'getLspInstallInfo',
-  'installLspServer',
-  'restartLspServer',
-  'getLspStatus',
-  'getLspHover',
-  'getLspDiagnostics',
-  'getReviewConfig',
-  'saveReviewConfig',
-  'getActiveReviewSession',
-  'listReviewSessions',
-  'createReviewSession',
-  'getReviewProgress',
-  'saveReviewProgress',
-  'getReviewedFiles',
-  'saveReviewedFiles',
-  'updateReviewedFiles',
-  'getReviewAgentStates',
-  'saveReviewAgentState',
-  'getReviewRuns',
-  'recoverStaleReviewRuns',
-  'saveReviewRun',
-  'createReviewRun',
-  'updateReviewRun',
-  'finishReviewRun',
-  'getReviewThreads',
-  'getReviewChatMessages',
-  'saveReviewChatMessage',
-  'addReviewComment',
-  'saveReviewThread',
-  'listTreeSitterGrammars',
-  'syncTreeSitterRegistry',
-  'installTreeSitterGrammar',
-  'uninstallTreeSitterGrammar'
-]);
+const allowedCoreMethods = new Set<CoreMethod>(coreMethodNames);
 
 function getCore(state: WindowState): CoreRpcClient {
   if (state.core?.isRunning) return state.core;
@@ -74,6 +33,10 @@ function getCore(state: WindowState): CoreRpcClient {
     state.core = null;
   });
   return state.core;
+}
+
+function isCoreMethod(method: string): method is CoreMethod {
+  return allowedCoreMethods.has(method as CoreMethod);
 }
 
 function requestTimeoutMs(method: string): number {
@@ -89,21 +52,32 @@ function shouldKillCoreOnTimeout(method: string): boolean {
   return method !== 'getSyntaxSpans' && method !== 'getLspHover' && method !== 'getLspDiagnostics';
 }
 
-async function coreRequest<T>(state: WindowState, method: string, params: Record<string, unknown> = {}): Promise<T> {
+async function coreRequest<M extends CoreMethod>(
+  state: WindowState,
+  method: M,
+  params: CoreMethods[M]['params'] = {} as CoreMethods[M]['params'],
+): Promise<CoreMethods[M]['result']> {
   try {
-    return await getCore(state).request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
+    return await getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), {
+      killOnTimeout: shouldKillCoreOnTimeout(method),
+    });
   } catch (error) {
     if (!(error instanceof CoreRequestTimeoutError)) throw error;
     if (!shouldKillCoreOnTimeout(method)) throw error;
 
     state.core?.dispose();
     state.core = null;
-    return getCore(state).request<T>(method, params, requestTimeoutMs(method), { killOnTimeout: shouldKillCoreOnTimeout(method) });
+    return getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), {
+      killOnTimeout: shouldKillCoreOnTimeout(method),
+    });
   }
 }
 
 function getReviewAgentRunner(state: WindowState): ReviewAgentRunner {
-  state.reviewAgentRunner ??= new ReviewAgentRunner((method, params) => coreRequest(state, method, params));
+  state.reviewAgentRunner ??= new ReviewAgentRunner(async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
+    if (!isCoreMethod(method)) throw new Error(`Unknown core method: ${method}`);
+    return (await coreRequest(state, method, params as CoreMethods[typeof method]['params'])) as T;
+  });
   return state.reviewAgentRunner;
 }
 
@@ -135,15 +109,15 @@ function createWindow(launchRepository?: string): WindowState {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
-    }
+      sandbox: false,
+    },
   });
 
   const state: WindowState = {
     window,
     launchRepository,
     core: null,
-    reviewAgentRunner: null
+    reviewAgentRunner: null,
   };
   windowStates.set(window.id, state);
 
@@ -170,7 +144,10 @@ function createWindow(launchRepository?: string): WindowState {
 function parseLaunchRepository(args: string[], cwd = process.cwd()): string | undefined {
   const index = args.indexOf('--open-repository');
   if (index === -1 || index + 1 >= args.length) return undefined;
-  const path = args.slice(index + 1).filter((arg) => !arg.startsWith('-')).at(-1);
+  const path = args
+    .slice(index + 1)
+    .filter((arg) => !arg.startsWith('-'))
+    .at(-1);
   if (!path) return undefined;
   return isAbsolute(path) ? path : resolve(cwd, path);
 }
@@ -222,14 +199,21 @@ function ensureLspConfigFile(configPath: string): void {
   mkdirSync(dirname(configPath), { recursive: true });
   if (existsSync(configPath)) return;
 
-  writeFileSync(configPath, `${JSON.stringify({
-    lsp: {
-      zig: {
-        command: 'zls',
-        args: []
-      }
-    }
-  }, null, 2)}\n`);
+  writeFileSync(
+    configPath,
+    `${JSON.stringify(
+      {
+        lsp: {
+          zig: {
+            command: 'zls',
+            args: [],
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 ipcMain.handle('repo:pickDirectory', async (event) => {
@@ -237,7 +221,7 @@ ipcMain.handle('repo:pickDirectory', async (event) => {
 
   const result = await dialog.showOpenDialog(state.window, {
     title: 'Open Repository',
-    properties: ['openDirectory']
+    properties: ['openDirectory'],
   });
 
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -249,7 +233,7 @@ ipcMain.handle('app:getLaunchRepository', async (event) => {
 });
 
 ipcMain.handle('core:request', async (event, request: { method: string; params?: Record<string, unknown> }) => {
-  if (!allowedCoreMethods.has(request.method)) {
+  if (!isCoreMethod(request.method)) {
     throw new Error(`Unknown core method: ${request.method}`);
   }
 

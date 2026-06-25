@@ -1,15 +1,14 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import type { CoreEvent, CoreRequest } from '../src/lib/coreContract';
 
 export type DiffuseBridge = typeof bridge;
 
-// Should add an allowed methods guard here
-
-const coreRequest = (method: string, params?: unknown) => {
+const coreRequest: CoreRequest = (method, params) => {
   return ipcRenderer.invoke('core:request', { method, params });
 };
 
-const onCoreEvent = (listener: (event: unknown) => void) => {
-  const handler = (_event: IpcRendererEvent, coreEvent: unknown) => listener(coreEvent);
+const onCoreEvent = (listener: (event: CoreEvent) => void) => {
+  const handler = (_event: IpcRendererEvent, coreEvent: CoreEvent) => listener(coreEvent);
   ipcRenderer.on('core:event', handler);
   return () => ipcRenderer.off('core:event', handler);
 };
@@ -46,7 +45,7 @@ const bridge = {
   onCoreEvent,
   startReviewAgent,
   stopReviewAgent,
-  chatWithReviewAgent
+  chatWithReviewAgent,
 };
 
 contextBridge.exposeInMainWorld('diffuse', bridge);

@@ -1,10 +1,17 @@
 <template>
   <aside class="changed-files">
     <div class="pane-title">Changed Files</div>
+
     <div v-if="files.length === 0" class="empty">No changed files</div>
+
     <template v-else>
       <template v-for="node in visibleNodes" :key="node.key">
-        <div v-if="node.type === 'folder'" class="folder-row" :class="{ active: node.key === activeFolderPath, reviewed: folderReviewed(node) }" :style="{ '--depth': node.depth }">
+        <div
+          v-if="node.type === 'folder'"
+          class="folder-row"
+          :class="{ active: node.key === activeFolderPath, reviewed: folderReviewed(node) }"
+          :style="{ '--depth': node.depth }"
+        >
           <input
             class="review-checkbox"
             type="checkbox"
@@ -14,9 +21,16 @@
             @click.stop
             @change="setFolderReviewed(node, ($event.target as HTMLInputElement).checked)"
           />
-          <button class="chevron-button" type="button" :aria-label="collapsedFolders.has(node.key) ? `Expand ${node.name}` : `Collapse ${node.name}`" @click="toggleFolder(node.key)">
+
+          <button
+            class="chevron-button"
+            type="button"
+            :aria-label="collapsedFolders.has(node.key) ? `Expand ${node.name}` : `Collapse ${node.name}`"
+            @click="toggleFolder(node.key)"
+          >
             <span class="chevron">{{ collapsedFolders.has(node.key) ? '›' : '⌄' }}</span>
           </button>
+
           <button class="folder-select" type="button" :title="node.path" @click="selectFolder(node)">
             <span class="folder-name">{{ node.name }}</span>
           </button>
