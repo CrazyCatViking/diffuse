@@ -211,6 +211,8 @@ When no repository is open, Diffuse shows a start screen with an `Open Repositor
 
 After opening a repository, Diffuse shows changed files in a collapsible folder tree. Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder.
 
+On wide screens, a right-side review cockpit summarizes reviewed files, open threads, and AI review activity, with shortcuts for jumping to files and resolving or reopening threads.
+
 The compare bar supports two main modes:
 
 1. `Working tree against <target>` compares local staged and unstaged changes against a target ref, usually `HEAD`.

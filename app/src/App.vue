@@ -57,11 +57,7 @@
         @stop="review.stopAgentReview()"
       />
 
-      <main
-        class="workspace"
-        :class="{ resizing: fileTreeResizing }"
-        :style="{ gridTemplateColumns: `${fileTreeWidth}px 6px minmax(0, 1fr)` }"
-      >
+      <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ '--file-tree-width': `${fileTreeWidth}px` }">
         <ChangedFilesPane
           :files="repo.changedFiles"
           :active-file-id="repo.activeFileId"
@@ -113,6 +109,26 @@
           @install-grammar="diff.installMissingGrammar()"
           @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
         />
+
+        <ReviewPanel
+          class="review-panel-region"
+          :changed-files="repo.changedFiles"
+          :active-file-id="repo.activeFileId"
+          :reviewed-file-ids="reviewedFileIds"
+          :session="review.session"
+          :progress="review.progress"
+          :active-run="review.activeRun"
+          :active-agent-state="review.activeAgentState"
+          :threads="review.threads"
+          :loading="review.loading"
+          :error="review.error"
+          @select-file="selectFile"
+          @new-session="review.startNewSession()"
+          @start-review="review.startAgentReview()"
+          @stop-review="review.stopAgentReview()"
+          @resolve-thread="review.resolveThread($event)"
+          @reopen-thread="review.reopenThread($event)"
+        />
       </main>
     </template>
   </div>
@@ -128,6 +144,7 @@ import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import RepositoryStartView from './components/repositories/RepositoryStartView.vue';
 import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
+import ReviewPanel from './components/review/ReviewPanel.vue';
 import SettingsView from './components/settings/SettingsView.vue';
 import type { ChangedFile, DiffTarget } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
@@ -317,12 +334,17 @@ watch(
 
 .workspace {
   display: grid;
+  grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr) minmax(320px, 360px);
   min-height: 0;
 
   &.resizing {
     cursor: col-resize;
     user-select: none;
   }
+}
+
+.review-panel-region {
+  min-width: 0;
 }
 
 .start-screen {
@@ -354,6 +376,16 @@ watch(
     &::before {
       background: var(--color-accent);
     }
+  }
+}
+
+@media (max-width: 1280px) {
+  .workspace {
+    grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr);
+  }
+
+  .review-panel-region {
+    display: none;
   }
 }
 </style>
