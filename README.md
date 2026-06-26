@@ -209,9 +209,9 @@ diffuse diff --repo /path/to/repository --file src/example.ts
 
 When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository.
 
-After opening a repository, Diffuse shows changed files in a collapsible folder tree. Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder.
+After opening a repository, Diffuse shows a review overview alongside changed files in a collapsible folder tree. The overview summarizes review progress, change totals, review threads, AI activity, and LSP diagnostics for supported changed files. Diagnostics are checked while the overview is open, so the diff workspace does not spend space on an always-visible review panel.
 
-On wide screens, a right-side review cockpit summarizes reviewed files, open threads, and AI review activity. It can filter threads by status, AI source, or current file; selecting a thread opens its file, scrolls to the anchored review row, and briefly flashes the target. In narrow desktop windows, use the `Review` button to open the same cockpit as a drawer.
+Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder. Selecting a review thread from the overview opens its file, scrolls to the anchored review row, and briefly flashes the target.
 
 The compare bar supports two main modes:
 

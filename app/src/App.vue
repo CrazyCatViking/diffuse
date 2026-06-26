@@ -60,9 +60,11 @@
       <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ '--file-tree-width': `${fileTreeWidth}px` }">
         <ChangedFilesPane
           :files="repo.changedFiles"
-          :active-file-id="repo.activeFileId"
-          :active-folder-path="selectedFolder?.path"
+          :active-file-id="activeWorkspaceView === 'file' ? repo.activeFileId : undefined"
+          :active-folder-path="activeWorkspaceView === 'folder' ? selectedFolder?.path : undefined"
+          :overview-active="activeWorkspaceView === 'overview'"
           :reviewed-file-ids="reviewedFileIds"
+          @select-overview="selectOverview"
           @select-file="selectFile"
           @select-folder="selectFolder"
           @set-reviewed="setFileReviewed"
@@ -80,8 +82,22 @@
           @pointerdown="startFileTreeResize"
         />
 
+        <ReviewOverviewView
+          v-if="activeWorkspaceView === 'overview'"
+          class="workspace-main"
+          v-bind="reviewOverviewProps"
+          @select-file="selectFile"
+          @new-session="review.startNewSession()"
+          @start-review="review.startAgentReview()"
+          @stop-review="review.stopAgentReview()"
+          @select-thread="selectReviewThread"
+          @resolve-thread="review.resolveThread($event)"
+          @reopen-thread="review.reopenThread($event)"
+        />
+
         <FolderDiffViewer
-          v-if="selectedFolder"
+          v-else-if="activeWorkspaceView === 'folder' && selectedFolder"
+          class="workspace-main"
           :folder-path="selectedFolder.path"
           :files="selectedFolder.files"
           :target="repo.diffTarget"
@@ -93,6 +109,7 @@
 
         <DiffViewer
           v-else
+          class="workspace-main"
           :model="diff.current"
           :loading="diff.loading"
           :error="diff.error"
@@ -111,48 +128,6 @@
           @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
           @thread-reveal-handled="handleThreadRevealHandled"
         />
-
-        <ReviewPanel
-          class="review-panel-region"
-          v-bind="reviewPanelProps"
-          @select-file="selectFile"
-          @new-session="review.startNewSession()"
-          @start-review="review.startAgentReview()"
-          @stop-review="review.stopAgentReview()"
-          @select-thread="selectReviewThread"
-          @resolve-thread="review.resolveThread($event)"
-          @reopen-thread="review.reopenThread($event)"
-        />
-
-        <Button
-          class="review-drawer-toggle"
-          variant="review"
-          size="sm"
-          :aria-expanded="showReviewDrawer"
-          aria-controls="review-drawer"
-          @click="showReviewDrawer = true"
-        >
-          {{ reviewDrawerLabel }}
-        </Button>
-
-        <div v-if="showReviewDrawer" class="review-drawer-overlay" @click.self="showReviewDrawer = false">
-          <ReviewPanel
-            id="review-drawer"
-            class="review-drawer-panel"
-            v-bind="reviewPanelProps"
-            closable
-            role="dialog"
-            aria-modal="true"
-            @close="showReviewDrawer = false"
-            @select-file="selectFileFromReviewDrawer"
-            @select-thread="selectReviewThreadFromDrawer"
-            @new-session="review.startNewSession()"
-            @start-review="review.startAgentReview()"
-            @stop-review="review.stopAgentReview()"
-            @resolve-thread="review.resolveThread($event)"
-            @reopen-thread="review.reopenThread($event)"
-          />
-        </div>
       </main>
     </template>
   </div>
@@ -161,7 +136,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
-import Button from './components/Button.vue';
 import DiffTargetBar from './components/diff/DiffTargetBar.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
@@ -169,7 +143,7 @@ import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import RepositoryStartView from './components/repositories/RepositoryStartView.vue';
 import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
-import ReviewPanel from './components/review/ReviewPanel.vue';
+import ReviewOverviewView from './components/review/ReviewOverviewView.vue';
 import SettingsView from './components/settings/SettingsView.vue';
 import type { ChangedFile, DiffTarget, ReviewThread } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
@@ -181,7 +155,8 @@ const diff = useDiffStore();
 const review = useReviewStore();
 const showRecentRepositories = ref(false);
 const showSettings = ref(false);
-const showReviewDrawer = ref(false);
+type WorkspaceView = 'overview' | 'file' | 'folder';
+const activeWorkspaceView = ref<WorkspaceView>('overview');
 const selectedFolder = ref<{ path: string; files: ChangedFile[] }>();
 const fileTreeWidthStorageKey = 'diffuse.fileTreeWidth';
 const minFileTreeWidth = 220;
@@ -211,23 +186,18 @@ function clampFileTreeWidth(width: number) {
 const fileTreeWidth = ref(loadFileTreeWidth());
 const fileTreeResizing = ref(false);
 const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
-const reviewPanelProps = computed(() => ({
+const reviewOverviewProps = computed(() => ({
   changedFiles: repo.changedFiles,
-  activeFileId: repo.activeFileId,
+  target: repo.diffTarget,
   reviewedFileIds: reviewedFileIds.value,
   session: review.session,
   progress: review.progress,
   activeRun: review.activeRun,
   activeAgentState: review.activeAgentState,
   threads: review.threads,
-  threadRevealRequest: threadRevealRequest.value,
   loading: review.loading,
   error: review.error,
 }));
-const reviewDrawerLabel = computed(() => {
-  const openThreadCount = review.openThreads.length;
-  return openThreadCount > 0 ? `Review (${openThreadCount})` : 'Review';
-});
 
 const startFileTreeResize = (event: PointerEvent) => {
   event.preventDefault();
@@ -263,14 +233,23 @@ const applyDiffTarget = async (target: DiffTarget) => {
   await repo.setDiffTarget(target);
 };
 
+const selectOverview = () => {
+  threadRevealRequest.value = undefined;
+  selectedFolder.value = undefined;
+  activeWorkspaceView.value = 'overview';
+  repo.activeFileId = undefined;
+};
+
 const selectFile = (fileId: string) => {
   threadRevealRequest.value = undefined;
   selectedFolder.value = undefined;
+  activeWorkspaceView.value = 'file';
   repo.selectFile(fileId);
 };
 
 const selectReviewThread = (thread: ReviewThread) => {
   selectedFolder.value = undefined;
+  activeWorkspaceView.value = 'file';
   threadRevealRequest.value = { threadId: thread.id, fileId: thread.fileId, requestId: ++threadRevealRequestId };
   repo.selectFile(thread.fileId);
 };
@@ -279,18 +258,9 @@ const handleThreadRevealHandled = (requestId: number) => {
   if (threadRevealRequest.value?.requestId === requestId) threadRevealRequest.value = undefined;
 };
 
-const selectFileFromReviewDrawer = (fileId: string) => {
-  selectFile(fileId);
-  showReviewDrawer.value = false;
-};
-
-const selectReviewThreadFromDrawer = (thread: ReviewThread) => {
-  selectReviewThread(thread);
-  showReviewDrawer.value = false;
-};
-
 const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
   threadRevealRequest.value = undefined;
+  activeWorkspaceView.value = 'folder';
   selectedFolder.value = { path: folder.path, files: sortFilesLikeSidebar(folder.files) };
   repo.activeFileId = undefined;
 };
@@ -349,6 +319,8 @@ watch(
   () => repo.repository?.root,
   (root) => {
     threadRevealRequest.value = undefined;
+    selectedFolder.value = undefined;
+    activeWorkspaceView.value = 'overview';
     if (root) {
       void review.ensureSession();
     } else {
@@ -366,9 +338,13 @@ watch(
 );
 
 watch(
-  () => repo.activeFileId,
-  (fileId) => {
-    if (selectedFolder.value) return;
+  () => [activeWorkspaceView.value, repo.activeFileId] as const,
+  ([view, fileId]) => {
+    if (view !== 'file') {
+      diff.clear();
+      return;
+    }
+
     if (fileId) void diff.loadDiff(fileId, { silent: diff.current?.fileId === fileId });
     else diff.clear();
   },
@@ -377,10 +353,16 @@ watch(
 watch(
   () => repo.changeRevision,
   () => {
-    if (selectedFolder.value) {
+    if (activeWorkspaceView.value === 'folder' && selectedFolder.value) {
       const folderPath = selectedFolder.value.path;
       const files = sortFilesLikeSidebar(repo.changedFiles.filter((file) => changedFilePath(file).startsWith(`${folderPath}/`)));
-      selectedFolder.value = files.length > 0 ? { path: folderPath, files } : undefined;
+      if (files.length > 0) selectedFolder.value = { path: folderPath, files };
+      else selectOverview();
+      return;
+    }
+
+    if (activeWorkspaceView.value !== 'file') {
+      diff.clear();
       return;
     }
 
@@ -398,7 +380,11 @@ watch(
 watch(
   () => repo.diffTarget,
   () => {
-    if (selectedFolder.value) return;
+    if (activeWorkspaceView.value !== 'file') {
+      diff.clear();
+      return;
+    }
+
     if (repo.activeFileId) void diff.loadDiff(repo.activeFileId);
     else diff.clear();
   },
@@ -417,7 +403,7 @@ watch(
 
 .workspace {
   display: grid;
-  grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr);
   min-height: 0;
   position: relative;
 
@@ -427,35 +413,9 @@ watch(
   }
 }
 
-.review-panel-region {
+.workspace-main {
   min-width: 0;
-}
-
-.review-drawer-toggle.review-drawer-toggle {
-  position: absolute;
-  right: var(--space-7);
-  bottom: var(--space-7);
-  z-index: 6;
-  display: none;
-  box-shadow: var(--shadow-popover);
-}
-
-.review-drawer-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  display: none;
-  justify-items: end;
-  padding: var(--space-7);
-  background: var(--color-bg-overlay);
-}
-
-.review-drawer-panel {
-  width: min(420px, 100%);
-  height: 100%;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-6);
-  box-shadow: var(--shadow-dialog);
+  min-height: 0;
 }
 
 .start-screen {
@@ -494,37 +454,11 @@ watch(
   .workspace {
     grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr);
   }
-
-  .review-panel-region {
-    display: none;
-  }
-
-  .review-drawer-toggle.review-drawer-toggle {
-    display: inline-flex;
-  }
-
-  .review-drawer-overlay {
-    display: grid;
-  }
 }
 
 @media (max-width: 900px) {
   .workspace {
     grid-template-columns: minmax(220px, min(var(--file-tree-width), 38vw)) 6px minmax(0, 1fr);
-  }
-
-  .review-drawer-overlay {
-    padding: var(--space-5);
-  }
-
-  .review-drawer-panel {
-    width: min(380px, 100%);
-  }
-}
-
-@media (min-width: 1281px) {
-  .review-drawer-overlay {
-    display: none;
   }
 }
 </style>

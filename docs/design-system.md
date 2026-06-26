@@ -40,7 +40,7 @@ Use background tokens by surface depth:
 | --- | --- |
 | `--color-bg-app` | Full app and major viewer backgrounds. |
 | `--color-bg-shell` | Application chrome, sidebars, headers, toolbars. |
-| `--color-bg-panel` | Cards, cockpit panels, file headers, neutral containers. |
+| `--color-bg-panel` | Cards, overview panels, file headers, neutral containers. |
 | `--color-bg-panel-raised` | Dialogs, popovers, active cards, raised settings rows. |
 | `--color-bg-inset` | Inputs, grouped controls, code-adjacent inset wells. |
 | `--color-bg-code` | Diff row and code surfaces. |
@@ -81,7 +81,7 @@ Use semantic tokens consistently:
 | Token Family | Meaning |
 | --- | --- |
 | `accent` | Primary app action or selected control. |
-| `review` | Human review state, comments, threads, cockpit navigation. |
+| `review` | Human review state, comments, threads, overview navigation. |
 | `ai` | AI review, AI chat, language-server info when no stronger severity applies. |
 | `success` | Ready, reviewed, resolved, installed, completed. |
 | `warning` | Missing configuration, incomplete install, open attention state. |
@@ -123,14 +123,14 @@ Variants:
 | `secondary` | Normal toolbar action, toggles, and non-primary actions. |
 | `ghost` | Low-emphasis action in dense rows or headers. |
 | `danger` | Stop, remove, uninstall, or destructive action. |
-| `review` | Review-specific actions such as opening the review cockpit. |
+| `review` | Review-specific actions such as opening review surfaces. |
 | `ai` | AI review and AI chat actions. |
 
 Sizes:
 
 | Size | Use |
 | --- | --- |
-| `sm` | Toolbars, dense rows, cockpit cards. |
+| `sm` | Toolbars, dense rows, overview cards. |
 | `md` | Normal panels and forms. |
 | `lg` | Start screen and large primary calls to action. |
 
@@ -154,7 +154,7 @@ Use `Toolbar.vue` for horizontal chrome that separates a region from the content
 
 ### EmptyState
 
-Use `EmptyState.vue` for loading, empty, no-selection, and unavailable states. Prefer clear titles and one-sentence descriptions. Use `bordered` when the empty state sits inside a panel or list region. Use `align="start"` for cockpit and settings sections; use the default centered layout for full-pane states.
+Use `EmptyState.vue` for loading, empty, no-selection, and unavailable states. Prefer clear titles and one-sentence descriptions. Use `bordered` when the empty state sits inside a panel or list region. Use `align="start"` for review overview and settings sections; use the default centered layout for full-pane states.
 
 ## Feature UI Patterns
 
@@ -180,13 +180,15 @@ Folder diff mode should feel like one review surface over many files. File heade
 
 Folder diff should reuse the same review row, gutter, diagnostic, hunk, and scrollbar primitives as single-file diff where possible.
 
-### Review Cockpit
+### Review Overview
 
-The review cockpit is a navigation and status surface. It should not own persisted review state. Use it to summarize reviewed files, thread filters, AI activity, and shortcuts into files or threads.
+The review overview is a workspace page, not a persistent side panel. It should not own persisted review state. Use it to summarize reviewed files, thread filters, AI activity, diagnostics, and shortcuts into files or threads.
+
+Session-wide diagnostics shown on the overview should be derived from existing LSP diagnostics APIs while the overview is active. Do not persist diagnostic summaries in review session state unless the review data format explicitly changes.
 
 Thread navigation should be request-based, not persistent selection state. Clicking a thread should open the file, reveal the anchored row, and flash the target briefly.
 
-On narrow desktop windows, expose the same cockpit through the review drawer. Do not create a separate mobile-specific cockpit.
+Avoid reintroducing an always-visible review side panel or drawer that competes with diff exploration space. Keep the overview reachable from workspace navigation instead.
 
 ### Settings
 

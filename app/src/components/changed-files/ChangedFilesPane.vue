@@ -10,6 +10,16 @@
       <Badge tone="neutral">{{ files.length }} {{ files.length === 1 ? 'file' : 'files' }}</Badge>
     </header>
 
+    <button class="overview-row" :class="{ active: overviewActive }" type="button" @click="emit('selectOverview')">
+      <span class="overview-icon">R</span>
+
+      <span class="overview-copy">
+        <span class="overview-title">Review overview</span>
+
+        <span class="overview-subtitle">Session state, threads, diagnostics</span>
+      </span>
+    </button>
+
     <EmptyState
       v-if="files.length === 0"
       class="sidebar-empty"
@@ -97,10 +107,12 @@ const props = defineProps<{
   files: ChangedFile[];
   activeFileId?: string;
   activeFolderPath?: string;
+  overviewActive: boolean;
   reviewedFileIds: string[];
 }>();
 
 const emit = defineEmits<{
+  selectOverview: [];
   selectFile: [fileId: string];
   selectFolder: [folder: { path: string; files: ChangedFile[] }];
   setReviewed: [payload: { fileId: string; reviewed: boolean }];
@@ -217,6 +229,79 @@ h2 {
   color: var(--color-text-primary);
   font-size: var(--font-size-heading-sm);
   line-height: 1.2;
+}
+
+.overview-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: var(--space-6);
+  padding: var(--space-5);
+  color: var(--color-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-4);
+  font: inherit;
+  box-shadow: var(--shadow-inset-highlight);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+
+  &:hover {
+    background: var(--color-bg-hover);
+    border-color: var(--color-border-default);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+
+  &.active {
+    background: var(--color-review-muted);
+    border-color: var(--color-border-default);
+  }
+}
+
+.overview-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  color: var(--color-review);
+  background: var(--color-review-muted);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-3);
+  font-size: var(--font-size-body-lg);
+  line-height: 1;
+}
+
+.overview-copy {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.overview-title,
+.overview-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-title {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+
+.overview-subtitle {
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-label);
 }
 
 .sidebar-empty {
