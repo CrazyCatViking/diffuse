@@ -103,11 +103,13 @@
           :installing-grammar="diff.installingGrammar"
           :grammar-install-step="diff.grammarInstallStep"
           :has-new-changes="diff.hasNewChanges"
+          :thread-reveal-request="threadRevealRequest"
           @update:view-mode="diff.setViewMode($event)"
           @update:context-mode="diff.setContextMode($event)"
           @update:sync-scroll="diff.setSyncScroll($event)"
           @install-grammar="diff.installMissingGrammar()"
           @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
+          @thread-reveal-handled="handleThreadRevealHandled"
         />
 
         <ReviewPanel
@@ -117,6 +119,7 @@
           @new-session="review.startNewSession()"
           @start-review="review.startAgentReview()"
           @stop-review="review.stopAgentReview()"
+          @select-thread="selectReviewThread"
           @resolve-thread="review.resolveThread($event)"
           @reopen-thread="review.reopenThread($event)"
         />
@@ -142,6 +145,7 @@
             aria-modal="true"
             @close="showReviewDrawer = false"
             @select-file="selectFileFromReviewDrawer"
+            @select-thread="selectReviewThreadFromDrawer"
             @new-session="review.startNewSession()"
             @start-review="review.startAgentReview()"
             @stop-review="review.stopAgentReview()"
@@ -167,7 +171,7 @@ import RepositoryStartView from './components/repositories/RepositoryStartView.v
 import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
 import ReviewPanel from './components/review/ReviewPanel.vue';
 import SettingsView from './components/settings/SettingsView.vue';
-import type { ChangedFile, DiffTarget } from './lib/protocol';
+import type { ChangedFile, DiffTarget, ReviewThread } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 import { useReviewStore } from './stores/review';
@@ -184,6 +188,15 @@ const minFileTreeWidth = 220;
 const maxFileTreeWidth = 640;
 let resizeStartX = 0;
 let resizeStartWidth = 0;
+
+type ThreadRevealRequest = {
+  threadId: string;
+  fileId: string;
+  requestId: number;
+};
+
+const threadRevealRequest = ref<ThreadRevealRequest>();
+let threadRevealRequestId = 0;
 
 function loadFileTreeWidth() {
   const savedWidth = Number(window.localStorage.getItem(fileTreeWidthStorageKey));
@@ -207,6 +220,7 @@ const reviewPanelProps = computed(() => ({
   activeRun: review.activeRun,
   activeAgentState: review.activeAgentState,
   threads: review.threads,
+  threadRevealRequest: threadRevealRequest.value,
   loading: review.loading,
   error: review.error,
 }));
@@ -250,8 +264,19 @@ const applyDiffTarget = async (target: DiffTarget) => {
 };
 
 const selectFile = (fileId: string) => {
+  threadRevealRequest.value = undefined;
   selectedFolder.value = undefined;
   repo.selectFile(fileId);
+};
+
+const selectReviewThread = (thread: ReviewThread) => {
+  selectedFolder.value = undefined;
+  threadRevealRequest.value = { threadId: thread.id, fileId: thread.fileId, requestId: ++threadRevealRequestId };
+  repo.selectFile(thread.fileId);
+};
+
+const handleThreadRevealHandled = (requestId: number) => {
+  if (threadRevealRequest.value?.requestId === requestId) threadRevealRequest.value = undefined;
 };
 
 const selectFileFromReviewDrawer = (fileId: string) => {
@@ -259,7 +284,13 @@ const selectFileFromReviewDrawer = (fileId: string) => {
   showReviewDrawer.value = false;
 };
 
+const selectReviewThreadFromDrawer = (thread: ReviewThread) => {
+  selectReviewThread(thread);
+  showReviewDrawer.value = false;
+};
+
 const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
+  threadRevealRequest.value = undefined;
   selectedFolder.value = { path: folder.path, files: sortFilesLikeSidebar(folder.files) };
   repo.activeFileId = undefined;
 };
@@ -317,11 +348,20 @@ onBeforeUnmount(() => {
 watch(
   () => repo.repository?.root,
   (root) => {
+    threadRevealRequest.value = undefined;
     if (root) {
       void review.ensureSession();
     } else {
       review.clear();
     }
+  },
+);
+
+watch(
+  () => review.threads,
+  (threads) => {
+    const request = threadRevealRequest.value;
+    if (request && !threads.some((thread) => thread.id === request.threadId)) threadRevealRequest.value = undefined;
   },
 );
 

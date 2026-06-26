@@ -46,6 +46,7 @@ export type DiffPaneModel = {
 export type DiffReviewUi = {
   draftBody: string;
   error?: string;
+  flashingThreadId?: string;
   chatMessagesForEntry: (entry: InlineReviewEntry) => ReviewChatMessage[];
   agentRespondingForEntry: (entry: InlineReviewEntry) => boolean;
 };

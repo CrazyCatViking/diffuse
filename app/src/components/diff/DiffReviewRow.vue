@@ -1,8 +1,9 @@
 <template>
-  <div class="inline-review-row" :class="reviewClass">
+  <div class="inline-review-row" :class="[reviewClass, { flashing }]">
     <div v-if="mode === 'split'" class="review-cell">
       <InlineReviewBox
         v-bind="reviewProps"
+        :flashing="flashing"
         @update:draft-body="emit('update:draftBody', $event)"
         @submit="emit('submit')"
         @submit-chat-draft="emit('submitChatDraft')"
@@ -18,6 +19,7 @@
     <InlineReviewBox
       v-else
       v-bind="reviewProps"
+      :flashing="flashing"
       @update:draft-body="emit('update:draftBody', $event)"
       @submit="emit('submit')"
       @submit-chat-draft="emit('submitChatDraft')"
@@ -45,9 +47,11 @@ const props = withDefaults(
     chatMessages?: ReviewChatMessage[];
     agentResponding?: boolean;
     error?: string;
+    flashing?: boolean;
   }>(),
   {
     draftBody: '',
+    flashing: false,
   },
 );
 
@@ -78,13 +82,17 @@ const reviewProps = computed(() => ({
   background: var(--color-bg-code);
 }
 
+.inline-review-row.flashing {
+  animation: review-row-flash 1800ms ease-out;
+}
+
 .inline-review-row.inline {
-  padding: var(--space-5) 18px var(--space-6) 128px;
+  padding: var(--space-3) 12px var(--space-4) 96px;
 }
 
 .inline-review-row.old,
 .inline-review-row.new {
-  padding: var(--space-5) var(--space-7) var(--space-6) 64px;
+  padding: var(--space-3) var(--space-5) var(--space-4) 48px;
 }
 
 .inline-review-row.synced-split {
@@ -102,6 +110,17 @@ const reviewProps = computed(() => ({
 }
 
 .review-cell {
-  padding: var(--space-5) var(--space-7) var(--space-6) 64px;
+  padding: var(--space-3) var(--space-5) var(--space-4) 48px;
+}
+
+@keyframes review-row-flash {
+  0%,
+  22% {
+    background: linear-gradient(90deg, var(--color-review-muted), var(--color-bg-code) 120px);
+  }
+
+  100% {
+    background: var(--color-bg-code);
+  }
 }
 </style>

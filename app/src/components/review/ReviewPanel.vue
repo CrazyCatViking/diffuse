@@ -106,7 +106,22 @@
       <div class="section-heading">
         <h3>Threads</h3>
 
-        <Badge :tone="openThreads.length > 0 ? 'warning' : 'success'">{{ openThreads.length }} open</Badge>
+        <Badge :tone="filteredThreads.length > 0 ? 'warning' : 'success'">{{ filteredThreads.length }} shown</Badge>
+      </div>
+
+      <div class="thread-filters" role="group" aria-label="Thread filters">
+        <Button
+          v-for="filter in threadFilters"
+          :key="filter.value"
+          variant="secondary"
+          size="sm"
+          :pressed="threadFilter === filter.value"
+          :aria-pressed="threadFilter === filter.value"
+          :disabled="filter.value === 'current' && !activeFileId"
+          @click="threadFilter = filter.value"
+        >
+          {{ filter.label }}
+        </Button>
       </div>
 
       <EmptyState
@@ -118,9 +133,23 @@
         description="Line comments and AI findings will appear here."
       />
 
+      <EmptyState
+        v-else-if="filteredThreads.length === 0"
+        class="compact-empty"
+        align="start"
+        bordered
+        title="No matching threads"
+        description="Change the filter to see more review threads."
+      />
+
       <div v-else class="thread-list">
-        <article v-for="thread in orderedThreads" :key="thread.id" class="thread-card" :class="thread.status">
-          <button class="thread-target" type="button" @click="emit('selectFile', thread.fileId)">
+        <article
+          v-for="thread in filteredThreads"
+          :key="thread.id"
+          class="thread-card"
+          :class="[thread.status, { flashing: thread.id === flashingThreadId }]"
+        >
+          <button class="thread-target" type="button" @click="emit('selectThread', thread)">
             <span class="thread-file">{{ threadPath(thread) }}</span>
 
             <span class="thread-line">{{ anchorLabel(thread) }}</span>
@@ -146,7 +175,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { ChangedFile, ReviewAgentState, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../../lib/protocol';
 import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
@@ -165,6 +194,11 @@ const props = withDefaults(
     loading: boolean;
     error?: string;
     closable?: boolean;
+    threadRevealRequest?: {
+      threadId: string;
+      fileId: string;
+      requestId: number;
+    };
   }>(),
   {
     closable: false,
@@ -176,10 +210,26 @@ const emit = defineEmits<{
   newSession: [];
   startReview: [];
   stopReview: [];
+  selectThread: [thread: ReviewThread];
   resolveThread: [thread: ReviewThread];
   reopenThread: [thread: ReviewThread];
   close: [];
 }>();
+
+type ThreadFilter = 'all' | 'open' | 'resolved' | 'ai' | 'current';
+
+const threadFilters: { value: ThreadFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'open', label: 'Open' },
+  { value: 'resolved', label: 'Resolved' },
+  { value: 'ai', label: 'AI' },
+  { value: 'current', label: 'Current file' },
+];
+
+const threadFilter = ref<ThreadFilter>('all');
+const flashingThreadId = ref<string>();
+const threadFlashDurationMs = 1800;
+let threadFlashTimer: number | undefined;
 
 const totalFiles = computed(() => props.changedFiles.length);
 const reviewedCount = computed(() => props.changedFiles.filter((file) => props.reviewedFileIds.includes(file.id)).length);
@@ -187,6 +237,15 @@ const reviewedPercent = computed(() => (totalFiles.value === 0 ? 0 : Math.round(
 const openThreads = computed(() => props.threads.filter((thread) => thread.status === 'open'));
 const resolvedThreads = computed(() => props.threads.filter((thread) => thread.status === 'resolved'));
 const orderedThreads = computed(() => [...props.threads].sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)));
+const filteredThreads = computed(() => {
+  return orderedThreads.value.filter((thread) => {
+    if (threadFilter.value === 'open') return thread.status === 'open';
+    if (threadFilter.value === 'resolved') return thread.status === 'resolved';
+    if (threadFilter.value === 'ai') return thread.source?.kind === 'agent';
+    if (threadFilter.value === 'current') return Boolean(props.activeFileId && thread.fileId === props.activeFileId);
+    return true;
+  });
+});
 const agentStatus = computed(() => props.activeRun?.status ?? props.progress?.status ?? 'idle');
 const progressText = computed(() => {
   const progress = props.progress;
@@ -230,6 +289,29 @@ const formatDate = (value: string) => {
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
+
+const flashThread = async (threadId: string) => {
+  if (threadFlashTimer) window.clearTimeout(threadFlashTimer);
+  flashingThreadId.value = undefined;
+  await nextTick();
+  flashingThreadId.value = threadId;
+  threadFlashTimer = window.setTimeout(() => {
+    if (flashingThreadId.value === threadId) flashingThreadId.value = undefined;
+    threadFlashTimer = undefined;
+  }, threadFlashDurationMs);
+};
+
+watch(
+  () => props.threadRevealRequest?.requestId,
+  () => {
+    const request = props.threadRevealRequest;
+    if (request) void flashThread(request.threadId);
+  },
+);
+
+onBeforeUnmount(() => {
+  if (threadFlashTimer) window.clearTimeout(threadFlashTimer);
+});
 </script>
 
 <style scoped lang="scss">
@@ -378,9 +460,14 @@ h3 {
 }
 
 .file-list,
-.thread-list {
+.thread-list,
+.thread-filters {
   display: grid;
   gap: var(--space-3);
+}
+
+.thread-filters {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .file-item {
@@ -464,6 +551,10 @@ h3 {
   opacity: 0.72;
 }
 
+.thread-card.flashing {
+  animation: thread-card-flash 1800ms ease-out;
+}
+
 .thread-target {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -503,5 +594,22 @@ h3 {
 .thread-meta {
   justify-content: start;
   flex-wrap: wrap;
+}
+
+@keyframes thread-card-flash {
+  0%,
+  22% {
+    background: linear-gradient(90deg, var(--color-review-muted), var(--color-bg-panel) 28px);
+    border-color: rgba(240, 195, 106, 0.34);
+    box-shadow:
+      var(--shadow-inset-highlight),
+      0 0 0 1px rgba(240, 195, 106, 0.14);
+  }
+
+  100% {
+    background: var(--color-bg-panel);
+    border-color: var(--color-border-subtle);
+    box-shadow: var(--shadow-inset-highlight);
+  }
 }
 </style>

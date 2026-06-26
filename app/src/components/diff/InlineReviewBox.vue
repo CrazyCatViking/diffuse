@@ -4,6 +4,7 @@
     :class="{
       resolved: entry.kind === 'thread' && entry.thread.status === 'resolved',
       chat: entry.kind === 'chat' || (entry.kind === 'draft' && entry.mode === 'chat'),
+      flashing,
     }"
   >
     <div v-if="entry.kind === 'thread'" class="review-box-header">
@@ -103,6 +104,7 @@ const props = defineProps<{
   chatMessages?: ReviewChatMessage[];
   agentResponding?: boolean;
   error?: string;
+  flashing?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -192,10 +194,10 @@ const formatTime = (value: string) => {
 <style scoped lang="scss">
 .review-box {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-height: 0;
-  margin: var(--space-2) var(--space-6) var(--space-4);
-  padding: var(--space-5) var(--space-6);
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
   color: var(--color-text-secondary);
   background: linear-gradient(90deg, var(--color-review-muted), var(--color-bg-shell) 18px);
   border: 1px solid var(--color-border-default);
@@ -206,13 +208,17 @@ const formatTime = (value: string) => {
 }
 
 .review-box.resolved {
-  min-height: 72px;
+  min-height: 56px;
   opacity: 0.78;
 }
 
 .review-box.chat {
   background: linear-gradient(90deg, var(--color-ai-muted), var(--color-bg-shell) 18px);
   border-left-color: var(--color-ai);
+}
+
+.review-box.flashing {
+  animation: review-box-flash 1800ms ease-out;
 }
 
 .review-box-header,
@@ -254,7 +260,7 @@ const formatTime = (value: string) => {
 .comment-composer,
 .thread {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .composer-author,
@@ -265,8 +271,8 @@ const formatTime = (value: string) => {
 
 .message {
   display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   background: var(--color-bg-inset);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-3);
@@ -280,9 +286,8 @@ const formatTime = (value: string) => {
 .reply-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-4);
+  gap: var(--space-3);
   align-items: end;
-  padding-top: var(--space-1);
 }
 
 .reply-actions {
@@ -316,8 +321,8 @@ const formatTime = (value: string) => {
 }
 
 textarea {
-  min-height: 74px;
-  padding: var(--space-5);
+  min-height: 64px;
+  padding: var(--space-4);
   resize: vertical;
   color: var(--color-text-primary);
   background: var(--color-bg-inset);
@@ -331,7 +336,7 @@ textarea {
   min-height: 30px;
   max-height: 140px;
   min-width: 0;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--space-3) var(--space-4);
   color: var(--color-text-primary);
   background: var(--color-bg-inset);
   border: 1px solid var(--color-border-default);
@@ -348,7 +353,7 @@ textarea {
 }
 
 button {
-  padding: var(--space-3) var(--space-5);
+  padding: var(--space-2) var(--space-4);
   color: var(--color-ai);
   background: var(--color-ai-muted);
   border: 1px solid rgba(143, 179, 255, 0.26);
@@ -366,5 +371,19 @@ p {
   margin: 0;
   color: var(--color-text-primary);
   white-space: pre-wrap;
+}
+
+@keyframes review-box-flash {
+  0%,
+  22% {
+    box-shadow:
+      var(--shadow-inset-highlight),
+      0 0 0 1px rgba(240, 195, 106, 0.18),
+      0 12px 32px rgba(0, 0, 0, 0.22);
+  }
+
+  100% {
+    box-shadow: var(--shadow-inset-highlight);
+  }
 }
 </style>

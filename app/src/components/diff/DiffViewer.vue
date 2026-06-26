@@ -113,6 +113,12 @@ import { buildRenderedDiffRowFields } from './diffRenderedRows';
 import SingleFileDiffPanes from './SingleFileDiffPanes.vue';
 import type { DiffPaneActions, DiffPaneModel, DiffRenderedEntry, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 
+type ThreadRevealRequest = {
+  threadId: string;
+  fileId: string;
+  requestId: number;
+};
+
 const props = defineProps<{
   model?: DiffRenderModel;
   loading: boolean;
@@ -124,6 +130,7 @@ const props = defineProps<{
   installingGrammar: boolean;
   grammarInstallStep?: string;
   hasNewChanges: boolean;
+  threadRevealRequest?: ThreadRevealRequest;
 }>();
 
 const emit = defineEmits<{
@@ -132,6 +139,7 @@ const emit = defineEmits<{
   'update:syncScroll': [enabled: boolean];
   installGrammar: [];
   loadLatest: [];
+  threadRevealHandled: [requestId: number];
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -144,6 +152,7 @@ const client = useClient();
 const repo = useRepoStore();
 const review = useReviewStore();
 const draftBody = ref('');
+const flashingThreadId = ref<string>();
 const searchOpen = ref(false);
 const searchQuery = ref('');
 const activeSearchIndex = ref(0);
@@ -161,14 +170,17 @@ let syncScrollFrame: number | undefined;
 let pendingScrollSync: { target: HTMLElement; top: number; left: number } | undefined;
 let syntaxPrefetchTimer: number | undefined;
 let initialSyntaxGateTimer: number | undefined;
+let threadFlashTimer: number | undefined;
 let initialSyntaxGeneration = 0;
 let syntaxRequestGeneration = 0;
+let handledThreadRevealRequestId = 0;
 const syntaxPageSize = 256;
 const syntaxPageLookaround = 2;
 const virtualRowOverscan = 40;
 const syntaxPrefetchDelayMs = 120;
 const maxConcurrentSyntaxRequests = 2;
 const initialSyntaxGateMs = 80;
+const threadFlashDurationMs = 1800;
 const scrollbars = useDiffScrollbar({ left: leftRef, right: rightRef, syncedSplit: syncedSplitRef, inline: inlineRef });
 const hasLeftScroll = scrollbars.panes.left.hasScroll;
 const hasRightScroll = scrollbars.panes.right.hasScroll;
@@ -606,6 +618,7 @@ const {
 const reviewUi = computed<DiffReviewUi>(() => ({
   draftBody: draftBody.value,
   error: review.error,
+  flashingThreadId: flashingThreadId.value,
   chatMessagesForEntry,
   agentRespondingForEntry,
 }));
@@ -672,6 +685,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocumentKeyDown);
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+  if (threadFlashTimer) window.clearTimeout(threadFlashTimer);
   cleanupLspHover();
   scrollbars.cleanup();
 });
@@ -886,6 +900,107 @@ const scrollVirtualizerToMatch = (
   if (displayIndex === -1) return;
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
+
+const revealThreadRequest = async () => {
+  const request = props.threadRevealRequest;
+  if (!request || request.requestId === handledThreadRevealRequestId || request.fileId !== props.model?.fileId || props.loading) return;
+
+  const thread = fileThreads.value.find((item) => item.id === request.threadId);
+  if (!thread) return;
+
+  const key = commentStartKey(thread.anchor.side, thread.anchor.startLine);
+  const collapsed = new Set(collapsedCommentStarts.value);
+  const expandedResolved = new Set(expandedResolvedCommentStarts.value);
+  let changed = false;
+
+  if (collapsed.delete(key)) changed = true;
+  if (thread.status === 'resolved' && !expandedResolved.has(key)) {
+    expandedResolved.add(key);
+    changed = true;
+  }
+
+  if (changed) {
+    collapsedCommentStarts.value = collapsed;
+    expandedResolvedCommentStarts.value = expandedResolved;
+    await nextTick();
+  }
+
+  await nextTick();
+  if (!scrollToReviewThread(thread.id, thread.anchor.side)) return;
+
+  handledThreadRevealRequestId = request.requestId;
+  await flashReviewThread(thread.id);
+  emit('threadRevealHandled', request.requestId);
+};
+
+const flashReviewThread = async (threadId: string) => {
+  if (threadFlashTimer) window.clearTimeout(threadFlashTimer);
+  flashingThreadId.value = undefined;
+  await nextTick();
+  flashingThreadId.value = threadId;
+  threadFlashTimer = window.setTimeout(() => {
+    if (flashingThreadId.value === threadId) flashingThreadId.value = undefined;
+    threadFlashTimer = undefined;
+  }, threadFlashDurationMs);
+};
+
+const scrollToReviewThread = (threadId: string, side: SyntaxSide) => {
+  if (!scrollElementForThread(side)) return false;
+
+  let scrolled = false;
+  if (props.viewMode === 'split' && props.syncScroll) {
+    scrolled = scrollVirtualizerToThread(syncedSplitVirtualizer.value, syncedSplitDisplayRows.value, threadId);
+  } else if (props.viewMode === 'split' && side === 'old') {
+    scrolled = scrollVirtualizerToThread(leftVirtualizer.value, leftDisplayRows.value, threadId);
+  } else if (props.viewMode === 'split') {
+    scrolled = scrollVirtualizerToThread(rightVirtualizer.value, rightDisplayRows.value, threadId);
+  } else {
+    scrolled = scrollVirtualizerToThread(inlineVirtualizer.value, inlineDisplayRows.value, threadId);
+  }
+  if (scrolled) scrollbars.updateAfterRender();
+  return scrolled;
+};
+
+const scrollElementForThread = (side: SyntaxSide) => {
+  if (props.viewMode === 'split' && props.syncScroll) return syncedSplitRef.value;
+  if (props.viewMode === 'split' && side === 'old') return leftRef.value;
+  if (props.viewMode === 'split') return rightRef.value;
+  return inlineRef.value;
+};
+
+const scrollVirtualizerToThread = (
+  virtualizer: { scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void },
+  displayRows: DisplayRow[],
+  threadId: string,
+) => {
+  const displayIndex = displayRows.findIndex((item) => item.kind === 'thread' && item.thread.id === threadId);
+  if (displayIndex === -1) return false;
+  virtualizer.scrollToIndex(displayIndex, { align: 'center' });
+  return true;
+};
+
+watch(
+  [
+    () => props.threadRevealRequest?.requestId,
+    () => props.threadRevealRequest?.fileId,
+    () => props.model?.fileId,
+    () => props.loading,
+    () => props.viewMode,
+    () => props.syncScroll,
+    () => leftRef.value,
+    () => rightRef.value,
+    () => syncedSplitRef.value,
+    () => inlineRef.value,
+    leftDisplayRows,
+    rightDisplayRows,
+    syncedSplitDisplayRows,
+    inlineDisplayRows,
+  ],
+  () => {
+    void revealThreadRequest();
+  },
+  { immediate: true, flush: 'post' },
+);
 
 const syntaxKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
 

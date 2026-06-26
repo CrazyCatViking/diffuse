@@ -42,6 +42,7 @@
     :mode="layout.compositionMode"
     :review-row="entry.reviewRow"
     :review-class="reviewClass"
+    :flashing="entry.reviewRow.kind === 'thread' && entry.reviewRow.thread.id === review.flashingThreadId"
     :draft-body="review.draftBody"
     :chat-messages="review.chatMessagesForEntry(entry.reviewRow)"
     :agent-responding="review.agentRespondingForEntry(entry.reviewRow)"
