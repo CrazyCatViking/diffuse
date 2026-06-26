@@ -8,34 +8,54 @@
     }"
   >
     <div v-if="entry.kind === 'thread'" class="review-box-header">
-      <span v-if="entry.thread.status === 'resolved'" class="resolved-label">Resolved</span>
+      <div class="thread-heading">
+        <span v-if="entry.thread.status === 'resolved'" class="resolved-label">Resolved thread</span>
 
-      <span v-else class="thread-label">Thread</span>
+        <span v-else class="thread-label">Open thread</span>
+
+        <span class="anchor-label">{{ anchorLabel(entry.anchor) }}</span>
+      </div>
 
       <span v-if="error" class="review-error">{{ error }}</span>
 
       <div class="thread-actions">
-        <button type="button" @click="emit('collapse', entry.anchor)">Collapse</button>
+        <button class="ghost-action" type="button" @click="emit('collapse', entry.anchor)">Collapse</button>
 
-        <button v-if="entry.thread.status === 'open'" type="button" @click="emit('resolve', entry.thread)">Resolve</button>
+        <button v-if="entry.thread.status === 'open'" class="primary-action" type="button" @click="emit('resolve', entry.thread)">
+          Resolve
+        </button>
 
-        <button v-else type="button" @click="emit('reopen', entry.thread)">Reopen</button>
+        <button v-else class="primary-action" type="button" @click="emit('reopen', entry.thread)">Reopen</button>
       </div>
     </div>
 
     <form v-if="entry.kind === 'draft'" class="comment-composer" @submit.prevent="submitDraft">
-      <div class="composer-author">You</div>
+      <div class="composer-heading">
+        <div class="composer-title-group">
+          <span class="composer-author">{{ entry.mode === 'chat' ? 'Ask AI' : 'Comment draft' }}</span>
+
+          <span class="anchor-label">{{ anchorLabel(entry.anchor) }}</span>
+        </div>
+
+        <span class="composer-hint">{{ entry.mode === 'chat' ? 'AI sees this selection' : 'Saved to local review' }}</span>
+      </div>
 
       <textarea
         :value="draftBody"
         :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
+        :aria-label="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
         @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)"
       />
 
       <div class="composer-actions">
-        <button type="button" @click="emit('cancel')">Cancel</button>
+        <button class="ghost-action" type="button" @click="emit('cancel')">Cancel</button>
 
-        <button type="submit" :disabled="draftBody.trim().length === 0 || agentResponding">
+        <button
+          class="primary-action"
+          :class="{ ai: entry.mode === 'chat' }"
+          type="submit"
+          :disabled="draftBody.trim().length === 0 || agentResponding"
+        >
           {{ entry.mode === 'chat' ? 'Ask AI' : 'Comment' }}
         </button>
       </div>
@@ -52,6 +72,8 @@
         <p>{{ message.body }}</p>
       </div>
 
+      <div v-if="agentResponding" class="agent-responding">AI is responding...</div>
+
       <form class="reply-composer" @submit.prevent="submitReply">
         <textarea
           ref="replyTextareaRef"
@@ -65,9 +87,11 @@
         />
 
         <div class="reply-actions">
-          <button type="button" :disabled="replyBody.trim().length === 0 || agentResponding" @click="submitChat">Ask AI</button>
+          <button class="ghost-action" type="button" :disabled="replyBody.trim().length === 0 || agentResponding" @click="submitChat">
+            Ask AI
+          </button>
 
-          <button type="submit" :disabled="replyBody.trim().length === 0 || agentResponding">Send</button>
+          <button class="primary-action" type="submit" :disabled="replyBody.trim().length === 0 || agentResponding">Send</button>
         </div>
       </form>
     </article>
@@ -189,12 +213,17 @@ const formatTime = (value: string) => {
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
+
+const anchorLabel = (anchor: ReviewAnchor) => {
+  const range = anchor.startLine === anchor.endLine ? `${anchor.startLine}` : `${anchor.startLine}-${anchor.endLine}`;
+  return `${anchor.side}:${range}`;
+};
 </script>
 
 <style scoped lang="scss">
 .review-box {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-height: 0;
   margin: 0;
   padding: var(--space-4) var(--space-5);
@@ -222,13 +251,16 @@ const formatTime = (value: string) => {
 }
 
 .review-box-header,
-.composer-actions {
+.composer-actions,
+.composer-heading {
   display: flex;
   align-items: center;
   gap: var(--space-5);
 }
 
-.composer-actions {
+.review-box-header,
+.composer-actions,
+.composer-heading {
   justify-content: space-between;
 }
 
@@ -236,6 +268,14 @@ const formatTime = (value: string) => {
   color: var(--color-text-muted);
   font-size: var(--font-size-label);
   text-transform: uppercase;
+}
+
+.thread-heading,
+.composer-title-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .review-error {
@@ -257,6 +297,21 @@ const formatTime = (value: string) => {
   text-transform: none;
 }
 
+.anchor-label,
+.composer-hint {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  text-transform: none;
+}
+
+.composer-hint {
+  overflow: hidden;
+  font-family: var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .comment-composer,
 .thread {
   display: grid;
@@ -267,6 +322,11 @@ const formatTime = (value: string) => {
 .message-meta {
   color: var(--color-text-muted);
   font-size: var(--font-size-label);
+}
+
+.composer-author {
+  color: var(--color-text-primary);
+  font-weight: 700;
 }
 
 .message {
@@ -281,6 +341,16 @@ const formatTime = (value: string) => {
 .message.chat {
   background: var(--color-bg-active);
   border-color: var(--color-border-strong);
+}
+
+.agent-responding {
+  width: fit-content;
+  padding: var(--space-2) var(--space-4);
+  color: var(--color-ai);
+  background: var(--color-ai-muted);
+  border: 1px solid rgba(143, 179, 255, 0.18);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-label);
 }
 
 .reply-composer {
@@ -329,6 +399,12 @@ textarea {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-3);
   font: inherit;
+
+  &:focus-visible {
+    border-color: var(--color-border-focus);
+    outline: 1px solid var(--color-border-focus);
+    outline-offset: 1px;
+  }
 }
 
 .reply-input {
@@ -354,16 +430,56 @@ textarea {
 
 button {
   padding: var(--space-2) var(--space-4);
-  color: var(--color-ai);
-  background: var(--color-ai-muted);
-  border: 1px solid rgba(143, 179, 255, 0.26);
+  color: var(--button-color, var(--color-text-secondary));
+  background: var(--button-bg, transparent);
+  border: 1px solid var(--button-border, var(--color-border-default));
   border-radius: var(--radius-3);
   cursor: pointer;
   font: inherit;
+  font-size: var(--font-size-label);
+  font-weight: 650;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+
+  &:hover:not(:disabled) {
+    background: var(--button-bg-hover, var(--color-bg-hover));
+    border-color: var(--button-border-hover, var(--color-border-strong));
+  }
+
+  &:focus-visible {
+    outline: 1px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
 
   &:disabled {
     cursor: default;
     opacity: 0.55;
+  }
+}
+
+.ghost-action {
+  --button-bg: transparent;
+  --button-bg-hover: var(--color-bg-hover);
+  --button-border: var(--color-border-default);
+  --button-border-hover: var(--color-border-strong);
+  --button-color: var(--color-text-muted);
+}
+
+.primary-action {
+  --button-bg: var(--color-review-muted);
+  --button-bg-hover: rgba(240, 195, 106, 0.22);
+  --button-border: rgba(240, 195, 106, 0.26);
+  --button-border-hover: rgba(240, 195, 106, 0.38);
+  --button-color: #f7d898;
+
+  &.ai {
+    --button-bg: var(--color-ai-muted);
+    --button-bg-hover: rgba(143, 179, 255, 0.22);
+    --button-border: rgba(143, 179, 255, 0.26);
+    --button-border-hover: rgba(143, 179, 255, 0.38);
+    --button-color: #d6e3ff;
   }
 }
 

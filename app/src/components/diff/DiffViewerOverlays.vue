@@ -1,5 +1,7 @@
 <template>
   <div v-if="showSelectionToolbar" class="selection-toolbar" :style="selectionStyle">
+    <span class="selection-toolbar-label">Review selection</span>
+
     <button
       type="button"
       title="Comment on selection"
@@ -7,6 +9,8 @@
       @pointerdown.prevent.stop="emit('commentSelection')"
     >
       <span class="comment-icon" aria-hidden="true" />
+
+      <span>Comment</span>
     </button>
 
     <button
@@ -16,6 +20,8 @@
       @pointerdown.prevent.stop="emit('chatSelection')"
     >
       <span class="ai-icon" aria-hidden="true" />
+
+      <span>Ask AI</span>
     </button>
   </div>
 
@@ -52,34 +58,58 @@ const emit = defineEmits<{
   z-index: 6;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  color: var(--color-text-secondary);
   background: var(--color-bg-panel-raised);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-3);
+  border-radius: var(--radius-4);
   box-shadow: var(--shadow-popover);
+}
+
+.selection-toolbar-label {
+  padding: 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .selection-toolbar button {
   position: relative;
-  width: 24px;
-  height: 22px;
-  padding: 0;
-  background: transparent;
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 28px;
+  padding: 0 var(--space-4) 0 28px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-3);
   cursor: pointer;
   font: inherit;
+  font-size: var(--font-size-label);
+  font-weight: 650;
+  white-space: nowrap;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 
   &:hover {
     background: var(--color-review-muted);
-    border-radius: var(--radius-2);
+    border-color: rgba(240, 195, 106, 0.32);
+  }
+
+  &:focus-visible {
+    outline: 1px solid var(--color-border-focus);
+    outline-offset: 2px;
   }
 }
 
 .comment-icon {
   position: absolute;
-  top: 5px;
-  left: 5px;
+  top: 8px;
+  left: 10px;
   width: 11px;
   height: 8px;
   border: 2px solid var(--color-review);
@@ -99,8 +129,8 @@ const emit = defineEmits<{
 
 .ai-icon {
   position: absolute;
-  top: 4px;
-  left: 5px;
+  top: 7px;
+  left: 10px;
   width: 12px;
   height: 12px;
   color: var(--color-ai);

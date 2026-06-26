@@ -6,11 +6,13 @@
       v-if="lineNumber && commentCount > 0 && !commentsExpanded"
       class="collapsed-comment-indicator"
       type="button"
-      title="Show collapsed comment"
-      aria-label="Show collapsed comment"
+      :title="collapsedCommentLabel"
+      :aria-label="collapsedCommentLabel"
       @click="emit('toggleComments')"
     >
       <span class="comment-icon" aria-hidden="true" />
+
+      <span class="comment-count">{{ collapsedCommentCountLabel }}</span>
     </button>
 
     <button
@@ -29,10 +31,11 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { LspDiagnostic, SyntaxSide } from '../../lib/protocol';
 import DiagnosticMarker from '../diff/DiagnosticMarker.vue';
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     side?: SyntaxSide;
     lineNumber?: number;
@@ -55,6 +58,11 @@ const emit = defineEmits<{
   comment: [event: MouseEvent];
   toggleComments: [];
 }>();
+
+const collapsedCommentLabel = computed(() => {
+  return props.commentCount === 1 ? 'Show 1 collapsed comment' : `Show ${props.commentCount} collapsed comments`;
+});
+const collapsedCommentCountLabel = computed(() => (props.commentCount > 99 ? '99+' : String(props.commentCount)));
 </script>
 
 <style scoped lang="scss">
@@ -74,7 +82,6 @@ const emit = defineEmits<{
   top: 3px;
   left: 8px;
   z-index: 2;
-  width: 20px;
   height: 18px;
   padding: 0;
   background: transparent;
@@ -84,11 +91,19 @@ const emit = defineEmits<{
 }
 
 .comment-bubble {
+  width: 20px;
   opacity: 0;
   transform: translateX(-4px);
   transition:
     opacity var(--transition-fast),
     transform var(--transition-fast);
+}
+
+.collapsed-comment-indicator {
+  top: 2px;
+  left: 6px;
+  width: 24px;
+  height: 20px;
 }
 
 :global(.code-line:hover:not(.comment-hover-disabled)) .comment-bubble,
@@ -120,10 +135,30 @@ const emit = defineEmits<{
 }
 
 .collapsed-comment-indicator .comment-icon {
-  border-color: var(--color-ai);
+  top: 3px;
+  left: 2px;
+  border-color: var(--color-review);
 
   &::after {
-    border-color: var(--color-ai);
+    border-color: var(--color-review);
   }
+}
+
+.comment-count {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  color: var(--color-bg-code);
+  background: var(--color-review);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+  box-sizing: border-box;
 }
 </style>
