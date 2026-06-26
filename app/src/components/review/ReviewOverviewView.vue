@@ -197,7 +197,16 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import type { ChangedFile, DiffTarget, LspDiagnostic, ReviewAgentState, ReviewProgress, ReviewRun, ReviewSession, ReviewThread } from '../../lib/protocol';
+import type {
+  ChangedFile,
+  DiffTarget,
+  LspDiagnostic,
+  ReviewAgentState,
+  ReviewProgress,
+  ReviewRun,
+  ReviewSession,
+  ReviewThread,
+} from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
 import Button from '../Button.vue';
 import { supportsLspFile } from '../diff/useLspHover';
@@ -207,6 +216,17 @@ import Panel from '../ui/Panel.vue';
 
 type BadgeTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger' | 'info' | 'review' | 'ai';
 type ThreadFilter = 'all' | 'open' | 'resolved' | 'ai';
+type FileSummary = {
+  file: ChangedFile;
+  path: string;
+  reviewed: boolean;
+  threadCount: number;
+  openThreadCount: number;
+  threadLabel: string;
+  diagnosticLabel: string;
+  diagnosticTone: BadgeTone;
+  diagnosticTitle?: string;
+};
 type DiagnosticFileState = {
   status: 'checked' | 'unavailable' | 'failed';
   message?: string;
@@ -242,6 +262,7 @@ const emit = defineEmits<{
 }>();
 
 const client = useClient();
+const diagnosticProgressBatchSize = 12;
 const threadFilters: { value: ThreadFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'open', label: 'Open' },
@@ -255,12 +276,22 @@ const diagnosticScan = ref<DiagnosticScan>({ running: false, checked: 0, total: 
 let diagnosticGeneration = 0;
 
 const totalFiles = computed(() => props.changedFiles.length);
-const reviewedCount = computed(() => props.changedFiles.filter((file) => props.reviewedFileIds.includes(file.id)).length);
+const reviewedFileIdSet = computed(() => new Set(props.reviewedFileIds));
+const reviewedCount = computed(() => props.changedFiles.filter((file) => reviewedFileIdSet.value.has(file.id)).length);
 const reviewedPercent = computed(() => (totalFiles.value === 0 ? 0 : Math.round((reviewedCount.value / totalFiles.value) * 100)));
 const additionsTotal = computed(() => props.changedFiles.reduce((total, file) => total + file.additions, 0));
 const deletionsTotal = computed(() => props.changedFiles.reduce((total, file) => total + file.deletions, 0));
 const openThreads = computed(() => props.threads.filter((thread) => thread.status === 'open'));
 const resolvedThreads = computed(() => props.threads.filter((thread) => thread.status === 'resolved'));
+const threadsByFile = computed(() => {
+  const byFile = new Map<string, ReviewThread[]>();
+  for (const thread of props.threads) {
+    const current = byFile.get(thread.fileId) ?? [];
+    current.push(thread);
+    byFile.set(thread.fileId, current);
+  }
+  return byFile;
+});
 const orderedThreads = computed(() => [...props.threads].sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)));
 const filteredThreads = computed(() => {
   return orderedThreads.value.filter((thread) => {
@@ -355,16 +386,16 @@ const filePanelSubtitle = computed(() => {
 const threadPanelSubtitle = computed(() => {
   return `${props.threads.length} total, ${resolvedThreads.value.length} resolved.`;
 });
-const fileSummaries = computed(() => {
+const fileSummaries = computed<FileSummary[]>(() => {
   return props.changedFiles.map((file) => {
-    const threads = props.threads.filter((thread) => thread.fileId === file.id);
+    const threads = threadsByFile.value.get(file.id) ?? [];
     const openThreadCount = threads.filter((thread) => thread.status === 'open').length;
     const diagnostics = diagnosticsByFile.value[file.id] ?? [];
     const diagnosticBadge = fileDiagnosticBadge(file, diagnostics, diagnosticStateByFile.value[file.id]);
     return {
       file,
       path: changedFilePath(file),
-      reviewed: props.reviewedFileIds.includes(file.id),
+      reviewed: reviewedFileIdSet.value.has(file.id),
       threadCount: threads.length,
       openThreadCount,
       threadLabel: threadLabel(threads.length, openThreadCount),
@@ -419,7 +450,8 @@ const severityTone = (severity: ReviewThread['severity']): BadgeTone => {
   return 'info';
 };
 const fileDiagnosticBadge = (file: ChangedFile, diagnostics: LspDiagnostic[], state?: DiagnosticFileState) => {
-  if (file.status === 'deleted') return { label: 'deleted', tone: 'neutral' as BadgeTone, title: 'Deleted files have no new-side diagnostics.' };
+  if (file.status === 'deleted')
+    return { label: 'deleted', tone: 'neutral' as BadgeTone, title: 'Deleted files have no new-side diagnostics.' };
   if (!supportsLspFile(changedFilePath(file))) return { label: 'unsupported', tone: 'neutral' as BadgeTone };
   if (!state && diagnosticScan.value.running) return { label: 'queued', tone: 'info' as BadgeTone };
   if (!state) return { label: 'not checked', tone: 'neutral' as BadgeTone };
@@ -443,7 +475,14 @@ const diagnosticCounts = (diagnostics: LspDiagnostic[]) => {
     total: diagnostics.length,
   };
 };
-const diagnosticParts = (summary: { errors: number; warnings: number; other: number; total?: number; unavailable?: number; failed?: number }) => {
+const diagnosticParts = (summary: {
+  errors: number;
+  warnings: number;
+  other: number;
+  total?: number;
+  unavailable?: number;
+  failed?: number;
+}) => {
   return [
     summary.errors > 0 ? `${summary.errors} error${summary.errors === 1 ? '' : 's'}` : undefined,
     summary.warnings > 0 ? `${summary.warnings} warning${summary.warnings === 1 ? '' : 's'}` : undefined,
@@ -456,39 +495,41 @@ const diagnosticParts = (summary: { errors: number; warnings: number; other: num
 const loadDiagnostics = async () => {
   const generation = ++diagnosticGeneration;
   const files = props.changedFiles.filter(shouldCheckDiagnostics);
+  const nextDiagnosticsByFile: Record<string, LspDiagnostic[]> = {};
+  const nextDiagnosticStateByFile: Record<string, DiagnosticFileState> = {};
+  let checked = 0;
   diagnosticsByFile.value = {};
   diagnosticStateByFile.value = {};
   diagnosticScan.value = { running: files.length > 0, checked: 0, total: files.length };
 
   if (files.length === 0) return;
 
+  const flushDiagnostics = (running: boolean) => {
+    diagnosticsByFile.value = { ...nextDiagnosticsByFile };
+    diagnosticStateByFile.value = { ...nextDiagnosticStateByFile };
+    diagnosticScan.value = { running, checked, total: files.length };
+  };
+
   for (const file of files) {
     try {
       const diagnostics = await client.getLspDiagnostics(file.id, 'new', props.target);
       if (generation !== diagnosticGeneration) return;
 
-      diagnosticsByFile.value = {
-        ...diagnosticsByFile.value,
-        [file.id]: diagnostics.status === 'ok' ? diagnostics.diagnostics : [],
-      };
-      diagnosticStateByFile.value = {
-        ...diagnosticStateByFile.value,
-        [file.id]: diagnostics.status === 'ok' ? { status: 'checked' } : { status: 'unavailable', message: diagnostics.message ?? diagnostics.status },
-      };
+      nextDiagnosticsByFile[file.id] = diagnostics.status === 'ok' ? diagnostics.diagnostics : [];
+      nextDiagnosticStateByFile[file.id] =
+        diagnostics.status === 'ok' ? { status: 'checked' } : { status: 'unavailable', message: diagnostics.message ?? diagnostics.status };
     } catch (error) {
       if (generation !== diagnosticGeneration) return;
 
-      diagnosticStateByFile.value = {
-        ...diagnosticStateByFile.value,
-        [file.id]: { status: 'failed', message: error instanceof Error ? error.message : String(error) },
-      };
+      nextDiagnosticStateByFile[file.id] = { status: 'failed', message: error instanceof Error ? error.message : String(error) };
     }
 
     if (generation !== diagnosticGeneration) return;
-    diagnosticScan.value = { ...diagnosticScan.value, checked: diagnosticScan.value.checked + 1 };
+    checked += 1;
+    if (checked % diagnosticProgressBatchSize === 0 || checked === files.length) flushDiagnostics(true);
   }
 
-  if (generation === diagnosticGeneration) diagnosticScan.value = { ...diagnosticScan.value, running: false };
+  if (generation === diagnosticGeneration) flushDiagnostics(false);
 };
 
 watch(diagnosticScanKey, () => void loadDiagnostics(), { immediate: true });

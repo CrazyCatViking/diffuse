@@ -291,7 +291,10 @@ const onScrollbarThumbPointerDown = (event: PointerEvent) => {
 };
 
 const setFolderScrollRef = (element: Element | null) => {
-  folderScrollRef.value = element instanceof HTMLElement ? element : null;
+  const htmlElement = element instanceof HTMLElement ? element : null;
+  if (folderScrollRef.value === htmlElement) return;
+
+  folderScrollRef.value = htmlElement;
   scrollbars.updateAfterRender();
 };
 

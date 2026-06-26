@@ -132,6 +132,11 @@ fn getLspDiagnostics(runtime: *Runtime, writer: *std.Io.Writer, request: json_rp
 }
 
 fn resolvePathForSide(allocator: std.mem.Allocator, repo: *repository.Repository, target: repository.DiffTarget, file_id: []const u8, side: diff.SyntaxSide) ![]u8 {
+    // ChangedFile.id is the new-side path. Avoid listChangedFiles() for the common
+    // new-side LSP path, because it computes signatures by diffing every changed
+    // file. Review overview diagnostics call this once per supported file.
+    if (side == .new) return allocator.dupe(u8, file_id);
+
     const files = repo.listChangedFiles(target) catch return allocator.dupe(u8, file_id);
     defer repository.freeChangedFiles(allocator, files);
     for (files) |file| {

@@ -44,6 +44,7 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
   }
 
   let frame: number | undefined;
+  let afterRenderFrame: number | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let drag: { pane: Key; startY: number; startScrollTop: number; trackHeight: number } | undefined;
 
@@ -53,8 +54,10 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
     frame = undefined;
     for (const key of Object.keys(panes) as Key[]) {
       const pane = panes[key];
-      pane.hasScroll.value = paneHasVerticalScroll(pane.element.value);
-      pane.metrics.value = paneScrollMetrics(pane.element.value);
+      const hasScroll = paneHasVerticalScroll(pane.element.value);
+      const metrics = paneScrollMetrics(pane.element.value);
+      if (pane.hasScroll.value !== hasScroll) pane.hasScroll.value = hasScroll;
+      if (!sameScrollMetrics(pane.metrics.value, metrics)) pane.metrics.value = metrics;
     }
   };
 
@@ -65,7 +68,12 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
 
   const updateAfterRender = () => {
     void nextTick(() => {
-      requestAnimationFrame(update);
+      if (frame !== undefined) return;
+      if (afterRenderFrame !== undefined) return;
+      afterRenderFrame = requestAnimationFrame(() => {
+        afterRenderFrame = undefined;
+        update();
+      });
     });
   };
 
@@ -124,6 +132,7 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
     window.removeEventListener('pointermove', onThumbPointerMove);
     window.removeEventListener('pointerup', stopDrag);
     if (frame !== undefined) cancelAnimationFrame(frame);
+    if (afterRenderFrame !== undefined) cancelAnimationFrame(afterRenderFrame);
     resizeObserver?.disconnect();
   };
 
@@ -137,4 +146,8 @@ export const useDiffScrollbar = <Key extends string>(elements: Record<Key, Ref<H
     onThumbPointerDown,
     cleanup,
   };
+};
+
+const sameScrollMetrics = (first: ScrollMetrics, second: ScrollMetrics) => {
+  return first.scrollTop === second.scrollTop && first.scrollHeight === second.scrollHeight && first.clientHeight === second.clientHeight;
 };

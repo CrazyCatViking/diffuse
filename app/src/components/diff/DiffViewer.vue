@@ -32,23 +32,35 @@
       </div>
 
       <DiffViewControls
-        search-enabled
         show-sync-scroll
         :view-mode="viewMode"
         :context-mode="contextMode"
-        :search-open="searchOpen"
-        :search-query="searchQuery"
-        :search-status="searchStatus"
-        :has-search-matches="searchMatches.length > 0"
         :sync-scroll="syncScroll"
         @update:view-mode="emit('update:viewMode', $event)"
         @update:context-mode="emit('update:contextMode', $event)"
         @update:sync-scroll="emit('update:syncScroll', $event)"
-        @update:search-query="searchQuery = $event"
-        @open-search="openSearch"
-        @close-search="closeSearch"
-        @move-search="moveSearch"
       />
+    </div>
+
+    <div v-if="searchOpen" class="diff-search-popover" role="search" aria-label="Search file">
+      <SearchInput
+        ref="searchInputRef"
+        v-model="searchQuery"
+        class="file-search-input"
+        compact
+        placeholder="Search file"
+        label="Search file"
+        @keydown.enter.prevent="moveSearch($event.shiftKey ? -1 : 1)"
+        @keydown.esc.prevent="closeSearch"
+      />
+
+      <span class="search-count">{{ searchStatus }}</span>
+
+      <Button variant="ghost" size="sm" :disabled="searchMatches.length === 0" title="Previous match" @click="moveSearch(-1)">Prev</Button>
+
+      <Button variant="ghost" size="sm" :disabled="searchMatches.length === 0" title="Next match" @click="moveSearch(1)">Next</Button>
+
+      <Button variant="ghost" size="sm" title="Close search" @click="closeSearch">Close</Button>
     </div>
 
     <SingleFileDiffPanes
@@ -94,6 +106,8 @@ import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
+import Button from '../Button.vue';
+import SearchInput from '../search/SearchInput.vue';
 import {
   buildDisplayRows as buildReviewDisplayRows,
   buildReviewEntriesByEndLine,
@@ -119,6 +133,14 @@ type ThreadRevealRequest = {
   requestId: number;
 };
 
+type FileSearchRequest = {
+  fileId: string;
+  query: string;
+  line?: number;
+  side?: SyntaxSide;
+  requestId: number;
+};
+
 const props = defineProps<{
   model?: DiffRenderModel;
   loading: boolean;
@@ -131,6 +153,7 @@ const props = defineProps<{
   grammarInstallStep?: string;
   hasNewChanges: boolean;
   threadRevealRequest?: ThreadRevealRequest;
+  fileSearchRequest?: FileSearchRequest;
 }>();
 
 const emit = defineEmits<{
@@ -140,9 +163,11 @@ const emit = defineEmits<{
   installGrammar: [];
   loadLatest: [];
   threadRevealHandled: [requestId: number];
+  fileSearchHandled: [requestId: number];
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
+const searchInputRef = ref<InstanceType<typeof SearchInput> | null>(null);
 const syncedSplitRef = ref<HTMLElement | null>(null);
 const leftRef = ref<HTMLElement | null>(null);
 const rightRef = ref<HTMLElement | null>(null);
@@ -159,6 +184,8 @@ const activeSearchIndex = ref(0);
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
 const syntaxCache = new Map<string, SyntaxSpan[]>();
+const syntaxPageLineKeys = new Map<string, string[]>();
+const syntaxPageAccessOrder: string[] = [];
 const syntaxPageStates = new Map<string, 'queued-high' | 'queued-low' | 'loading' | 'done'>();
 const highPrioritySyntaxQueue: SyntaxPageRequest[] = [];
 const lowPrioritySyntaxQueue: SyntaxPageRequest[] = [];
@@ -168,16 +195,16 @@ let activeSyntaxRequests = 0;
 let isSyncingScroll = false;
 let syncScrollFrame: number | undefined;
 let pendingScrollSync: { target: HTMLElement; top: number; left: number } | undefined;
-let syntaxPrefetchTimer: number | undefined;
 let initialSyntaxGateTimer: number | undefined;
 let threadFlashTimer: number | undefined;
 let initialSyntaxGeneration = 0;
 let syntaxRequestGeneration = 0;
 let handledThreadRevealRequestId = 0;
+let handledFileSearchRequestId = 0;
 const syntaxPageSize = 256;
-const syntaxPageLookaround = 2;
+const syntaxPageLookaround = 1;
+const maxSyntaxCachePages = 32;
 const virtualRowOverscan = 40;
-const syntaxPrefetchDelayMs = 120;
 const maxConcurrentSyntaxRequests = 2;
 const initialSyntaxGateMs = 80;
 const threadFlashDurationMs = 1800;
@@ -286,6 +313,25 @@ const searchMatches = computed<SearchMatch[]>(() => {
   });
   return matches;
 });
+const searchMatchesByLine = computed(() => {
+  const matchesByLine = new Map<string, SearchMatch[]>();
+  for (const match of searchMatches.value) {
+    const key = searchLineKey(match.side, match.line);
+    const matches = matchesByLine.get(key) ?? [];
+    matches.push(match);
+    matchesByLine.set(key, matches);
+  }
+  return matchesByLine;
+});
+const searchMatchesByRow = computed(() => {
+  const matchesByRow = new Map<number, SearchMatch[]>();
+  for (const match of searchMatches.value) {
+    const matches = matchesByRow.get(match.rowIndex) ?? [];
+    matches.push(match);
+    matchesByRow.set(match.rowIndex, matches);
+  }
+  return matchesByRow;
+});
 const activeSearchMatch = computed(() => searchMatches.value[activeSearchIndex.value]);
 const searchStatus = computed(() => {
   if (!searchQuery.value.trim()) return '0/0';
@@ -298,6 +344,15 @@ const lspDiagnostics = ref<LspDiagnostic[]>([]);
 const lspDiagnosticsLoading = ref(false);
 let lspStatusGeneration = 0;
 let lspDiagnosticsGeneration = 0;
+const lspDiagnosticsByLine = computed(() => {
+  const diagnosticsByLine = new Map<number, LspDiagnostic[]>();
+  for (const diagnostic of lspDiagnostics.value) {
+    const diagnostics = diagnosticsByLine.get(diagnostic.line) ?? [];
+    diagnostics.push(diagnostic);
+    diagnosticsByLine.set(diagnostic.line, diagnostics);
+  }
+  return diagnosticsByLine;
+});
 const commentCountByStart = computed(() => {
   const counts = new Map<string, number>();
   for (const thread of fileThreads.value) {
@@ -460,7 +515,7 @@ const lspStatusSide = (): SyntaxSide => {
 
 const diagnosticsForLine = (side: SyntaxSide, line?: number): LspDiagnostic[] => {
   if (side !== 'new' || !line) return [];
-  return lspDiagnostics.value.filter((diagnostic) => diagnostic.line === line);
+  return lspDiagnosticsByLine.value.get(line) ?? [];
 };
 
 const toggleComments = (payload: { side: 'old' | 'new'; line: number }) => {
@@ -516,14 +571,14 @@ const collectSearchMatches = (
 const searchHighlightsForLine = (side: SyntaxSide, line: number | undefined): SearchTextHighlight[] => {
   if (!line || !normalizedSearchQuery.value) return [];
   const active = activeSearchMatch.value;
-  return searchMatches.value
-    .filter((match) => match.side === side && match.line === line)
-    .map((match) => ({
-      startColumn: match.startColumn,
-      endColumn: match.endColumn,
-      active: Boolean(active && sameSearchMatch(match, active)),
-    }));
+  return (searchMatchesByLine.value.get(searchLineKey(side, line)) ?? []).map((match) => ({
+    startColumn: match.startColumn,
+    endColumn: match.endColumn,
+    active: Boolean(active && sameSearchMatch(match, active)),
+  }));
 };
+
+const searchLineKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
 
 const sameSearchMatch = (first: SearchMatch, second: SearchMatch) => {
   return (
@@ -644,6 +699,8 @@ const openSearch = () => {
 
 const closeSearch = () => {
   searchOpen.value = false;
+  searchQuery.value = '';
+  activeSearchIndex.value = 0;
 };
 
 const moveSearch = (direction: number) => {
@@ -687,6 +744,14 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocumentKeyDown);
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
   if (threadFlashTimer) window.clearTimeout(threadFlashTimer);
+  if (initialSyntaxGateTimer !== undefined) {
+    window.clearTimeout(initialSyntaxGateTimer);
+    initialSyntaxGateTimer = undefined;
+  }
+  if (syncScrollFrame !== undefined) {
+    cancelAnimationFrame(syncScrollFrame);
+    syncScrollFrame = undefined;
+  }
   cleanupLspHover();
   scrollbars.cleanup();
 });
@@ -696,6 +761,7 @@ const {
   hoverStyle: lspHoverStyle,
   queue: queueLspHover,
   clear: clearLspHover,
+  clearCache: clearLspHoverCache,
   cleanup: cleanupLspHover,
 } = useLspHover({
   client,
@@ -704,7 +770,7 @@ const {
   reviewElementForNode,
   textOffsetWithinElement,
   fileIdForElement: (element) => element.dataset.reviewFileId ?? props.model?.fileId,
-  canQueue: () => Boolean(props.model && lspStatus.value?.running),
+  canQueue: () => Boolean(props.model && lspStatus.value?.running && !commentHoverDisabled.value),
   afterHoverRequest: () => {
     void loadLspStatus();
   },
@@ -755,7 +821,8 @@ const searchMarkerKind = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarker
   const rowIndex = rowIndexFromDisplayKey(item.key);
   if (rowIndex === undefined) return undefined;
   const active = activeSearchMatch.value;
-  const matches = searchMatches.value.filter((match) => match.rowIndex === rowIndex && (!side || match.side === side));
+  const rowMatches = searchMatchesByRow.value.get(rowIndex) ?? [];
+  const matches = side ? rowMatches.filter((match) => match.side === side) : rowMatches;
   if (matches.length === 0) return undefined;
   return active && matches.some((match) => sameSearchMatch(match, active)) ? 'active-search' : 'search';
 };
@@ -939,6 +1006,29 @@ const scrollVirtualizerToMatch = (
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
 
+const revealFileSearchRequest = async () => {
+  const request = props.fileSearchRequest;
+  if (!request || request.requestId === handledFileSearchRequestId || request.fileId !== props.model?.fileId || props.loading) return;
+
+  searchOpen.value = true;
+  searchQuery.value = request.query;
+  await nextTick();
+
+  const targetIndex = fileSearchRequestMatchIndex(request);
+  activeSearchIndex.value = targetIndex >= 0 ? targetIndex : 0;
+
+  await nextTick();
+  if (searchMatches.value.length > 0) scrollToActiveSearchMatch();
+
+  handledFileSearchRequestId = request.requestId;
+  emit('fileSearchHandled', request.requestId);
+};
+
+const fileSearchRequestMatchIndex = (request: FileSearchRequest) => {
+  if (!request.line) return searchMatches.value.length > 0 ? 0 : -1;
+  return searchMatches.value.findIndex((match) => match.line === request.line && (!request.side || match.side === request.side));
+};
+
 const revealThreadRequest = async () => {
   const request = props.threadRevealRequest;
   if (!request || request.requestId === handledThreadRevealRequestId || request.fileId !== props.model?.fileId || props.loading) return;
@@ -1040,6 +1130,14 @@ watch(
   { immediate: true, flush: 'post' },
 );
 
+watch(
+  [() => props.fileSearchRequest?.requestId, () => props.fileSearchRequest?.fileId, () => props.model?.fileId, () => props.loading],
+  () => {
+    void revealFileSearchRequest();
+  },
+  { immediate: true, flush: 'post' },
+);
+
 const syntaxKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
 
 const syntaxPageKey = (fileId: string, context: DiffContextMode, side: SyntaxSide, page: number) => `${fileId}:${context}:${side}:${page}`;
@@ -1071,9 +1169,17 @@ const runSyntaxQueue = () => {
           props.model?.fileId === request.fileId &&
           props.model.context === request.context;
         if (isCurrentRequest) {
-          for (const line of lines) syntaxCache.set(syntaxKey(request.side, line.line), line.spans);
-          syntaxVersion.value += 1;
+          const lineKeys: string[] = [];
+          for (const line of lines) {
+            const key = syntaxKey(request.side, line.line);
+            syntaxCache.set(key, line.spans);
+            lineKeys.push(key);
+          }
           syntaxPageStates.set(request.key, 'done');
+          syntaxPageLineKeys.set(request.key, lineKeys);
+          touchSyntaxPage(request.key);
+          evictOldSyntaxPages();
+          syntaxVersion.value += 1;
         } else if (request.generation === syntaxRequestGeneration && syntaxPageStates.get(request.key) === 'loading') {
           syntaxPageStates.delete(request.key);
         }
@@ -1093,7 +1199,11 @@ const requestSyntaxPage = (side: SyntaxSide, page: number, priority: 'high' | 'l
 
   const requestKey = syntaxPageKey(model.fileId, model.context, side, page);
   const existingState = syntaxPageStates.get(requestKey);
-  if (existingState === 'done' || existingState === 'loading' || existingState === 'queued-high') return false;
+  if (existingState === 'done') {
+    touchSyntaxPage(requestKey);
+    return false;
+  }
+  if (existingState === 'loading' || existingState === 'queued-high') return false;
   if (existingState === 'queued-low' && priority === 'low') return false;
 
   const fileId = model.fileId;
@@ -1110,6 +1220,25 @@ const requestSyntaxPage = (side: SyntaxSide, page: number, priority: 'high' | 'l
   }
   runSyntaxQueue();
   return true;
+};
+
+const touchSyntaxPage = (key: string) => {
+  const existingIndex = syntaxPageAccessOrder.indexOf(key);
+  if (existingIndex >= 0) syntaxPageAccessOrder.splice(existingIndex, 1);
+  syntaxPageAccessOrder.push(key);
+};
+
+const evictOldSyntaxPages = () => {
+  while (syntaxPageLineKeys.size > maxSyntaxCachePages) {
+    const oldestKey = syntaxPageAccessOrder.shift();
+    if (!oldestKey) return;
+
+    const lineKeys = syntaxPageLineKeys.get(oldestKey);
+    if (!lineKeys) continue;
+    for (const lineKey of lineKeys) syntaxCache.delete(lineKey);
+    syntaxPageLineKeys.delete(oldestKey);
+    if (syntaxPageStates.get(oldestKey) === 'done') syntaxPageStates.delete(oldestKey);
+  }
 };
 
 const requestSyntaxPages = (side: SyntaxSide, startLine: number, endLine: number, priority: 'high' | 'low') => {
@@ -1132,7 +1261,6 @@ const requestSyntaxForVirtualRows = (virtualRows: { index: number }[], displayRo
   }
   if (Number.isFinite(startLine)) {
     requestSyntaxPages(side, startLine, endLine, 'high');
-    scheduleSyntaxPrefetch();
   }
 };
 
@@ -1180,40 +1308,6 @@ const startInitialSyntaxGate = () => {
   void waitForInitialPages();
 };
 
-const maxLineForSide = (side: SyntaxSide) => {
-  let maxLine = 0;
-  for (const row of rows.value) {
-    const line = side === 'old' ? row.oldLine : row.newLine;
-    if (line) maxLine = Math.max(maxLine, line);
-  }
-  return maxLine;
-};
-
-const prefetchSyntaxSide = (side: SyntaxSide) => {
-  const maxLine = maxLineForSide(side);
-  if (maxLine === 0) return;
-  const lastPage = Math.floor((maxLine - 1) / syntaxPageSize);
-  for (let page = 0; page <= lastPage; page += 1) requestSyntaxPage(side, page, 'low');
-};
-
-const prefetchAllSyntaxPages = () => {
-  if (!props.model?.syntax.grammarInstalled) return;
-  if (highPrioritySyntaxQueue.length > 0) {
-    scheduleSyntaxPrefetch();
-    return;
-  }
-  prefetchSyntaxSide('old');
-  prefetchSyntaxSide('new');
-};
-
-const scheduleSyntaxPrefetch = () => {
-  if (syntaxPrefetchTimer !== undefined) window.clearTimeout(syntaxPrefetchTimer);
-  syntaxPrefetchTimer = window.setTimeout(() => {
-    syntaxPrefetchTimer = undefined;
-    prefetchAllSyntaxPages();
-  }, syntaxPrefetchDelayMs);
-};
-
 const syncScrollPosition = (source: HTMLElement, target: HTMLElement | null) => {
   if (!props.syncScroll || !target) return;
   pendingScrollSync = { target, top: source.scrollTop, left: source.scrollLeft };
@@ -1255,6 +1349,9 @@ const onInlineScroll = () => {
 
 const setPaneRef = (pane: PaneKey, element: Element | null) => {
   const htmlElement = element instanceof HTMLElement ? element : null;
+  const currentElement = paneRefValue(pane);
+  if (currentElement === htmlElement) return;
+
   if (pane === 'left') leftRef.value = htmlElement;
   else if (pane === 'right') rightRef.value = htmlElement;
   else if (pane === 'syncedSplit') syncedSplitRef.value = htmlElement;
@@ -1262,7 +1359,15 @@ const setPaneRef = (pane: PaneKey, element: Element | null) => {
   scrollbars.updateAfterRender();
 };
 
+const paneRefValue = (pane: PaneKey) => {
+  if (pane === 'left') return leftRef.value;
+  if (pane === 'right') return rightRef.value;
+  if (pane === 'syncedSplit') return syncedSplitRef.value;
+  return inlineRef.value;
+};
+
 const onPaneScroll = (pane: PaneKey, event: Event) => {
+  clearLspHover();
   if (pane === 'left') onLeftScroll(event);
   else if (pane === 'right') onRightScroll(event);
   else if (pane === 'syncedSplit') onSyncedSplitScroll();
@@ -1324,12 +1429,13 @@ watch(
     activeSearchIndex.value = 0;
     syntaxRequestGeneration += 1;
     syntaxCache.clear();
+    syntaxPageLineKeys.clear();
+    syntaxPageAccessOrder.length = 0;
     syntaxPageStates.clear();
     highPrioritySyntaxQueue.length = 0;
     lowPrioritySyntaxQueue.length = 0;
     activeSyntaxRequests = 0;
-    if (syntaxPrefetchTimer !== undefined) window.clearTimeout(syntaxPrefetchTimer);
-    syntaxPrefetchTimer = undefined;
+    clearLspHoverCache();
     if (initialSyntaxGateTimer !== undefined) window.clearTimeout(initialSyntaxGateTimer);
     initialSyntaxGateTimer = undefined;
     initialSyntaxGateActive.value = false;
@@ -1347,6 +1453,18 @@ watch([normalizedSearchQuery, () => props.model?.fileId, () => props.model?.cont
 
 watch(searchMatches, (matches) => {
   if (activeSearchIndex.value >= matches.length) activeSearchIndex.value = Math.max(0, matches.length - 1);
+});
+
+watch(searchOpen, (open) => {
+  if (!open) {
+    searchInputRef.value?.blur();
+    return;
+  }
+
+  void nextTick(() => {
+    searchInputRef.value?.focus();
+    searchInputRef.value?.select();
+  });
 });
 
 watch(
@@ -1407,6 +1525,39 @@ watch(
   background: var(--color-bg-shell);
   border-bottom: 1px solid var(--color-border-subtle);
   font-size: var(--font-size-label);
+}
+
+.diff-search-popover {
+  position: absolute;
+  top: 40px;
+  right: var(--space-6);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  width: min(480px, calc(100% - var(--space-6) - var(--space-6)));
+  min-width: 0;
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+  background: var(--color-bg-shell);
+  border: 1px solid var(--color-border-default);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-5) var(--radius-5);
+  box-shadow: var(--shadow-popover);
+}
+
+.file-search-input {
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.search-count {
+  flex: 0 0 auto;
+  min-width: 54px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
+  text-align: center;
 }
 
 .file-meta {

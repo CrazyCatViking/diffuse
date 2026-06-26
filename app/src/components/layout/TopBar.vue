@@ -16,6 +16,8 @@
       </Row>
 
       <Row justify="end">
+        <Button v-if="repoPath" variant="secondary" size="sm" :disabled="loading" @click="$emit('openSearch')">Search</Button>
+
         <Button v-if="repoPath" variant="secondary" size="sm" :disabled="loading" @click="$emit('refresh')">Refresh</Button>
 
         <Button variant="ghost" size="sm" @click="$emit('openSettings')">Settings</Button>
@@ -43,6 +45,7 @@ defineProps<{
 
 defineEmits<{
   openRepository: [];
+  openSearch: [];
   refresh: [];
   openSettings: [];
 }>();

@@ -6,6 +6,7 @@
       :loading="repo.loading"
       :error="repo.error"
       @open-repository="showRecentRepositories = true"
+      @open-search="search.openOverlay()"
       @refresh="repo.refreshChangedFiles()"
       @open-settings="showSettings = true"
     />
@@ -57,7 +58,11 @@
         @stop="review.stopAgentReview()"
       />
 
-      <main class="workspace" :class="{ resizing: fileTreeResizing }" :style="{ '--file-tree-width': `${fileTreeWidth}px` }">
+      <main
+        class="workspace"
+        :class="{ resizing: fileTreeResizing, 'has-pinned-search': search.drawerOpen }"
+        :style="{ '--file-tree-width': `${fileTreeWidth}px` }"
+      >
         <ChangedFilesPane
           :files="repo.changedFiles"
           :active-file-id="activeWorkspaceView === 'file' ? repo.activeFileId : undefined"
@@ -121,15 +126,26 @@
           :grammar-install-step="diff.grammarInstallStep"
           :has-new-changes="diff.hasNewChanges"
           :thread-reveal-request="threadRevealRequest"
+          :file-search-request="fileSearchRequest"
           @update:view-mode="diff.setViewMode($event)"
           @update:context-mode="diff.setContextMode($event)"
           @update:sync-scroll="diff.setSyncScroll($event)"
           @install-grammar="diff.installMissingGrammar()"
           @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
           @thread-reveal-handled="handleThreadRevealHandled"
+          @file-search-handled="handleFileSearchHandled"
+        />
+
+        <SearchResultsDrawer
+          v-if="repo.repository"
+          class="workspace-search-drawer"
+          @open="openSearchResult"
+          @preview="previewSearchResult"
         />
       </main>
     </template>
+
+    <SearchPalette v-if="repo.repository" @open="openSearchResult" @preview="previewSearchResult" />
   </div>
 </template>
 
@@ -144,15 +160,20 @@ import RecentRepositoriesDialog from './components/repositories/RecentRepositori
 import RepositoryStartView from './components/repositories/RepositoryStartView.vue';
 import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
 import ReviewOverviewView from './components/review/ReviewOverviewView.vue';
+import SearchPalette from './components/search/SearchPalette.vue';
+import SearchResultsDrawer from './components/search/SearchResultsDrawer.vue';
 import SettingsView from './components/settings/SettingsView.vue';
-import type { ChangedFile, DiffTarget, ReviewThread } from './lib/protocol';
+import type { SearchResult } from './lib/search/searchTypes';
+import type { ChangedFile, DiffTarget, ReviewThread, SyntaxSide } from './lib/protocol';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 import { useReviewStore } from './stores/review';
+import { useSearchStore } from './stores/search';
 
 const repo = useRepoStore();
 const diff = useDiffStore();
 const review = useReviewStore();
+const search = useSearchStore();
 const showRecentRepositories = ref(false);
 const showSettings = ref(false);
 type WorkspaceView = 'overview' | 'file' | 'folder';
@@ -170,8 +191,18 @@ type ThreadRevealRequest = {
   requestId: number;
 };
 
+type FileSearchRequest = {
+  fileId: string;
+  query: string;
+  line?: number;
+  side?: SyntaxSide;
+  requestId: number;
+};
+
 const threadRevealRequest = ref<ThreadRevealRequest>();
+const fileSearchRequest = ref<FileSearchRequest>();
 let threadRevealRequestId = 0;
+let fileSearchRequestId = 0;
 
 function loadFileTreeWidth() {
   const savedWidth = Number(window.localStorage.getItem(fileTreeWidthStorageKey));
@@ -235,6 +266,7 @@ const applyDiffTarget = async (target: DiffTarget) => {
 
 const selectOverview = () => {
   threadRevealRequest.value = undefined;
+  fileSearchRequest.value = undefined;
   selectedFolder.value = undefined;
   activeWorkspaceView.value = 'overview';
   repo.activeFileId = undefined;
@@ -250,6 +282,7 @@ const selectFile = (fileId: string) => {
 const selectReviewThread = (thread: ReviewThread) => {
   selectedFolder.value = undefined;
   activeWorkspaceView.value = 'file';
+  fileSearchRequest.value = undefined;
   threadRevealRequest.value = { threadId: thread.id, fileId: thread.fileId, requestId: ++threadRevealRequestId };
   repo.selectFile(thread.fileId);
 };
@@ -258,11 +291,45 @@ const handleThreadRevealHandled = (requestId: number) => {
   if (threadRevealRequest.value?.requestId === requestId) threadRevealRequest.value = undefined;
 };
 
+const handleFileSearchHandled = (requestId: number) => {
+  if (fileSearchRequest.value?.requestId === requestId) fileSearchRequest.value = undefined;
+};
+
 const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
   threadRevealRequest.value = undefined;
+  fileSearchRequest.value = undefined;
   activeWorkspaceView.value = 'folder';
   selectedFolder.value = { path: folder.path, files: sortFilesLikeSidebar(folder.files) };
   repo.activeFileId = undefined;
+};
+
+const openSearchResult = (result: SearchResult) => {
+  previewSearchResult(result);
+};
+
+const previewSearchResult = (result: SearchResult) => {
+  if (result.kind === 'comment') {
+    selectReviewThread(result.thread);
+    return;
+  }
+
+  if (result.fileId) {
+    selectFile(result.fileId);
+    requestFileSearch(result.fileId, result.kind === 'content' ? { line: result.line, side: result.side } : undefined);
+  }
+};
+
+const requestFileSearch = (fileId: string, target?: { line?: number; side?: SyntaxSide }) => {
+  const value = search.query.trim();
+  if (!value) return;
+
+  fileSearchRequest.value = {
+    fileId,
+    query: value,
+    line: target?.line,
+    side: target?.side,
+    requestId: ++fileSearchRequestId,
+  };
 };
 
 const setFileReviewed = async (payload: { fileId: string; reviewed: boolean }) => {
@@ -301,6 +368,7 @@ const compareSidebarPaths = (firstPath: string, secondPath: string) => {
 };
 
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalSearchShortcut);
   try {
     await repo.loadVersion();
     const launchRepository = await window.diffuse.getLaunchRepository();
@@ -311,14 +379,30 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalSearchShortcut);
   window.removeEventListener('pointermove', resizeFileTree);
   window.removeEventListener('pointerup', stopFileTreeResize);
 });
+
+const handleGlobalSearchShortcut = (event: KeyboardEvent) => {
+  if (!repo.repository) return;
+  const commandOrControl = event.metaKey || event.ctrlKey;
+  if (commandOrControl && event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    search.openOverlay('all');
+    return;
+  }
+  if (commandOrControl && event.shiftKey && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    search.openOverlay('content');
+  }
+};
 
 watch(
   () => repo.repository?.root,
   (root) => {
     threadRevealRequest.value = undefined;
+    fileSearchRequest.value = undefined;
     selectedFolder.value = undefined;
     activeWorkspaceView.value = 'overview';
     if (root) {
@@ -411,9 +495,18 @@ watch(
     cursor: col-resize;
     user-select: none;
   }
+
+  &.has-pinned-search {
+    grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr) minmax(280px, 340px);
+  }
 }
 
 .workspace-main {
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace-search-drawer {
   min-width: 0;
   min-height: 0;
 }
@@ -453,12 +546,20 @@ watch(
 @media (max-width: 1280px) {
   .workspace {
     grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr);
+
+    &.has-pinned-search {
+      grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr) minmax(260px, 300px);
+    }
   }
 }
 
 @media (max-width: 900px) {
   .workspace {
     grid-template-columns: minmax(220px, min(var(--file-tree-width), 38vw)) 6px minmax(0, 1fr);
+
+    &.has-pinned-search {
+      grid-template-columns: minmax(180px, min(var(--file-tree-width), 30vw)) 6px minmax(0, 1fr) minmax(240px, 32vw);
+    }
   }
 }
 </style>

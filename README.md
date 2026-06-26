@@ -213,6 +213,8 @@ After opening a repository, Diffuse shows a review overview alongside changed fi
 
 Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder. Selecting a review thread from the overview opens its file, scrolls to the anchored review row, and briefly flashes the target.
 
+Use the changed-file search box or the top-bar `Search` action to find files by fuzzy filename/path matches, review state, comments, generated/test/docs classification, extension, status, and line-count filters. `Ctrl+P` or `Cmd+P` opens the global search palette, and matching results can be pinned into an independent right-side search drawer so you can walk through them while reviewing. Content and symbol search modes are reserved for the planned core-backed search RPCs.
+
 The compare bar supports two main modes:
 
 1. `Working tree against <target>` compares local staged and unstaged changes against a target ref, usually `HEAD`.

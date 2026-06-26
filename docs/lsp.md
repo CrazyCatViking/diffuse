@@ -36,6 +36,8 @@ Diagnostics are shown only for the new side of a diff. Old-side hover is support
 
 Diffuse supports both LSP publish diagnostics and pull diagnostics. Pull diagnostics are only requested if the server advertises `diagnosticProvider`.
 
+The review overview derives its session-wide diagnostic counts by requesting new-side diagnostics for supported changed files while the overview is active. These counts are not persisted in review state.
+
 Hover and diagnostics use the same source side as the active diff target:
 
 - Branch/ref comparisons read old-side source from the target ref and new-side source from the source ref.

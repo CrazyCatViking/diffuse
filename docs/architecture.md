@@ -79,6 +79,7 @@ The main page is organized around stores:
 
 - `useRepoStore()` owns app version, current repository, changed files, active file, loading, and errors.
 - `useDiffStore()` owns the current diff model, view mode, context mode, synchronized scrolling, grammar install state, and diff errors.
+- `useSearchStore()` owns the renderer-side search query, mode, active filters, grouped results, global palette state, pinned drawer state, and selected result cursor.
 
 The main user flow is:
 
@@ -89,6 +90,8 @@ The main user flow is:
 5. `App.vue` watches `activeFileId` and calls `diff.loadDiff(fileId)`.
 6. `diff.loadDiff()` sends `getDiffRenderModel` with the current view/context options.
 7. `DiffViewer.vue` renders the returned rows.
+
+Changed-file search currently runs in the renderer over the loaded `changedFiles` list plus review metadata from `useReviewStore()`. `ChangedFilesPane.vue` owns a local sidebar query/filter state so command-palette searches do not filter the file tree. `SearchPalette.vue` and `SearchResultsDrawer.vue` share the palette result model for file/path hits, content hits, comments, and pinned result walking. Search result ranking stays idle until a query or filter is active so large repositories do not build and sort full result sets during normal navigation. The renderer slice supports fuzzy filename/path matching, typed filters, generated/test/docs classification, reviewed/commented/unresolved metadata, comment text matches, and a workspace column for pinned results. Palette content search is a renderer-backed pass over existing `getDiffRenderModel` RPCs for the current diff context and returns each matching diff line without per-file truncation; symbol search is intentionally left for planned core-backed RPCs described in [`amazing-file-search-plan.md`](amazing-file-search-plan.md).
 
 Once a repository is open, filesystem changes under the repository root trigger a changed-file refresh without reopening the repository. If the same file is already displayed, the UI marks the diff as stale and lets the user load the latest version.
 
@@ -202,7 +205,7 @@ Syntax highlighting is deliberately split into two phases.
 
 First, `getDiffRenderModel` returns syntax status such as detected language, grammar availability, parser path, query path, and missing reason. It does not eagerly highlight the entire diff.
 
-Second, `DiffViewer.vue` requests syntax spans lazily for visible line ranges. It uses `@tanstack/vue-virtual` to render only visible rows and queues `getSyntaxSpans` requests in pages. Visible pages are high priority; lookahead/prefetch pages are lower priority.
+Second, `DiffViewer.vue` requests syntax spans lazily for visible line ranges. It uses `@tanstack/vue-virtual` to render only visible rows and queues `getSyntaxSpans` requests in pages for the viewport plus a small lookaround window. Syntax pages are cached per rendered file with bounded eviction so scrolling a very large file does not retain the entire file's highlight data in the renderer.
 
 `getSyntaxSpans` asks the core for either the old or new side. Source resolution follows the active target: refs for branch comparisons, the index for staged/unstaged boundaries, and the working tree for working-tree new-side content.
 

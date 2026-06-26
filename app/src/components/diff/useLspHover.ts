@@ -5,6 +5,7 @@ import type { useClient } from '../../lib/useClient';
 type LspHoverClient = ReturnType<typeof useClient>;
 
 const lspHoverDelayMs = 420;
+const maxCachedHovers = 200;
 
 export const supportsLspFile = (fileId: string) => {
   const normalized = fileId.toLowerCase();
@@ -71,10 +72,12 @@ export const useLspHover = (options: {
   };
 
   const clear = () => {
+    const hadTimer = timer !== undefined;
     if (timer !== undefined) {
       window.clearTimeout(timer);
       timer = undefined;
     }
+    if (!hadTimer && !hover.value.visible && !hover.value.loading) return;
     requestId += 1;
     hover.value = { ...hover.value, visible: false, loading: false };
   };
@@ -99,6 +102,7 @@ export const useLspHover = (options: {
     try {
       const loaded = await options.client.getLspHover(request.fileId, request.side, request.line, request.column, options.target());
       cache.set(request.cacheKey, loaded);
+      evictOldCachedHovers();
       if (currentRequestId !== requestId) return;
       show(loaded, request.clientX, request.clientY, false);
     } catch (error) {
@@ -131,9 +135,22 @@ export const useLspHover = (options: {
 
   const cleanup = () => {
     if (timer !== undefined) window.clearTimeout(timer);
+    cache.clear();
   };
 
-  return { hover, hoverStyle, queue, clear, cleanup };
+  const clearCache = () => {
+    cache.clear();
+  };
+
+  const evictOldCachedHovers = () => {
+    while (cache.size > maxCachedHovers) {
+      const oldestKey = cache.keys().next().value;
+      if (!oldestKey) return;
+      cache.delete(oldestKey);
+    }
+  };
+
+  return { hover, hoverStyle, queue, clear, clearCache, cleanup };
 };
 
 const columnAtPoint = (

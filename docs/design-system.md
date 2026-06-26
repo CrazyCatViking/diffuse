@@ -24,6 +24,7 @@ The main design system sources are:
 - `app/src/components/ui/Panel.vue` for cards, dialogs, and raised surfaces.
 - `app/src/components/ui/Toolbar.vue` for horizontal application bars.
 - `app/src/components/ui/EmptyState.vue` for loading, empty, and unavailable states.
+- `app/src/components/ui/TreeList.vue` for collapsible hierarchical lists with feature-owned row content.
 - Feature components under `app/src/components/diff/`, `app/src/components/review/`, `app/src/components/changed-files/`, `app/src/components/settings/`, and `app/src/components/repositories/` for domain-specific UI patterns.
 
 Shared primitives should stay generic. Diff-specific and review-specific concepts should stay in feature components unless they are reused across unrelated surfaces.
@@ -155,6 +156,10 @@ Use `Toolbar.vue` for horizontal chrome that separates a region from the content
 ### EmptyState
 
 Use `EmptyState.vue` for loading, empty, no-selection, and unavailable states. Prefer clear titles and one-sentence descriptions. Use `bordered` when the empty state sits inside a panel or list region. Use `align="start"` for review overview and settings sections; use the default centered layout for full-pane states.
+
+### TreeList
+
+Use `TreeList.vue` for shared hierarchy behavior: indentation, collapse state, active row framing, and tree semantics. Keep feature-specific labels, badges, actions, review state, and result previews in the consuming feature component through slots.
 
 ## Feature UI Patterns
 
