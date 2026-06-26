@@ -98,7 +98,12 @@
         </div>
 
         <div class="lsp-list">
-          <article v-for="server in lspConfigInfo.servers" :key="server.language" class="lsp-row">
+          <article
+            v-for="server in lspConfigInfo.servers"
+            :key="server.language"
+            class="lsp-row"
+            :class="{ missing: !server.installed, running: server.running, errored: Boolean(server.lastError) }"
+          >
             <div class="lsp-meta">
               <div class="lsp-title">
                 <span class="grammar-name">{{ server.language }}</span>
@@ -167,11 +172,16 @@
       <div v-else-if="loading && grammars.length === 0" class="message">Loading grammars...</div>
       <div v-else-if="installedGrammars.length === 0" class="message">No grammars installed yet.</div>
       <div v-else class="installed-list">
-        <div v-for="grammar in installedGrammars" :key="grammar.id" class="installed-card">
+        <div
+          v-for="grammar in installedGrammars"
+          :key="grammar.id"
+          class="installed-card"
+          :class="{ warning: !grammar.highlightsInstalled }"
+        >
           <span class="grammar-name">{{ grammar.id }}</span>
           <span v-if="!grammar.highlightsInstalled" class="badge warning">Highlights missing</span>
           <span class="grammar-path" :title="grammar.grammarPath">{{ grammar.grammarPath }}</span>
-          <Button :disabled="operationInProgress" @click="uninstallGrammar(grammar.id)">
+          <Button variant="secondary" :disabled="operationInProgress" @click="uninstallGrammar(grammar.id)">
             {{ uninstallButtonText(grammar.id) }}
           </Button>
         </div>
@@ -196,7 +206,7 @@
       </div>
 
       <div class="grammar-list">
-        <article v-for="grammar in filteredGrammars" :key="grammar.id" class="grammar-row">
+        <article v-for="grammar in filteredGrammars" :key="grammar.id" class="grammar-row" :class="{ installed: grammar.installed }">
           <div class="grammar-meta">
             <div class="grammar-title">
               <span class="grammar-name">{{ grammar.id }}</span>
@@ -212,10 +222,10 @@
             <div v-if="installingLanguage === grammar.id && installStep" class="install-step">{{ installStep }}</div>
           </div>
 
-          <Button v-if="grammar.installed" :disabled="operationInProgress" @click="uninstallGrammar(grammar.id)">
+          <Button v-if="grammar.installed" variant="secondary" :disabled="operationInProgress" @click="uninstallGrammar(grammar.id)">
             {{ uninstallButtonText(grammar.id) }}
           </Button>
-          <Button v-else :disabled="operationInProgress" @click="installGrammar(grammar.id)">
+          <Button v-else variant="review" :disabled="operationInProgress" @click="installGrammar(grammar.id)">
             {{ installButtonText(grammar.id) }}
           </Button>
         </article>
@@ -658,6 +668,12 @@ p {
     border-color: #4b7bec;
     box-shadow: inset 0 0 0 1px #4b7bec;
   }
+
+  &:focus-visible {
+    border-color: var(--color-border-focus);
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
 }
 
 .theme-name {
@@ -768,9 +784,27 @@ p {
   gap: 12px;
   align-items: center;
   padding: 13px 14px;
-  border: 1px solid #2a3140;
+  border: 1px solid var(--color-border-default);
   border-radius: 12px;
-  background: #1b202b;
+  background: var(--color-bg-panel-raised);
+  box-shadow: var(--shadow-inset-highlight);
+}
+
+.installed-card.warning,
+.lsp-row.missing {
+  background: linear-gradient(90deg, var(--color-warning-muted), var(--color-bg-panel-raised) 140px);
+  border-color: rgba(240, 184, 106, 0.22);
+}
+
+.lsp-row.running,
+.grammar-row.installed {
+  background: linear-gradient(90deg, var(--color-success-muted), var(--color-bg-panel-raised) 140px);
+  border-color: rgba(91, 184, 119, 0.2);
+}
+
+.lsp-row.errored {
+  background: linear-gradient(90deg, var(--color-danger-muted), var(--color-bg-panel-raised) 140px);
+  border-color: rgba(255, 107, 107, 0.24);
 }
 
 .installed-card {
@@ -860,8 +894,8 @@ p {
   gap: 8px;
   margin-top: 12px;
   padding: 10px;
-  background: rgba(240, 184, 106, 0.08);
-  border: 1px solid rgba(240, 184, 106, 0.16);
+  background: var(--color-warning-muted);
+  border: 1px solid rgba(240, 184, 106, 0.18);
   border-radius: 10px;
 }
 
@@ -897,17 +931,25 @@ p {
 }
 
 .badge {
-  color: #9fb4ff;
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-ai);
+  background: var(--color-ai-muted);
+  border: 1px solid rgba(143, 179, 255, 0.18);
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
 
   &.installed {
-    color: #8bd5a3;
+    color: var(--color-success);
+    background: var(--color-success-muted);
+    border-color: rgba(91, 184, 119, 0.18);
   }
 
   &.warning {
-    color: #f0b86a;
+    color: var(--color-warning);
+    background: var(--color-warning-muted);
+    border-color: rgba(240, 184, 106, 0.18);
   }
 }
 
@@ -934,14 +976,25 @@ input {
   &:focus {
     border-color: #4b7bec;
   }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
 }
 
 .message {
-  color: #7e8aa0;
+  padding: var(--space-5) var(--space-6);
+  color: var(--color-text-muted);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-4);
   font-size: 13px;
 
   &.error {
-    color: #ff8d8d;
+    color: var(--color-danger);
+    background: var(--color-danger-muted);
+    border-color: rgba(255, 107, 107, 0.22);
   }
 }
 

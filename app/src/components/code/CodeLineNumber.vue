@@ -86,6 +86,7 @@ const collapsedCommentCountLabel = computed(() => (props.commentCount > 99 ? '99
   padding: 0;
   background: transparent;
   border: 0;
+  border-radius: var(--radius-2);
   cursor: pointer;
   font: inherit;
 }
@@ -111,6 +112,18 @@ const collapsedCommentCountLabel = computed(() => (props.commentCount > 99 ? '99
 .comment-bubble:focus-visible {
   opacity: 1;
   transform: translateX(0);
+}
+
+.comment-bubble:hover,
+.collapsed-comment-indicator:hover,
+.collapsed-comment-indicator:focus-visible {
+  background: var(--color-review-muted);
+}
+
+.comment-bubble:focus-visible,
+.collapsed-comment-indicator:focus-visible {
+  outline: 1px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 
 .comment-icon {

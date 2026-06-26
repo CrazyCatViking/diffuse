@@ -124,6 +124,12 @@ p {
     border-color: var(--color-border-strong);
   }
 
+  &:focus-visible {
+    border-color: var(--color-border-focus);
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+
   &:disabled {
     cursor: default;
     opacity: 0.6;

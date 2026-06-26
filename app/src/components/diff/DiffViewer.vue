@@ -12,7 +12,7 @@
           <button class="load-latest" type="button" :disabled="loading" @click="emit('loadLatest')">Load latest</button>
         </span>
 
-        <span v-if="syntaxMessage" class="syntax-status">
+        <span v-if="syntaxMessage" class="syntax-status" :class="{ loading: installingGrammar }">
           {{ syntaxMessage }}
 
           <button class="install-grammar" type="button" :disabled="installingGrammar" @click="emit('installGrammar')">
@@ -103,7 +103,7 @@ import {
 } from './reviewRows';
 import DiffViewControls from './DiffViewControls.vue';
 import DiffViewerOverlays from './DiffViewerOverlays.vue';
-import type { DiffScrollMarker } from './DiffScrollbar.vue';
+import type { DiffScrollMarker, DiffScrollMarkerKind } from './DiffScrollbar.vue';
 import { useReviewInteractions } from './useReviewInteractions';
 import { buildDiffScrollMarkers } from './diffScrollMarkers';
 import { useDiffScrollbar } from './useDiffScrollbar';
@@ -358,7 +358,8 @@ const lspStatusMessage = computed(() => {
   return `LSP: ${status.language} not configured`;
 });
 const lspStatusClass = computed(() => ({
-  ready: Boolean(lspStatus.value?.installed && !lspStatus.value?.lastError),
+  ready: Boolean(lspStatus.value?.running && !lspStatus.value?.lastError),
+  configured: Boolean(lspStatus.value?.installed && !lspStatus.value?.running && !lspStatus.value?.lastError),
   missing: Boolean(lspStatus.value && (!lspStatus.value.installed || lspStatus.value.lastError)),
   loading: lspStatusLoading.value,
 }));
@@ -722,9 +723,46 @@ const estimateDisplaySize = (items: DisplayRow[]) => (index: number) => estimate
 const scrollMarkersForRows = (items: DisplayRow[], side?: SyntaxSide): DiffScrollMarker[] => {
   return buildDiffScrollMarkers(items, {
     estimateSize: estimateDisplayItemSize,
-    kindForItem: (item) => (item.kind === 'diff' && (item.row.kind === 'added' || item.row.kind === 'deleted') ? item.row.kind : undefined),
+    kindForItem: (item) => markerKindsForDisplayRow(item, side),
     side,
   });
+};
+
+const markerKindsForDisplayRow = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarkerKind[] => {
+  const kinds: DiffScrollMarkerKind[] = [];
+  if (item.kind !== 'diff') return ['review'];
+  if (item.row.kind === 'added' || item.row.kind === 'deleted') kinds.push(item.row.kind);
+  const diagnostics = diagnosticsForMarkerRow(item, side);
+  if (diagnostics.length > 0) kinds.push(diagnosticMarkerKind(diagnostics));
+  const searchKind = searchMarkerKind(item, side);
+  if (searchKind) kinds.push(searchKind);
+  return kinds;
+};
+
+const diagnosticsForMarkerRow = (item: DisplayRow, side?: SyntaxSide) => {
+  if (item.kind !== 'diff' || side === 'old') return [];
+  return diagnosticsForLine('new', item.row.newLine);
+};
+
+const diagnosticMarkerKind = (diagnostics: LspDiagnostic[]): DiffScrollMarkerKind => {
+  if (diagnostics.some((diagnostic) => diagnostic.severity === 'error')) return 'diagnostic-error';
+  if (diagnostics.some((diagnostic) => diagnostic.severity === 'warning')) return 'diagnostic-warning';
+  return 'diagnostic-info';
+};
+
+const searchMarkerKind = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarkerKind | undefined => {
+  if (item.kind !== 'diff') return undefined;
+  const rowIndex = rowIndexFromDisplayKey(item.key);
+  if (rowIndex === undefined) return undefined;
+  const active = activeSearchMatch.value;
+  const matches = searchMatches.value.filter((match) => match.rowIndex === rowIndex && (!side || match.side === side));
+  if (matches.length === 0) return undefined;
+  return active && matches.some((match) => sameSearchMatch(match, active)) ? 'active-search' : 'search';
+};
+
+const rowIndexFromDisplayKey = (key: string) => {
+  const value = Number(key.slice('diff:'.length));
+  return Number.isInteger(value) ? value : undefined;
 };
 
 const leftVirtualizer = useVirtualizer(
@@ -1221,6 +1259,7 @@ const setPaneRef = (pane: PaneKey, element: Element | null) => {
   else if (pane === 'right') rightRef.value = htmlElement;
   else if (pane === 'syncedSplit') syncedSplitRef.value = htmlElement;
   else inlineRef.value = htmlElement;
+  scrollbars.updateAfterRender();
 };
 
 const onPaneScroll = (pane: PaneKey, event: Event) => {
@@ -1402,12 +1441,26 @@ watch(
   padding: 0 var(--space-3);
   border: 1px solid transparent;
   border-radius: var(--radius-pill);
+
+  &::before {
+    width: 7px;
+    height: 7px;
+    background: currentColor;
+    border-radius: var(--radius-pill);
+    content: '';
+  }
 }
 
 .syntax-status {
   color: var(--color-warning);
   background: var(--color-warning-muted);
   border-color: rgba(240, 184, 106, 0.25);
+
+  &.loading {
+    color: var(--color-info);
+    background: var(--color-info-muted);
+    border-color: rgba(77, 166, 255, 0.25);
+  }
 }
 
 .lsp-status {
@@ -1419,6 +1472,12 @@ watch(
     color: var(--color-success);
     background: var(--color-success-muted);
     border-color: rgba(91, 184, 119, 0.25);
+  }
+
+  &.configured {
+    color: var(--color-info);
+    background: var(--color-info-muted);
+    border-color: rgba(77, 166, 255, 0.25);
   }
 
   &.missing {

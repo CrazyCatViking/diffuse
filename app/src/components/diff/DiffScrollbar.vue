@@ -11,9 +11,19 @@ import type { CSSProperties } from 'vue';
 
 export type DiffScrollMarker = {
   key: string;
-  kind: 'added' | 'deleted';
+  kind: DiffScrollMarkerKind;
   style: CSSProperties;
 };
+
+export type DiffScrollMarkerKind =
+  | 'added'
+  | 'deleted'
+  | 'review'
+  | 'diagnostic-error'
+  | 'diagnostic-warning'
+  | 'diagnostic-info'
+  | 'search'
+  | 'active-search';
 
 defineProps<{
   markers: DiffScrollMarker[];
@@ -42,18 +52,64 @@ const emit = defineEmits<{
 
 .diff-scroll-marker {
   position: absolute;
-  width: 50%;
-  min-height: 2px;
+  min-height: 3px;
   opacity: 0.95;
+  border-radius: var(--radius-pill);
+  pointer-events: none;
 
   &.added {
-    right: 0;
-    background: var(--color-diff-added-bg);
+    right: 2px;
+    width: 5px;
+    background: var(--color-success);
   }
 
   &.deleted {
-    left: 0;
-    background: var(--color-diff-deleted-bg);
+    left: 2px;
+    width: 5px;
+    background: var(--color-danger);
+  }
+
+  &.review {
+    right: 5px;
+    left: 5px;
+    min-height: 5px;
+    background: var(--color-review);
+    box-shadow: 0 0 8px rgba(240, 195, 106, 0.24);
+  }
+
+  &.diagnostic-error,
+  &.diagnostic-warning,
+  &.diagnostic-info {
+    right: 1px;
+    width: 3px;
+    min-height: 5px;
+  }
+
+  &.diagnostic-error {
+    background: var(--color-danger);
+  }
+
+  &.diagnostic-warning {
+    background: var(--color-warning);
+  }
+
+  &.diagnostic-info {
+    background: var(--color-info);
+  }
+
+  &.search,
+  &.active-search {
+    right: 4px;
+    left: 4px;
+    background: rgba(255, 214, 102, 0.56);
+  }
+
+  &.active-search {
+    right: 2px;
+    left: 2px;
+    min-height: 6px;
+    background: #ffe08a;
+    box-shadow: 0 0 10px rgba(255, 224, 138, 0.42);
   }
 }
 

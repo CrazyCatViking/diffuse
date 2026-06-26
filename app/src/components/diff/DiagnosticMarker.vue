@@ -12,6 +12,8 @@
     @blur="open = false"
     @click.stop="open = !open"
   >
+    <span v-if="diagnostics.length > 1" class="diagnostic-count">{{ diagnostics.length }}</span>
+
     <span v-if="open" class="diagnostic-popover" role="tooltip">
       <span v-for="diagnostic in diagnostics" :key="diagnosticKey(diagnostic)" class="diagnostic-item" :class="diagnostic.severity">
         <span class="diagnostic-header">
@@ -38,7 +40,10 @@ const open = ref(false);
 
 const diagnostics = computed(() => props.diagnostics ?? []);
 const severity = computed(() => diagnosticSeverity(diagnostics.value));
-const label = computed(() => diagnostics.value.map((diagnostic) => diagnostic.message).join('\n'));
+const label = computed(() => {
+  const prefix = diagnostics.value.length === 1 ? '1 diagnostic' : `${diagnostics.value.length} diagnostics`;
+  return `${prefix}: ${diagnostics.value.map((diagnostic) => diagnostic.message).join('\n')}`;
+});
 
 const diagnosticSeverity = (items: LspDiagnostic[]) => {
   if (!items.length) return undefined;
@@ -59,12 +64,14 @@ const diagnosticKey = (diagnostic: LspDiagnostic) => {
 <style scoped lang="scss">
 .diagnostic-marker {
   position: absolute;
-  top: 8px;
-  right: 6px;
+  top: 5px;
+  right: 5px;
   z-index: 5;
-  width: 7px;
-  height: 7px;
+  width: 13px;
+  height: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--color-bg-line-number);
   cursor: help;
   outline: none;
 
@@ -79,12 +86,35 @@ const diagnosticKey = (diagnostic: LspDiagnostic) => {
   &.info {
     background: var(--color-ai);
   }
+
+  &:focus-visible {
+    outline: 1px solid var(--color-border-focus);
+    outline-offset: 3px;
+  }
+}
+
+.diagnostic-count {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  color: var(--color-bg-code);
+  background: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-ui);
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 12px;
+  text-align: center;
+  box-sizing: border-box;
 }
 
 .diagnostic-popover {
   position: absolute;
-  top: 13px;
-  right: -4px;
+  top: 19px;
+  right: -6px;
   display: grid;
   gap: var(--space-4);
   width: min(360px, 72vw);

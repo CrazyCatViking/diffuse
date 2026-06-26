@@ -508,6 +508,20 @@ watch(
   }
 }
 
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: minmax(220px, min(var(--file-tree-width), 38vw)) 6px minmax(0, 1fr);
+  }
+
+  .review-drawer-overlay {
+    padding: var(--space-5);
+  }
+
+  .review-drawer-panel {
+    width: min(380px, 100%);
+  }
+}
+
 @media (min-width: 1281px) {
   .review-drawer-overlay {
     display: none;

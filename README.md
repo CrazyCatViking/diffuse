@@ -220,7 +220,7 @@ The compare bar supports two main modes:
 
 Diffuse chooses defaults from repository state. Dirty repositories default to working tree changes against `HEAD`. Clean repositories default to `HEAD` against the configured upstream when available, falling back to `origin/main`, `origin/master`, or `HEAD`.
 
-The diff viewer supports split or inline layout, diff-only or full-file context, synchronized split scrolling, lazy syntax highlighting, LSP hover and diagnostics, and a stale-diff notice when the currently displayed file changes on disk.
+The diff viewer supports split or inline layout, diff-only or full-file context, synchronized split scrolling, lazy syntax highlighting, LSP hover and diagnostics, scan markers for changes, review threads, diagnostics, and search results, and a stale-diff notice when the currently displayed file changes on disk.
 
 Review comments can be anchored to old-side or new-side lines. Selecting text in a diff shows actions for adding a comment or asking AI about the selected code; in split view, text selection stays on the side where the drag starts. Threads can be replied to, resolved, reopened, and used as context for AI chat.
 

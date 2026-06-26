@@ -493,6 +493,13 @@ h3 {
     background: var(--color-bg-hover);
   }
 
+  &:focus-visible {
+    background: var(--color-bg-hover);
+    border-color: var(--color-border-focus);
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+
   &.active {
     background: var(--color-bg-active);
     border-color: var(--color-border-default);
@@ -568,6 +575,11 @@ h3 {
   background: transparent;
   border: 0;
   font: inherit;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 3px;
+  }
 }
 
 .thread-file {

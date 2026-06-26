@@ -2,6 +2,8 @@
   <section ref="rootRef" class="folder-diff-viewer">
     <div class="folder-header">
       <div class="folder-meta">
+        <span class="folder-kicker">Folder review</span>
+
         <span class="folder-path">{{ folderPath }}</span>
 
         <span class="file-count">{{ files.length }} file{{ files.length === 1 ? '' : 's' }}</span>
@@ -33,6 +35,7 @@
       :lsp-hover="lspHover"
       :lsp-hover-style="lspHoverStyle"
       :diagnostic-summary="diagnosticSummary"
+      :review-summary="reviewSummary"
       :measure-folder-element="measureFolderElement"
       @scroll-ref="setFolderScrollRef"
       @scroll="onFolderScroll"
@@ -79,7 +82,7 @@ import {
   type DisplayRow,
 } from './reviewRows';
 import DiffViewControls from './DiffViewControls.vue';
-import type { DiffScrollMarker } from './DiffScrollbar.vue';
+import type { DiffScrollMarker, DiffScrollMarkerKind } from './DiffScrollbar.vue';
 import { useReviewInteractions } from './useReviewInteractions';
 import { buildDiffScrollMarkers } from './diffScrollMarkers';
 import { useDiffScrollbar } from './useDiffScrollbar';
@@ -118,6 +121,7 @@ type FolderVirtualItem = {
   key: string;
   model?: DiffRenderModel;
   fileId?: string;
+  fileIndex?: number;
   item?: DisplayRow;
 };
 
@@ -166,15 +170,16 @@ const {
   requireSameFile: true,
 });
 const folderVirtualItems = computed<FolderVirtualItem[]>(() => {
-  return models.value.flatMap((model) => {
-    const items: FolderVirtualItem[] = [{ kind: 'file', key: `file:${model.fileId}`, model }];
-    if (model.rows.length === 0) items.push({ kind: 'empty', key: `empty:${model.fileId}`, fileId: model.fileId });
+  return models.value.flatMap((model, fileIndex) => {
+    const items: FolderVirtualItem[] = [{ kind: 'file', key: `file:${model.fileId}`, model, fileIndex }];
+    if (model.rows.length === 0) items.push({ kind: 'empty', key: `empty:${model.fileId}`, fileId: model.fileId, fileIndex });
     else
       items.push(
         ...displayRowsForModel(model).map((item) => ({
           kind: 'row' as const,
           key: `row:${model.fileId}:${item.key}`,
           fileId: model.fileId,
+          fileIndex,
           item,
         })),
       );
@@ -239,7 +244,7 @@ const measureFolderElement = (element: unknown) => {
 
 const estimateFolderItemSize = (item?: FolderVirtualItem) => {
   if (!item) return 24;
-  if (item.kind === 'file') return 36;
+  if (item.kind === 'file') return 44;
   if (item.kind === 'empty') return 50;
   if (!item.item) return 24;
   if (item.item.kind === 'draft') return 220;
@@ -251,11 +256,26 @@ const estimateFolderItemSize = (item?: FolderVirtualItem) => {
 const scrollMarkersForItems = (items: FolderVirtualItem[]): DiffScrollMarker[] => {
   return buildDiffScrollMarkers(items, {
     estimateSize: estimateFolderItemSize,
-    kindForItem: (item) => {
-      const row = displayDiffRow(item.item);
-      return row?.kind === 'added' || row?.kind === 'deleted' ? row.kind : undefined;
-    },
+    kindForItem: markerKindsForFolderItem,
   });
+};
+
+const markerKindsForFolderItem = (item: FolderVirtualItem): DiffScrollMarkerKind[] => {
+  const reviewRow = displayReviewRow(item.item);
+  if (reviewRow) return ['review'];
+
+  const kinds: DiffScrollMarkerKind[] = [];
+  const row = displayDiffRow(item.item);
+  if (row?.kind === 'added' || row?.kind === 'deleted') kinds.push(row.kind);
+  const diagnostics = item.fileId && row?.newLine ? diagnosticsForLine(item.fileId, row.newLine) : [];
+  if (diagnostics.length > 0) kinds.push(diagnosticMarkerKind(diagnostics));
+  return kinds;
+};
+
+const diagnosticMarkerKind = (diagnostics: LspDiagnostic[]): DiffScrollMarkerKind => {
+  if (diagnostics.some((diagnostic) => diagnostic.severity === 'error')) return 'diagnostic-error';
+  if (diagnostics.some((diagnostic) => diagnostic.severity === 'warning')) return 'diagnostic-warning';
+  return 'diagnostic-info';
 };
 
 const onFolderScroll = () => {
@@ -272,6 +292,7 @@ const onScrollbarThumbPointerDown = (event: PointerEvent) => {
 
 const setFolderScrollRef = (element: Element | null) => {
   folderScrollRef.value = element instanceof HTMLElement ? element : null;
+  scrollbars.updateAfterRender();
 };
 
 const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[] => {
@@ -317,6 +338,20 @@ const diagnosticSummary = (fileId: string) => {
   return {
     label: parts.join(', '),
     className: errors > 0 ? 'error' : warnings > 0 ? 'warning' : 'info',
+  };
+};
+
+const reviewSummary = (fileId: string) => {
+  const threads = fileThreads(fileId);
+  if (threads.length === 0) return undefined;
+  const open = threads.filter((thread) => thread.status === 'open').length;
+  const resolved = threads.length - open;
+  const parts = [];
+  if (open > 0) parts.push(`${open} open`);
+  if (resolved > 0) parts.push(`${resolved} resolved`);
+  return {
+    label: parts.join(', '),
+    className: open > 0 ? 'open' : 'resolved',
   };
 };
 
@@ -639,11 +674,22 @@ onBeforeUnmount(() => {
 
 .folder-meta {
   display: flex;
-  gap: var(--space-5);
+  gap: var(--space-4);
   align-items: center;
   min-width: 0;
   color: var(--color-text-primary);
   font-weight: 650;
+}
+
+.folder-kicker {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-review);
+  background: var(--color-review-muted);
+  border: 1px solid rgba(240, 195, 106, 0.24);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-caption);
+  text-transform: uppercase;
 }
 
 .folder-path {
