@@ -7,7 +7,11 @@
         <h2>{{ session?.title ?? 'Local review' }}</h2>
       </div>
 
-      <Badge :tone="session ? 'success' : 'neutral'">{{ session?.status ?? 'starting' }}</Badge>
+      <div class="panel-actions">
+        <Badge :tone="session ? 'success' : 'neutral'">{{ session?.status ?? 'starting' }}</Badge>
+
+        <Button v-if="closable" variant="ghost" size="sm" @click="emit('close')">Close</Button>
+      </div>
     </header>
 
     <div v-if="error" class="error-callout" role="alert">{{ error }}</div>
@@ -148,18 +152,24 @@ import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
 
-const props = defineProps<{
-  changedFiles: ChangedFile[];
-  activeFileId?: string;
-  reviewedFileIds: string[];
-  session: ReviewSession | null;
-  progress: ReviewProgress | null;
-  activeRun: ReviewRun | null;
-  activeAgentState: ReviewAgentState | null;
-  threads: ReviewThread[];
-  loading: boolean;
-  error?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    changedFiles: ChangedFile[];
+    activeFileId?: string;
+    reviewedFileIds: string[];
+    session: ReviewSession | null;
+    progress: ReviewProgress | null;
+    activeRun: ReviewRun | null;
+    activeAgentState: ReviewAgentState | null;
+    threads: ReviewThread[];
+    loading: boolean;
+    error?: string;
+    closable?: boolean;
+  }>(),
+  {
+    closable: false,
+  },
+);
 
 const emit = defineEmits<{
   selectFile: [fileId: string];
@@ -168,6 +178,7 @@ const emit = defineEmits<{
   stopReview: [];
   resolveThread: [thread: ReviewThread];
   reopenThread: [thread: ReviewThread];
+  close: [];
 }>();
 
 const totalFiles = computed(() => props.changedFiles.length);
@@ -236,6 +247,7 @@ const formatDate = (value: string) => {
 }
 
 .panel-header,
+.panel-actions,
 .section-heading,
 .thread-meta,
 .progress-heading {
@@ -244,6 +256,10 @@ const formatDate = (value: string) => {
   justify-content: space-between;
   gap: var(--space-5);
   min-width: 0;
+}
+
+.panel-actions {
+  flex: 0 0 auto;
 }
 
 h2,
@@ -487,11 +503,5 @@ h3 {
 .thread-meta {
   justify-content: start;
   flex-wrap: wrap;
-}
-
-@media (max-width: 1280px) {
-  .review-panel {
-    display: none;
-  }
 }
 </style>

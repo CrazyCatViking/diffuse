@@ -112,16 +112,7 @@
 
         <ReviewPanel
           class="review-panel-region"
-          :changed-files="repo.changedFiles"
-          :active-file-id="repo.activeFileId"
-          :reviewed-file-ids="reviewedFileIds"
-          :session="review.session"
-          :progress="review.progress"
-          :active-run="review.activeRun"
-          :active-agent-state="review.activeAgentState"
-          :threads="review.threads"
-          :loading="review.loading"
-          :error="review.error"
+          v-bind="reviewPanelProps"
           @select-file="selectFile"
           @new-session="review.startNewSession()"
           @start-review="review.startAgentReview()"
@@ -129,6 +120,35 @@
           @resolve-thread="review.resolveThread($event)"
           @reopen-thread="review.reopenThread($event)"
         />
+
+        <Button
+          class="review-drawer-toggle"
+          variant="review"
+          size="sm"
+          :aria-expanded="showReviewDrawer"
+          aria-controls="review-drawer"
+          @click="showReviewDrawer = true"
+        >
+          {{ reviewDrawerLabel }}
+        </Button>
+
+        <div v-if="showReviewDrawer" class="review-drawer-overlay" @click.self="showReviewDrawer = false">
+          <ReviewPanel
+            id="review-drawer"
+            class="review-drawer-panel"
+            v-bind="reviewPanelProps"
+            closable
+            role="dialog"
+            aria-modal="true"
+            @close="showReviewDrawer = false"
+            @select-file="selectFileFromReviewDrawer"
+            @new-session="review.startNewSession()"
+            @start-review="review.startAgentReview()"
+            @stop-review="review.stopAgentReview()"
+            @resolve-thread="review.resolveThread($event)"
+            @reopen-thread="review.reopenThread($event)"
+          />
+        </div>
       </main>
     </template>
   </div>
@@ -137,6 +157,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
+import Button from './components/Button.vue';
 import DiffTargetBar from './components/diff/DiffTargetBar.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
@@ -156,6 +177,7 @@ const diff = useDiffStore();
 const review = useReviewStore();
 const showRecentRepositories = ref(false);
 const showSettings = ref(false);
+const showReviewDrawer = ref(false);
 const selectedFolder = ref<{ path: string; files: ChangedFile[] }>();
 const fileTreeWidthStorageKey = 'diffuse.fileTreeWidth';
 const minFileTreeWidth = 220;
@@ -176,6 +198,22 @@ function clampFileTreeWidth(width: number) {
 const fileTreeWidth = ref(loadFileTreeWidth());
 const fileTreeResizing = ref(false);
 const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
+const reviewPanelProps = computed(() => ({
+  changedFiles: repo.changedFiles,
+  activeFileId: repo.activeFileId,
+  reviewedFileIds: reviewedFileIds.value,
+  session: review.session,
+  progress: review.progress,
+  activeRun: review.activeRun,
+  activeAgentState: review.activeAgentState,
+  threads: review.threads,
+  loading: review.loading,
+  error: review.error,
+}));
+const reviewDrawerLabel = computed(() => {
+  const openThreadCount = review.openThreads.length;
+  return openThreadCount > 0 ? `Review (${openThreadCount})` : 'Review';
+});
 
 const startFileTreeResize = (event: PointerEvent) => {
   event.preventDefault();
@@ -214,6 +252,11 @@ const applyDiffTarget = async (target: DiffTarget) => {
 const selectFile = (fileId: string) => {
   selectedFolder.value = undefined;
   repo.selectFile(fileId);
+};
+
+const selectFileFromReviewDrawer = (fileId: string) => {
+  selectFile(fileId);
+  showReviewDrawer.value = false;
 };
 
 const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
@@ -336,6 +379,7 @@ watch(
   display: grid;
   grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr) minmax(320px, 360px);
   min-height: 0;
+  position: relative;
 
   &.resizing {
     cursor: col-resize;
@@ -345,6 +389,33 @@ watch(
 
 .review-panel-region {
   min-width: 0;
+}
+
+.review-drawer-toggle.review-drawer-toggle {
+  position: absolute;
+  right: var(--space-7);
+  bottom: var(--space-7);
+  z-index: 6;
+  display: none;
+  box-shadow: var(--shadow-popover);
+}
+
+.review-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: none;
+  justify-items: end;
+  padding: var(--space-7);
+  background: var(--color-bg-overlay);
+}
+
+.review-drawer-panel {
+  width: min(420px, 100%);
+  height: 100%;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-6);
+  box-shadow: var(--shadow-dialog);
 }
 
 .start-screen {
@@ -385,6 +456,20 @@ watch(
   }
 
   .review-panel-region {
+    display: none;
+  }
+
+  .review-drawer-toggle.review-drawer-toggle {
+    display: inline-flex;
+  }
+
+  .review-drawer-overlay {
+    display: grid;
+  }
+}
+
+@media (min-width: 1281px) {
+  .review-drawer-overlay {
     display: none;
   }
 }
