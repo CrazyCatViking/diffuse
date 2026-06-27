@@ -47,6 +47,7 @@
     :chat-messages="review.chatMessagesForEntry(entry.reviewRow)"
     :agent-responding="review.agentRespondingForEntry(entry.reviewRow)"
     :error="review.error"
+    :focused="entry.reviewFocused"
     @update:draft-body="reviewActions.updateDraftBody"
     @submit="reviewActions.submit"
     @submit-chat-draft="reviewActions.submitChatDraft"

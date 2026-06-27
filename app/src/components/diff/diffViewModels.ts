@@ -25,6 +25,7 @@ export type DiffRenderedEntry = {
   diffRow?: DiffRow;
   diff?: DiffCodeRowModel;
   reviewRow?: InlineReviewEntry;
+  reviewFocused?: boolean;
 };
 
 export type DiffPaneModel = {
@@ -68,7 +69,7 @@ export type DiffPaneActions = {
   scroll: (pane: DiffPaneKey, event: Event) => void;
   pointerMove: (event: PointerEvent) => void;
   mouseLeave: () => void;
-  mouseUp: () => void;
+  mouseUp: (event: MouseEvent) => void;
   scrollbarTrackPointerDown: (event: PointerEvent, pane: DiffPaneKey) => void;
   scrollbarThumbPointerDown: (event: PointerEvent, pane: DiffPaneKey) => void;
   comment: (payload: CodeLineCommentPayload) => void;

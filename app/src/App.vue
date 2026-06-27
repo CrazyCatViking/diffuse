@@ -121,6 +121,7 @@
           @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
           @thread-reveal-handled="handleThreadRevealHandled"
           @file-search-handled="handleFileSearchHandled"
+          @open-cursor-file="selectFile"
         />
 
         <SearchResultsDrawer

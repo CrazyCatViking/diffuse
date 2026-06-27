@@ -1,7 +1,5 @@
 <template>
   <div v-if="showSelectionToolbar" class="selection-toolbar" :style="selectionStyle">
-    <span class="selection-toolbar-label">Review selection</span>
-
     <button
       type="button"
       title="Comment on selection"

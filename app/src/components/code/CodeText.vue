@@ -1,7 +1,7 @@
 <template>
   <pre
     class="code"
-  ><template v-for="(fragment, index) in fragments" :key="index"><span v-if="fragment.style" :style="fragment.style">{{ fragment.text }}</span><template v-else>{{ fragment.text }}</template></template></pre>
+  ><template v-for="(fragment, index) in fragments" :key="index"><span v-if="fragment.style || fragment.className" :class="fragment.className" :style="fragment.style" :data-diff-cursor="fragment.cursor ? 'true' : undefined">{{ fragment.text }}</span><template v-else>{{ fragment.text }}</template></template><span v-if="endCursorVisible" class="code-cursor code-cursor-end" data-diff-cursor="true">&nbsp;</span></pre>
 </template>
 
 <script setup lang="ts">
@@ -19,6 +19,8 @@ const props = defineProps<{
 type Fragment = {
   text: string;
   style?: CSSProperties;
+  className?: string;
+  cursor?: boolean;
 };
 
 const settings = useSettingsStore();
@@ -72,6 +74,15 @@ const syntaxTheme = computed<Record<string, SyntaxStyle>>(() => {
   };
 });
 
+const cursorHighlight = computed(() => {
+  return props.highlights?.find((highlight) => highlight.kind === 'cursor');
+});
+
+const endCursorVisible = computed(() => {
+  const cursor = cursorHighlight.value;
+  return Boolean(cursor && cursor.startColumn >= props.text.length);
+});
+
 const fragments = computed<Fragment[]>(() => {
   const result: Fragment[] = [];
   const spans = props.spans
@@ -90,7 +101,8 @@ const fragments = computed<Fragment[]>(() => {
       startColumn: Math.max(0, Math.min(props.text.length, highlight.startColumn)),
       endColumn: Math.max(0, Math.min(props.text.length, highlight.endColumn)),
     }))
-    .filter((highlight) => highlight.endColumn > highlight.startColumn);
+    .filter((highlight) => highlight.kind === 'cursor' || highlight.endColumn > highlight.startColumn)
+    .filter((highlight) => highlight.kind !== 'cursor' || highlight.startColumn < props.text.length);
   if (spans.length === 0 && highlights.length === 0) return [{ text: props.text }];
 
   const boundaries = [
@@ -109,14 +121,30 @@ const fragments = computed<Fragment[]>(() => {
     const scope = bestScopeForRange(spans, start, end);
     const style: CSSProperties = scope ? { ...resolveStyle(scope) } : {};
     const highlight = highlightForRange(highlights, start, end);
+    let className: string | undefined;
     if (highlight?.kind === 'review') {
+      className = 'code-highlight';
       style.background = 'rgba(240, 195, 106, 0.32)';
     } else if (highlight?.kind === 'search' || highlight?.kind === 'active-search') {
+      className = 'code-highlight';
       style.background = highlight.kind === 'active-search' ? 'rgba(255, 214, 102, 0.78)' : 'rgba(255, 214, 102, 0.34)';
       style.color = '#101318';
       if (highlight.kind === 'active-search') style.outline = '1px solid rgba(255, 241, 184, 0.95)';
+    } else if (highlight?.kind === 'visual') {
+      className = 'code-highlight';
+      style.background = 'var(--color-bg-selected)';
+      style.color = 'var(--color-text-primary)';
+    } else if (highlight?.kind === 'cursor') {
+      className = 'code-cursor';
+      style.background = 'var(--color-text-primary)';
+      style.color = 'var(--color-bg-code)';
     }
-    result.push({ text: props.text.slice(start, end), style: Object.keys(style).length > 0 ? style : undefined });
+    result.push({
+      text: props.text.slice(start, end),
+      style: Object.keys(style).length > 0 ? style : undefined,
+      className,
+      cursor: highlight?.kind === 'cursor',
+    });
   }
 
   return result.length > 0 ? result : [{ text: props.text }];
@@ -124,8 +152,10 @@ const fragments = computed<Fragment[]>(() => {
 
 const highlightForRange = (highlights: CodeTextHighlight[], start: number, end: number) => {
   return (
+    highlights.find((highlight) => highlight.kind === 'cursor' && highlight.startColumn < end && highlight.endColumn > start) ??
     highlights.find((highlight) => highlight.kind === 'active-search' && highlight.startColumn < end && highlight.endColumn > start) ??
     highlights.find((highlight) => highlight.kind === 'search' && highlight.startColumn < end && highlight.endColumn > start) ??
+    highlights.find((highlight) => highlight.kind === 'visual' && highlight.startColumn < end && highlight.endColumn > start) ??
     highlights.find((highlight) => highlight.kind === 'review' && highlight.startColumn < end && highlight.endColumn > start)
   );
 };
@@ -185,12 +215,33 @@ const normalizeAlias = (scope: string): string => {
 .code {
   min-width: 0;
   margin: 0;
-  padding: 0 12px;
+  padding: 0 var(--space-4);
   overflow: hidden;
   color: v-bind('settings.syntaxTheme.colors.text');
   font: inherit;
   line-height: inherit;
   text-overflow: ellipsis;
   white-space: pre;
+}
+
+.code-cursor {
+  display: inline-block;
+  min-width: 0.62em;
+  height: var(--line-height-code);
+  color: var(--color-bg-code);
+  background: var(--color-text-primary);
+  line-height: var(--line-height-code);
+  vertical-align: top;
+}
+
+.code-highlight {
+  display: inline-block;
+  height: var(--line-height-code);
+  line-height: var(--line-height-code);
+  vertical-align: top;
+}
+
+.code-cursor-end {
+  width: 0.62em;
 }
 </style>

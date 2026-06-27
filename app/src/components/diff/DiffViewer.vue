@@ -1,5 +1,13 @@
 <template>
-  <section ref="rootRef" class="diff-viewer" :class="selectionSideClass" @pointerdown.capture="lockSelectionSide">
+  <section
+    ref="rootRef"
+    class="diff-viewer"
+    :class="selectionSideClass"
+    tabindex="0"
+    aria-label="Diff viewer"
+    @pointerdown.capture="onRootPointerDown"
+    @keydown="onViewerKeyDown"
+  >
     <div class="diff-header">
       <div class="file-meta">
         <span class="file-name">{{ model?.fileId ?? 'No file selected' }}</span>
@@ -79,8 +87,8 @@
       :selection-style="selectionBubbleStyle"
       :lsp-hover="lspHover"
       :lsp-hover-style="lspHoverStyle"
-      @comment-selection="startSelectionComment"
-      @chat-selection="startSelectionChat"
+      @comment-selection="startToolbarSelectionComment"
+      @chat-selection="startToolbarSelectionChat"
     />
   </section>
 </template>
@@ -104,6 +112,7 @@ import type {
 } from '../../lib/protocol';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
+import { useSettingsStore } from '../../stores/settings';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
 import Button from '../Button.vue';
@@ -123,6 +132,7 @@ import { buildDiffScrollMarkers } from './diffScrollMarkers';
 import { useDiffScrollbar } from './useDiffScrollbar';
 import { supportsLspFile, useLspHover } from './useLspHover';
 import { useDiffSelection } from './useDiffSelection';
+import { useDiffCursor, type DiffCursorPosition } from './useDiffCursor';
 import { buildRenderedDiffRowFields } from './diffRenderedRows';
 import SingleFileDiffPanes from './SingleFileDiffPanes.vue';
 import type { DiffPaneActions, DiffPaneModel, DiffRenderedEntry, DiffReviewActions, DiffReviewUi } from './diffViewModels';
@@ -164,6 +174,7 @@ const emit = defineEmits<{
   loadLatest: [];
   threadRevealHandled: [requestId: number];
   fileSearchHandled: [requestId: number];
+  openCursorFile: [fileId: string];
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -176,6 +187,7 @@ const rows = computed(() => props.model?.rows ?? []);
 const client = useClient();
 const repo = useRepoStore();
 const review = useReviewStore();
+const settings = useSettingsStore();
 const draftBody = ref('');
 const flashingThreadId = ref<string>();
 const searchOpen = ref(false);
@@ -201,6 +213,7 @@ let initialSyntaxGeneration = 0;
 let syntaxRequestGeneration = 0;
 let handledThreadRevealRequestId = 0;
 let handledFileSearchRequestId = 0;
+let diffCursor: ReturnType<typeof useDiffCursor> | undefined;
 const syntaxPageSize = 256;
 const syntaxPageLookaround = 1;
 const maxSyntaxCachePages = 32;
@@ -243,6 +256,12 @@ type SearchMatch = {
   endColumn: number;
 };
 
+type PointerTextPosition = {
+  side: SyntaxSide;
+  line: number;
+  column: number;
+};
+
 const syntaxMessage = computed(() => {
   const syntax = props.model?.syntax;
   if (!syntax?.language) return undefined;
@@ -264,6 +283,7 @@ const diffTargetFingerprint = () =>
     head: repo.repository?.head,
   });
 const {
+  selectionBubblePosition,
   selectionDraft,
   selectionBubbleStyle,
   selectionSideClass,
@@ -387,15 +407,6 @@ const reviewHighlightAnchorsBySide = computed(() => {
     review.draftAnchor.endColumn !== undefined
   ) {
     anchors.get(review.draftAnchor.side)?.push(review.draftAnchor);
-  }
-  const pendingSelection = selectionDraft.value;
-  if (
-    pendingSelection &&
-    pendingSelection.file.id === props.model?.fileId &&
-    pendingSelection.anchor.startColumn !== undefined &&
-    pendingSelection.anchor.endColumn !== undefined
-  ) {
-    anchors.get(pendingSelection.anchor.side)?.push(pendingSelection.anchor);
   }
   return anchors;
 });
@@ -621,12 +632,14 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
       commentsExpandedForLine: commentsExpandedForStart,
       reviewHighlightsForLine,
       searchHighlightsForLine,
+      cursorStateForLine: (side, line, textLength) => diffCursor?.lineStateForLine(side, line, textLength) ?? {},
       diagnosticsForLine,
     });
     return {
       virtualRow,
       ...fields,
       reviewRow: item && item.kind !== 'diff' ? item : undefined,
+      reviewFocused: item && item.kind !== 'diff' ? diffCursor?.isReviewFocused(item.key) : false,
     };
   });
 };
@@ -671,6 +684,16 @@ const {
   clearNativeSelection,
 });
 
+const startToolbarSelectionComment = () => {
+  startSelectionComment();
+  diffCursor?.clearVisual();
+};
+
+const startToolbarSelectionChat = () => {
+  startSelectionChat();
+  diffCursor?.clearVisual();
+};
+
 const reviewUi = computed<DiffReviewUi>(() => ({
   draftBody: draftBody.value,
   error: review.error,
@@ -706,18 +729,63 @@ const closeSearch = () => {
 const moveSearch = (direction: number) => {
   if (searchMatches.value.length === 0) return;
   const step = direction < 0 ? -1 : 1;
-  activeSearchIndex.value = (activeSearchIndex.value + step + searchMatches.value.length) % searchMatches.value.length;
+  const steps = Math.max(1, Math.abs(direction));
+  for (let index = 0; index < steps; index += 1) {
+    activeSearchIndex.value = (activeSearchIndex.value + step + searchMatches.value.length) % searchMatches.value.length;
+  }
   scrollToActiveSearchMatch();
 };
 
-const onDocumentKeyDown = (event: KeyboardEvent) => {
+const onRootPointerDown = (event: PointerEvent) => {
+  lockSelectionSide(event);
   const target = event.target instanceof HTMLElement ? event.target : undefined;
-  const isTextInput = Boolean(target?.closest('input, textarea, [contenteditable="true"]'));
+  if (isInteractiveTarget(event.target)) return;
+  rootRef.value?.focus({ preventScroll: true });
+  diffCursor?.clearVisual();
+  selectionDraft.value = undefined;
+  clearNativeSelection();
+};
+
+const onViewerKeyDown = (event: KeyboardEvent) => {
+  if (event.defaultPrevented || isTextInputTarget(event.target)) return;
+  diffCursor?.handleKeyDown(event);
+};
+
+const isTextInputTarget = (target: EventTarget | null) => {
+  return target instanceof HTMLElement && Boolean(target.closest('input, textarea, [contenteditable="true"]'));
+};
+
+const isInteractiveTarget = (target: EventTarget | null) => {
+  return target instanceof HTMLElement && Boolean(target.closest('button, input, textarea, select, a, [contenteditable="true"]'));
+};
+
+const isKeyboardOverrideTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('input, textarea, select, button, a, [contenteditable="true"], .review-box'));
+};
+
+const clearCursorTransientState = () => {
+  clearLspHover();
+  selectionDraft.value = undefined;
+  clearNativeSelection();
+};
+
+const onDocumentKeyDown = (event: KeyboardEvent) => {
+  if (event.defaultPrevented) return;
+  const isTextInput = isTextInputTarget(event.target);
+  const isInteractionOverride = isKeyboardOverrideTarget(event.target);
+  if (!isTextInput && event.key === 'Escape' && selectionDraft.value) {
+    event.preventDefault();
+    diffCursor?.clearVisual();
+    clearCursorTransientState();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
     event.preventDefault();
     openSearch();
     return;
   }
+  if (!isInteractionOverride && diffCursor?.handleKeyDown(event)) return;
   if (!isTextInput && event.key === '/') {
     event.preventDefault();
     openSearch();
@@ -760,6 +828,7 @@ const {
   hover: lspHover,
   hoverStyle: lspHoverStyle,
   queue: queueLspHover,
+  showAt: showLspHoverAt,
   clear: clearLspHover,
   clearCache: clearLspHoverCache,
   cleanup: cleanupLspHover,
@@ -984,6 +1053,7 @@ const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => ({
 const scrollToActiveSearchMatch = () => {
   const match = activeSearchMatch.value;
   if (!match) return;
+  diffCursor?.moveCursorToSearchMatch(match);
   if (props.viewMode === 'split' && props.syncScroll) {
     scrollVirtualizerToMatch(syncedSplitVirtualizer.value, syncedSplitDisplayRows.value, match);
   } else if (props.viewMode === 'split' && match.side === 'old') {
@@ -1005,6 +1075,246 @@ const scrollVirtualizerToMatch = (
   if (displayIndex === -1) return;
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
+
+const scrollToCursorPosition = (position: DiffCursorPosition) => {
+  if (props.viewMode === 'split' && props.syncScroll) {
+    scrollVirtualizerToDisplayIndex(syncedSplitVirtualizer.value, position.displayIndex);
+  } else if (props.viewMode === 'split' && position.side === 'old') {
+    scrollVirtualizerToDisplayIndex(leftVirtualizer.value, position.displayIndex);
+  } else if (props.viewMode === 'split') {
+    scrollVirtualizerToDisplayIndex(rightVirtualizer.value, position.displayIndex);
+  } else {
+    scrollVirtualizerToDisplayIndex(inlineVirtualizer.value, position.displayIndex);
+  }
+
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      rootRef.value?.querySelector<HTMLElement>('[data-diff-cursor="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      scrollbars.updateAfterRender();
+    });
+  });
+};
+
+const scrollVirtualizerToDisplayIndex = (
+  virtualizer: { scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void },
+  displayIndex: number,
+) => {
+  virtualizer.scrollToIndex(displayIndex, { align: 'auto' });
+};
+
+const cursorHalfPageLines = () => {
+  const pane = cursorScrollElement();
+  const height = pane?.clientHeight ?? 240;
+  return Math.max(4, Math.floor(height / 2 / 24));
+};
+
+const moveCursorToPointer = (event: MouseEvent | PointerEvent) => {
+  const position = pointerTextPosition(event);
+  if (!position) return false;
+
+  diffCursor?.moveCursorToLine(position.side, position.line, position.column);
+  return true;
+};
+
+const pointerTextPosition = (event: MouseEvent | PointerEvent): PointerTextPosition | undefined => {
+  if (!(event.target instanceof Node)) return undefined;
+
+  const element = reviewElementForNode(event.target);
+  if (!element) return undefined;
+
+  const side = element.dataset.reviewSide;
+  const line = Number(element.dataset.reviewLine);
+  if ((side !== 'old' && side !== 'new') || !Number.isFinite(line)) return undefined;
+
+  return {
+    side,
+    line,
+    column: columnAtPoint(element, event.clientX, event.clientY),
+  };
+};
+
+const moveCursorToSelectionFocus = () => {
+  const selection = window.getSelection();
+  if (!selection?.focusNode) return false;
+
+  const element = reviewElementForNode(selection.focusNode);
+  if (!element) return false;
+
+  const side = element.dataset.reviewSide;
+  const line = Number(element.dataset.reviewLine);
+  if ((side !== 'old' && side !== 'new') || !Number.isFinite(line)) return false;
+
+  const column = textOffsetWithinElement(element, selection.focusNode, selection.focusOffset);
+  diffCursor?.moveCursorToLine(side, line, column);
+  return true;
+};
+
+const columnAtPoint = (element: HTMLElement, clientX: number, clientY: number) => {
+  const text = element.dataset.reviewText ?? element.textContent ?? '';
+  const range = rangeAtPoint(clientX, clientY);
+  if (range && element.contains(range.startContainer)) {
+    return Math.max(0, Math.min(text.length, textOffsetWithinElement(element, range.startContainer, range.startOffset)));
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  const fontSize = Number.parseFloat(style.fontSize) || 12;
+  const charWidth = fontSize * 0.62;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  return Math.max(0, Math.min(text.length, Math.round((clientX - rect.left - paddingLeft) / charWidth)));
+};
+
+const rangeAtPoint = (clientX: number, clientY: number): Range | undefined => {
+  const documentWithCaret = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const position = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
+  if (position) {
+    const range = document.createRange();
+    range.setStart(position.offsetNode, position.offset);
+    range.collapse(true);
+    return range;
+  }
+  return documentWithCaret.caretRangeFromPoint?.(clientX, clientY) ?? undefined;
+};
+
+const cursorScrollElement = () => {
+  const cursor = diffCursor?.cursor.value;
+  if (!cursor) return inlineRef.value ?? syncedSplitRef.value ?? rightRef.value ?? leftRef.value;
+  if (cursor.pane === 'left') return leftRef.value;
+  if (cursor.pane === 'right') return rightRef.value;
+  if (cursor.pane === 'syncedSplit') return syncedSplitRef.value;
+  return inlineRef.value;
+};
+
+const showCursorHover = (position: DiffCursorPosition) => {
+  if (!supportsLspFile(position.fileId) || !lspStatus.value?.running) return;
+
+  const marker = rootRef.value?.querySelector<HTMLElement>('[data-diff-cursor="true"]');
+  const rect = marker?.getBoundingClientRect();
+  const rootRect = rootRef.value?.getBoundingClientRect();
+  showLspHoverAt({
+    fileId: position.fileId,
+    side: position.side,
+    line: position.line,
+    column: position.column,
+    clientX: rect?.left ?? (rootRect ? rootRect.left + 120 : 120),
+    clientY: rect?.bottom ?? (rootRect ? rootRect.top + 80 : 80),
+  });
+};
+
+const startCursorComment = (anchor: ReviewAnchor) => {
+  startCursorDraft(anchor, 'comment');
+};
+
+const startCursorAskAi = (anchor: ReviewAnchor) => {
+  startCursorDraft(anchor, 'chat');
+};
+
+const startCursorDraft = (anchor: ReviewAnchor, mode: 'comment' | 'chat') => {
+  if (!activeFile.value) return;
+  selectionDraft.value = undefined;
+  clearNativeSelection();
+  draftBody.value = '';
+  review.startDraft(activeFile.value, anchor, mode);
+};
+
+const syncCursorNativeSelection = (anchor: ReviewAnchor | undefined) => {
+  if (!anchor) {
+    clearNativeSelection();
+    return;
+  }
+
+  void nextTick(() => {
+    selectCursorAnchor(anchor);
+  });
+};
+
+const selectCursorAnchor = (anchor: ReviewAnchor) => {
+  const start = reviewElementForLine(anchor.side, anchor.startLine);
+  const end = reviewElementForLine(anchor.side, anchor.endLine);
+  if (!start || !end) return;
+
+  const range = document.createRange();
+  const startBoundary = textBoundary(start, anchor.startColumn ?? 0);
+  const endBoundary = textBoundary(end, anchor.endColumn ?? (end.dataset.reviewText ?? '').length);
+  range.setStart(startBoundary.node, startBoundary.offset);
+  range.setEnd(endBoundary.node, endBoundary.offset);
+
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+};
+
+const reviewElementForLine = (side: SyntaxSide, line: number) => {
+  return rootRef.value?.querySelector<HTMLElement>(`[data-review-side="${side}"][data-review-line="${line}"]`);
+};
+
+const textBoundary = (element: HTMLElement, column: number): { node: Node; offset: number } => {
+  const textLength = (element.dataset.reviewText ?? element.textContent ?? '').length;
+  let remaining = Math.max(0, Math.min(textLength, column));
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let lastText: Text | undefined;
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    lastText = node;
+    if (remaining <= node.data.length) return { node, offset: remaining };
+    remaining -= node.data.length;
+  }
+
+  if (lastText) return { node: lastText, offset: lastText.data.length };
+  return { node: element, offset: 0 };
+};
+
+const positionCursorSelectionToolbar = () => {
+  const root = rootRef.value;
+  const marker = root?.querySelector<HTMLElement>('[data-diff-cursor="true"]');
+  if (!root || !marker) return;
+
+  const rootRect = root.getBoundingClientRect();
+  const markerRect = marker.getBoundingClientRect();
+  const toolbarWidth = 220;
+  const toolbarHeight = 34;
+  const gap = 6;
+  selectionBubblePosition.value = {
+    left: Math.max(12, Math.min(markerRect.right - rootRect.left + gap, rootRect.width - toolbarWidth - 12)),
+    top: Math.max(48, Math.min(markerRect.top - rootRect.top - toolbarHeight - gap, rootRect.height - toolbarHeight - 12)),
+  };
+};
+
+diffCursor = useDiffCursor({
+  model: () => props.model,
+  viewMode: () => props.viewMode,
+  syncScroll: () => props.syncScroll,
+  keybindings: () => settings.diffKeybindings,
+  displayRows: (side) => {
+    if (props.viewMode === 'inline') return inlineDisplayRows.value;
+    if (props.syncScroll) return syncedSplitDisplayRows.value;
+    return side === 'old' ? leftDisplayRows.value : rightDisplayRows.value;
+  },
+  diagnostics: () => lspDiagnostics.value,
+  diffTargetFingerprint,
+  halfPageLines: cursorHalfPageLines,
+  shouldRestoreStoredPosition: () => props.threadRevealRequest?.fileId !== props.model?.fileId,
+  onOpenFile: (fileId) => emit('openCursorFile', fileId),
+  onOpenSearch: openSearch,
+  onMoveSearch: moveSearch,
+  onHover: showCursorHover,
+  onComment: startCursorComment,
+  onAskAi: startCursorAskAi,
+  onClear: clearCursorTransientState,
+  onMove: scrollToCursorPosition,
+});
+
+watch(
+  diffCursor.visualAnchor,
+  (anchor) => {
+    syncCursorNativeSelection(anchor);
+  },
+  { flush: 'post' },
+);
 
 const revealFileSearchRequest = async () => {
   const request = props.fileSearchRequest;
@@ -1055,6 +1365,7 @@ const revealThreadRequest = async () => {
 
   await nextTick();
   if (!scrollToReviewThread(thread.id, thread.anchor.side)) return;
+  diffCursor?.moveCursorToReviewKey(`thread:${thread.id}`);
 
   handledThreadRevealRequestId = request.requestId;
   await flashReviewThread(thread.id);
@@ -1347,6 +1658,24 @@ const onInlineScroll = () => {
   scrollbars.schedule();
 };
 
+const onPaneMouseUp = (event: MouseEvent) => {
+  if (isInteractiveTarget(event.target)) return;
+
+  const selectedText = window.getSelection()?.toString().trim();
+  captureSelectionComment();
+  if (selectedText) {
+    moveCursorToSelectionFocus();
+    void nextTick(() => {
+      positionCursorSelectionToolbar();
+    });
+    return;
+  }
+
+  diffCursor?.clearVisual();
+  clearCursorTransientState();
+  moveCursorToPointer(event);
+};
+
 const setPaneRef = (pane: PaneKey, element: Element | null) => {
   const htmlElement = element instanceof HTMLElement ? element : null;
   const currentElement = paneRefValue(pane);
@@ -1374,6 +1703,17 @@ const onPaneScroll = (pane: PaneKey, event: Event) => {
   else onInlineScroll();
 };
 
+const onPanePointerMove = (event: PointerEvent) => {
+  if (isInteractiveTarget(event.target)) return;
+
+  if ((event.buttons & 1) === 1) {
+    clearLspHover();
+    return;
+  }
+
+  queueLspHover(event);
+};
+
 const onScrollbarTrackPointerDown = (event: PointerEvent, pane: PaneKey) => {
   scrollbars.onTrackPointerDown(event, pane);
 };
@@ -1385,9 +1725,9 @@ const onScrollbarThumbPointerDown = (event: PointerEvent, pane: PaneKey) => {
 const paneActions: DiffPaneActions = {
   paneRef: setPaneRef,
   scroll: onPaneScroll,
-  pointerMove: queueLspHover,
+  pointerMove: onPanePointerMove,
   mouseLeave: clearLspHover,
-  mouseUp: captureSelectionComment,
+  mouseUp: onPaneMouseUp,
   scrollbarTrackPointerDown: onScrollbarTrackPointerDown,
   scrollbarThumbPointerDown: onScrollbarThumbPointerDown,
   comment: startLineComment,
@@ -1511,6 +1851,15 @@ watch(
   height: 100%;
   background: var(--color-bg-app);
   overflow: hidden;
+
+  &:focus {
+    outline: none;
+  }
+
+  &:focus-visible {
+    outline: 1px solid var(--color-border-focus);
+    outline-offset: -1px;
+  }
 }
 
 .diff-header {

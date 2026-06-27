@@ -40,17 +40,17 @@ These scripts are hosted directly in this repository and served by GitHub throug
 
 ## Highlights
 
-| Area | What Diffuse Does |
-| --- | --- |
-| Local Git review | Opens a repository and lists added, modified, deleted, and renamed files. |
-| Flexible diff targets | Review working tree changes, staged changes, unstaged changes, or branch/ref comparisons. |
-| Readable diffs | Supports split and inline diff views with diff-only or full-file context. |
-| Folder review | Select a folder in the changed-file tree to review all changed files under that folder together. |
-| Syntax awareness | Uses Tree-sitter grammars for highlighting where available. |
-| LSP support | Shows hover information and diagnostics from language servers. |
-| Review state | Stores review sessions, threads, progress, and chat as plain files under `.diffuse/reviews`. |
-| AI review | Can run opencode-based review agents and save their findings back into Diffuse. |
-| Local-first design | The core works through local Git, local files, and a local JSON-RPC process. |
+| Area                  | What Diffuse Does                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| Local Git review      | Opens a repository and lists added, modified, deleted, and renamed files.                        |
+| Flexible diff targets | Review working tree changes, staged changes, unstaged changes, or branch/ref comparisons.        |
+| Readable diffs        | Supports split and inline diff views with diff-only or full-file context.                        |
+| Folder review         | Select a folder in the changed-file tree to review all changed files under that folder together. |
+| Syntax awareness      | Uses Tree-sitter grammars for highlighting where available.                                      |
+| LSP support           | Shows hover information and diagnostics from language servers.                                   |
+| Review state          | Stores review sessions, threads, progress, and chat as plain files under `.diffuse/reviews`.     |
+| AI review             | Can run opencode-based review agents and save their findings back into Diffuse.                  |
+| Local-first design    | The core works through local Git, local files, and a local JSON-RPC process.                     |
 
 ## How It Works
 
@@ -118,14 +118,14 @@ $env:DIFFUSE_VERSION = "v0.1.4"; irm https://raw.githubusercontent.com/CrazyCatV
 
 To build and install Diffuse from source, install:
 
-| Tool | Why It Is Needed |
-| --- | --- |
-| `git` | Repository access and update/install commands. |
-| `just` | Project task runner. |
-| `zig` | Builds the native core. Minimum version: `0.16.0`. |
-| `node` | Builds and runs the Electron app. |
-| `pnpm` | Installs app dependencies. |
-| `curl` and `tar` | Used by build/install tooling on Unix systems. |
+| Tool             | Why It Is Needed                                   |
+| ---------------- | -------------------------------------------------- |
+| `git`            | Repository access and update/install commands.     |
+| `just`           | Project task runner.                               |
+| `zig`            | Builds the native core. Minimum version: `0.16.0`. |
+| `node`           | Builds and runs the Electron app.                  |
+| `pnpm`           | Installs app dependencies.                         |
+| `curl` and `tar` | Used by build/install tooling on Unix systems.     |
 
 ## Install From Source
 
@@ -149,10 +149,10 @@ just install
 
 Default install locations:
 
-| Platform | Install Root | Command Location |
-| --- | --- | --- |
-| Linux/macOS-style Unix | `~/.local/share/diffuse` | `~/.local/bin/diffuse` |
-| Windows | `%LOCALAPPDATA%\Diffuse` | `%USERPROFILE%\bin\diffuse.exe` |
+| Platform               | Install Root             | Command Location                |
+| ---------------------- | ------------------------ | ------------------------------- |
+| Linux/macOS-style Unix | `~/.local/share/diffuse` | `~/.local/bin/diffuse`          |
+| Windows                | `%LOCALAPPDATA%\Diffuse` | `%USERPROFILE%\bin\diffuse.exe` |
 
 You can override these paths:
 
@@ -228,7 +228,9 @@ Diffuse chooses defaults from repository state. Dirty repositories default to wo
 
 The diff viewer supports split or inline layout, diff-only or full-file context, synchronized split scrolling, lazy syntax highlighting, LSP hover and diagnostics, scan markers for changes, review threads, diagnostics, and search results, and a stale-diff notice when the currently displayed file changes on disk.
 
-Review comments can be anchored to old-side or new-side lines. Selecting text in a diff shows actions for adding a comment or asking AI about the selected code; in split view, text selection stays on the side where the drag starts. Threads can be replied to, resolved, reopened, and used as context for AI chat.
+Single-file diffs also support a Vim-style cursor for keyboard review. Defaults include `h`/`j`/`k`/`l` and arrow keys for movement, `w`/`b`/`e` for word movement, `0`/`^`/`$` for line movement, `gg`/`G` for file boundaries, `<C-d>`/`<C-u>` for half-page movement, `/`, `n`, and `N` for file search, `[c`/`]c` for changes, `[d`/`]d` for diagnostics, `<C-w>h`/`<C-w>l` for old/new split panes, `v` and `V` for visual selections, `K` for LSP hover, `gc` for a comment draft, `ga` for an AI draft, and `Esc` to clear cursor modes.
+
+Review comments can be anchored to old-side or new-side lines. Selecting text in a diff shows actions for adding a comment or asking AI about the selected code; in split view, text selection stays on the side where the drag starts. Keyboard visual selections use the same comment and AI actions. Threads can be replied to, resolved, reopened, and used as context for AI chat.
 
 ## Development
 
@@ -344,7 +346,7 @@ This workflow is still evolving. Treat AI findings as review assistance, not as 
 
 Diffuse uses Tree-sitter for syntax-aware diff rendering. Installed grammars are resolved from `~/.diffuse/grammars` by default, and the app can install missing grammars where supported.
 
-Settings includes syntax theme selection, custom syntax colors stored in browser local storage, language server status and install guidance, installed grammar management, available grammar search, registry sync, install actions, and uninstall actions.
+Settings includes syntax theme selection, custom syntax colors stored in browser local storage, single-file diff keybinding customization, language server status and install guidance, installed grammar management, available grammar search, registry sync, install actions, and uninstall actions.
 
 Useful environment variables:
 

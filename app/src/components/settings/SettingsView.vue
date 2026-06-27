@@ -74,6 +74,53 @@
     <section class="settings-panel">
       <div class="panel-header">
         <div>
+          <h2>Diff Viewer Keybindings</h2>
+
+          <p>Customize single-file diff navigation. Use comma-separated bindings such as <code>h, &lt;Left&gt;</code>.</p>
+        </div>
+
+        <div class="panel-actions">
+          <Button :disabled="!keybindingDraftsChanged || !keybindingValidation.valid" @click="applyKeybindings">Apply</Button>
+
+          <Button variant="secondary" @click="resetKeybindingDrafts">Reset to Defaults</Button>
+        </div>
+      </div>
+
+      <div v-if="keybindingSaved" class="message success">Keybindings saved.</div>
+
+      <div class="keybinding-groups">
+        <section v-for="group in keybindingGroups" :key="group.name" class="keybinding-group">
+          <h3>{{ group.name }}</h3>
+
+          <label v-for="action in group.actions" :key="action.id" class="keybinding-row">
+            <span class="keybinding-meta">
+              <span class="keybinding-label">{{ action.label }}</span>
+
+              <span class="keybinding-description">{{ action.description }}</span>
+            </span>
+
+            <span class="keybinding-editor">
+              <input
+                class="keybinding-input"
+                type="text"
+                :value="keybindingDrafts[action.id]"
+                spellcheck="false"
+                :aria-label="`${action.label} keybindings`"
+                @input="updateKeybindingDraft(action.id, $event)"
+              />
+
+              <span v-if="keybindingValidation.errors[action.id]" class="keybinding-error">
+                {{ keybindingValidation.errors[action.id] }}
+              </span>
+            </span>
+          </label>
+        </section>
+      </div>
+    </section>
+
+    <section class="settings-panel">
+      <div class="panel-header">
+        <div>
           <h2>Language Servers</h2>
 
           <p>Configure LSP servers used for hover information and diagnostics in diffs.</p>
@@ -236,6 +283,16 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import {
+  cloneDefaultDiffKeybindings,
+  diffKeybindingActionIds,
+  diffKeybindingDefinitions,
+  normalizeDiffKeybindingList,
+  validateDiffKeybindingMap,
+  type DiffKeybindingAction,
+  type DiffKeybindingDefinition,
+  type DiffKeybindingMap,
+} from '../../lib/diffKeybindings';
 import type { LspConfigInfo, LspServerInfo, TreeSitterGrammar } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
 import { builtInSyntaxThemes, useSettingsStore, type SyntaxThemeColors } from '../../stores/settings';
@@ -263,8 +320,11 @@ const copiedLspLanguage = ref<string>();
 const installStep = ref<string>();
 const lspInstallStep = ref<string>();
 const syncingRegistry = ref(false);
+const keybindingDrafts = ref<Record<DiffKeybindingAction, string>>(keybindingDraftsFromMap(settings.diffKeybindings));
+const keybindingSaved = ref(false);
 let removeCoreEventListener: (() => void) | undefined;
 let copiedLspTimer: number | undefined;
+let keybindingSavedTimer: number | undefined;
 
 const themeOptions = computed(() => [
   ...builtInSyntaxThemes,
@@ -330,6 +390,22 @@ const filteredGrammars = computed(() => {
     return grammar.id.toLowerCase().includes(query) || grammar.requires.some((dependency) => dependency.toLowerCase().includes(query));
   });
 });
+const keybindingGroups = computed(() => {
+  const groups: { name: DiffKeybindingDefinition['group']; actions: DiffKeybindingDefinition[] }[] = [];
+  for (const definition of diffKeybindingDefinitions) {
+    const group = groups.find((item) => item.name === definition.group);
+    if (group) group.actions.push(definition);
+    else groups.push({ name: definition.group, actions: [definition] });
+  }
+  return groups;
+});
+const keybindingDraftMap = computed<DiffKeybindingMap>(() => {
+  return Object.fromEntries(
+    diffKeybindingActionIds.map((action) => [action, normalizeDiffKeybindingList(keybindingDrafts.value[action] ?? '')]),
+  ) as DiffKeybindingMap;
+});
+const keybindingValidation = computed(() => validateDiffKeybindingMap(keybindingDraftMap.value));
+const keybindingDraftsChanged = computed(() => JSON.stringify(keybindingDraftMap.value) !== JSON.stringify(settings.diffKeybindings));
 const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
   return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
 };
@@ -531,6 +607,42 @@ const previewCustomSyntaxHexColor = (key: keyof SyntaxThemeColors, event: Event)
   if (color) settings.setCustomSyntaxColor(key, color);
 };
 
+const updateKeybindingDraft = (action: DiffKeybindingAction, event: Event) => {
+  const input = event.target as HTMLInputElement;
+  keybindingDrafts.value = { ...keybindingDrafts.value, [action]: input.value };
+  keybindingSaved.value = false;
+};
+
+const applyKeybindings = () => {
+  const validation = settings.setDiffKeybindings(keybindingDraftMap.value);
+  if (!validation.valid) return;
+
+  keybindingDrafts.value = keybindingDraftsFromMap(settings.diffKeybindings);
+  showKeybindingSaved();
+};
+
+const resetKeybindingDrafts = () => {
+  settings.setDiffKeybindings(cloneDefaultDiffKeybindings());
+  keybindingDrafts.value = keybindingDraftsFromMap(settings.diffKeybindings);
+  showKeybindingSaved();
+};
+
+function keybindingDraftsFromMap(keybindings: DiffKeybindingMap): Record<DiffKeybindingAction, string> {
+  return Object.fromEntries(diffKeybindingActionIds.map((action) => [action, keybindings[action].join(', ')])) as Record<
+    DiffKeybindingAction,
+    string
+  >;
+}
+
+const showKeybindingSaved = () => {
+  keybindingSaved.value = true;
+  if (keybindingSavedTimer !== undefined) window.clearTimeout(keybindingSavedTimer);
+  keybindingSavedTimer = window.setTimeout(() => {
+    keybindingSaved.value = false;
+    keybindingSavedTimer = undefined;
+  }, 1400);
+};
+
 const normalizeHexColor = (value: string) => {
   const trimmed = value.trim();
   const hex = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
@@ -566,6 +678,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   removeCoreEventListener?.();
   if (copiedLspTimer !== undefined) window.clearTimeout(copiedLspTimer);
+  if (keybindingSavedTimer !== undefined) window.clearTimeout(keybindingSavedTimer);
 });
 </script>
 
@@ -596,6 +709,7 @@ onBeforeUnmount(() => {
 
 h1,
 h2,
+h3,
 p {
   margin: 0;
 }
@@ -608,6 +722,11 @@ h1 {
 h2 {
   color: #f5f7fb;
   font-size: 16px;
+}
+
+h3 {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
 }
 
 p {
@@ -642,9 +761,59 @@ p {
 .lsp-list,
 .grammar-list,
 .theme-grid,
-.custom-theme {
+.custom-theme,
+.keybinding-groups,
+.keybinding-group {
   display: grid;
   gap: 8px;
+}
+
+.keybinding-groups {
+  gap: var(--space-7);
+}
+
+.keybinding-group {
+  padding: var(--space-5);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-4);
+}
+
+.keybinding-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 320px);
+  gap: var(--space-6);
+  align-items: start;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-border-hairline);
+}
+
+.keybinding-meta,
+.keybinding-editor {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.keybinding-label {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  font-weight: 650;
+}
+
+.keybinding-description {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
+}
+
+.keybinding-input {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-label);
+}
+
+.keybinding-error {
+  color: var(--color-danger);
+  font-size: var(--font-size-label);
 }
 
 .theme-grid {
@@ -996,6 +1165,12 @@ input {
     background: var(--color-danger-muted);
     border-color: rgba(255, 107, 107, 0.22);
   }
+
+  &.success {
+    color: var(--color-success);
+    background: var(--color-success-muted);
+    border-color: rgba(91, 184, 119, 0.22);
+  }
 }
 
 .install-step {
@@ -1012,7 +1187,8 @@ input {
   .settings-header,
   .panel-header,
   .grammar-row,
-  .installed-card {
+  .installed-card,
+  .keybinding-row {
     display: grid;
   }
 }

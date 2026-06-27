@@ -19,6 +19,11 @@ export const buildRenderedDiffRowFields = (
     commentsExpandedForLine: (side: SyntaxSide, line: number) => boolean;
     reviewHighlightsForLine: (side: SyntaxSide, line: number, textLength: number) => ReviewTextHighlight[];
     searchHighlightsForLine?: (side: SyntaxSide, line: number | undefined) => SearchTextHighlight[];
+    cursorStateForLine?: (
+      side: SyntaxSide,
+      line: number | undefined,
+      textLength: number,
+    ) => Pick<CodeLineModel, 'highlights' | 'className'>;
     diagnosticsForLine: (side: SyntaxSide, line: number | undefined) => LspDiagnostic[];
   },
 ): RenderedDiffRowFields => {
@@ -33,6 +38,8 @@ export const buildRenderedDiffRowFields = (
     diffRow && newLine && newText.length > 0 ? options.reviewHighlightsForLine('new', newLine, newText.length) : [];
   const oldSearchHighlights = diffRow ? (options.searchHighlightsForLine?.('old', oldLine) ?? []) : [];
   const newSearchHighlights = diffRow ? (options.searchHighlightsForLine?.('new', newLine) ?? []) : [];
+  const oldCursorState = diffRow ? options.cursorStateForLine?.('old', oldLine, oldText.length) : undefined;
+  const newCursorState = diffRow ? options.cursorStateForLine?.('new', newLine, newText.length) : undefined;
 
   const oldSyntaxSpans = oldLine ? options.syntaxSpansForLine('old', oldLine) : undefined;
   const newSyntaxSpans = newLine ? options.syntaxSpansForLine('new', newLine) : undefined;
@@ -62,6 +69,8 @@ export const buildRenderedDiffRowFields = (
         searchHighlights: oldSearchHighlights,
         diagnostics: options.diagnosticsForLine('old', oldLine),
         title: 'Add old-side comment',
+        cursorHighlights: oldCursorState?.highlights ?? [],
+        className: oldCursorState?.className,
       })
     : undefined;
   const newCodeLine = diffRow
@@ -77,15 +86,20 @@ export const buildRenderedDiffRowFields = (
         searchHighlights: newSearchHighlights,
         diagnostics: newDiagnostics,
         title: 'Add new-side comment',
+        cursorHighlights: newCursorState?.highlights ?? [],
+        className: newCursorState?.className,
       })
     : undefined;
   const inlineSide = diffRow?.kind === 'deleted' ? 'old' : 'new';
+  const inlineLine = inlineSide === 'old' ? oldLine : newLine;
+  const inlineText = diffRow?.oldText ?? diffRow?.newText ?? diffRow?.text ?? '';
+  const inlineCursorState = diffRow ? options.cursorStateForLine?.(inlineSide, inlineLine, inlineText.length) : undefined;
   const inlineCodeLine = diffRow
     ? codeLineForSide({
         side: inlineSide,
         fileId: options.fileId,
-        lineNumber: inlineSide === 'old' ? oldLine : newLine,
-        text: diffRow.oldText ?? diffRow.newText ?? diffRow.text ?? '',
+        lineNumber: inlineLine,
+        text: inlineText,
         syntaxSpans: inlineSyntaxSpans,
         commentCount: inlineSide === 'old' ? oldCommentCount : newCommentCount,
         commentsExpanded: inlineSide === 'old' ? oldCommentsExpanded : newCommentsExpanded,
@@ -93,6 +107,8 @@ export const buildRenderedDiffRowFields = (
         searchHighlights: diffRow.kind === 'deleted' ? oldSearchHighlights : newSearchHighlights,
         diagnostics: inlineSide === 'new' ? newDiagnostics : options.diagnosticsForLine('old', oldLine),
         title: inlineSide === 'old' ? 'Add old-side comment' : 'Add new-side comment',
+        cursorHighlights: inlineCursorState?.highlights ?? [],
+        className: inlineCursorState?.className,
       })
     : undefined;
 
@@ -123,6 +139,8 @@ const codeLineForSide = (options: {
   searchHighlights: SearchTextHighlight[];
   diagnostics: LspDiagnostic[];
   title: string;
+  cursorHighlights: CodeTextHighlight[];
+  className?: CodeLineModel['className'];
 }): CodeLineModel => ({
   side: options.side,
   fileId: options.fileId,
@@ -133,14 +151,20 @@ const codeLineForSide = (options: {
   commentsExpanded: options.commentsExpanded,
   diagnostics: options.diagnostics,
   title: options.title,
-  highlights: codeHighlights(options.reviewHighlights, options.searchHighlights),
+  className: options.className,
+  highlights: codeHighlights(options.reviewHighlights, options.searchHighlights, options.cursorHighlights),
 });
 
-const codeHighlights = (reviewHighlights: ReviewTextHighlight[], searchHighlights: SearchTextHighlight[]): CodeTextHighlight[] => [
+const codeHighlights = (
+  reviewHighlights: ReviewTextHighlight[],
+  searchHighlights: SearchTextHighlight[],
+  cursorHighlights: CodeTextHighlight[],
+): CodeTextHighlight[] => [
   ...reviewHighlights.map((highlight) => ({ kind: 'review' as const, startColumn: highlight.startColumn, endColumn: highlight.endColumn })),
   ...searchHighlights.map((highlight) => ({
     kind: highlight.active ? ('active-search' as const) : ('search' as const),
     startColumn: highlight.startColumn,
     endColumn: highlight.endColumn,
   })),
+  ...cursorHighlights,
 ];

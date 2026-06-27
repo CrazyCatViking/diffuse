@@ -71,6 +71,16 @@ export const useLspHover = (options: {
     }, lspHoverDelayMs);
   };
 
+  const showAt = (request: { fileId: string; side: SyntaxSide; line: number; column: number; clientX: number; clientY: number }) => {
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      timer = undefined;
+    }
+
+    const cacheKey = `${request.fileId}:${options.diffTargetFingerprint()}:${request.side}:${request.line}:${request.column}`;
+    void load({ ...request, cacheKey });
+  };
+
   const clear = () => {
     const hadTimer = timer !== undefined;
     if (timer !== undefined) {
@@ -150,7 +160,7 @@ export const useLspHover = (options: {
     }
   };
 
-  return { hover, hoverStyle, queue, clear, clearCache, cleanup };
+  return { hover, hoverStyle, queue, showAt, clear, clearCache, cleanup };
 };
 
 const columnAtPoint = (
