@@ -30,6 +30,7 @@ import type {
   UninstallTreeSitterGrammarResult,
   VersionInfo,
 } from './protocol';
+import type { SearchFilterKind, SearchMode, SearchResult } from './search/searchTypes';
 
 export const coreMethodNames = [
   'getVersion',
@@ -74,6 +75,8 @@ export const coreMethodNames = [
   'syncTreeSitterRegistry',
   'installTreeSitterGrammar',
   'uninstallTreeSitterGrammar',
+  'startSearch',
+  'cancelSearch',
 ] as const;
 
 export type CoreMethod = (typeof coreMethodNames)[number];
@@ -131,6 +134,11 @@ export type CoreMethods = {
   syncTreeSitterRegistry: { params: { gitUrl?: string }; result: SyncTreeSitterRegistryResult };
   installTreeSitterGrammar: { params: { language: string }; result: InstallTreeSitterGrammarResult };
   uninstallTreeSitterGrammar: { params: { language: string }; result: UninstallTreeSitterGrammarResult };
+  startSearch: {
+    params: { searchId?: string; sessionId: string; query: string; mode: SearchMode; filters: SearchFilterKind[]; target: DiffTarget };
+    result: { searchId: string };
+  };
+  cancelSearch: { params: { searchId: string }; result: { cancelled: boolean } };
 };
 
 export type CoreRequest = <M extends CoreMethod>(method: M, params?: CoreMethods[M]['params']) => Promise<CoreMethods[M]['result']>;
@@ -155,4 +163,44 @@ export type LspInstallProgressEvent = {
   params: { serverId: string; step: string };
 };
 
-export type CoreEvent = RepositoryChangedEvent | ReviewChangedEvent | TreeSitterInstallProgressEvent | LspInstallProgressEvent;
+export type SearchStartedEvent = {
+  method: 'search/started';
+  params: { searchId: string };
+};
+
+export type SearchResultsEvent = {
+  method: 'search/results';
+  params: { searchId: string; results: SearchResult[] };
+};
+
+export type SearchProgressEvent = {
+  method: 'search/progress';
+  params: { searchId: string; scannedFiles: number; totalFiles: number; emittedResults: number };
+};
+
+export type SearchDoneEvent = {
+  method: 'search/done';
+  params: { searchId: string; totalResults: number; scannedFiles: number };
+};
+
+export type SearchCancelledEvent = {
+  method: 'search/cancelled';
+  params: { searchId: string; scannedFiles: number; emittedResults: number };
+};
+
+export type SearchErrorEvent = {
+  method: 'search/error';
+  params: { searchId: string; message: string };
+};
+
+export type CoreEvent =
+  | RepositoryChangedEvent
+  | ReviewChangedEvent
+  | TreeSitterInstallProgressEvent
+  | LspInstallProgressEvent
+  | SearchStartedEvent
+  | SearchResultsEvent
+  | SearchProgressEvent
+  | SearchDoneEvent
+  | SearchCancelledEvent
+  | SearchErrorEvent;

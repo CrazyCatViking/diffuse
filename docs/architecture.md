@@ -91,7 +91,9 @@ The main user flow is:
 6. `diff.loadDiff()` sends `getDiffRenderModel` with the current view/context options.
 7. `DiffViewer.vue` renders the returned rows.
 
-Changed-file search currently runs in the renderer over the loaded `changedFiles` list plus review metadata from `useReviewStore()`. `ChangedFilesPane.vue` owns a local sidebar query/filter state so command-palette searches do not filter the file tree. `SearchPalette.vue` and `SearchResultsDrawer.vue` share the palette result model for file/path hits, content hits, comments, and pinned result walking. Search result ranking stays idle until a query or filter is active so large repositories do not build and sort full result sets during normal navigation. The renderer slice supports fuzzy filename/path matching, typed filters, generated/test/docs classification, reviewed/commented/unresolved metadata, comment text matches, and a workspace column for pinned results. Palette content search is a renderer-backed pass over existing `getDiffRenderModel` RPCs for the current diff context and returns each matching diff line without per-file truncation; symbol search is intentionally left for planned core-backed RPCs described in [`amazing-file-search-plan.md`](amazing-file-search-plan.md).
+Changed-file search is split by surface. `ChangedFilesPane.vue` keeps a local renderer-backed sidebar query/filter state so command-palette searches do not filter the file tree. `SearchPalette.vue` and `SearchResultsDrawer.vue` share the palette result model for file/path hits, full changed-file content hits, comments, and pinned result walking. Palette and drawer execution is core-backed: `useSearchStore()` keeps query text, mode, filters, selected index, history, and pinned drawer state locally, then starts a debounced `startSearch` RPC and appends streamed `search/results` notifications for the active `searchId`. The renderer cancels stale searches with `cancelSearch` and ignores events whose `searchId` no longer matches. Symbol extraction is not implemented yet and currently returns no streamed results.
+
+Core search lives in `core/src/core/search.zig` and `core/src/app/search_handlers.zig`. The core parses forgiving query/filter syntax, applies file metadata filters, ranks deterministic flat result phases, loads reviewed/comment metadata for the supplied review `sessionId`, and scans full changed-file source text directly through `diff.sourceForSide()` instead of `getDiffRenderModel`. Content side selection follows review expectations: added, modified, and renamed files search the new side; deleted files search the old side. Large or binary sources are skipped before scanning. Results stream in ordered batches through `search/results`, with `search/progress`, `search/done`, `search/cancelled`, and `search/error` notifications reporting lifecycle state.
 
 Once a repository is open, filesystem changes under the repository root trigger a changed-file refresh without reopening the repository. If the same file is already displayed, the UI marks the diff as stale and lets the user load the latest version.
 
@@ -119,6 +121,7 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 - `session` stores the currently opened repository.
 - `session_lock` protects repository session access.
 - `review_lock` serializes review persistence writes and read-modify-write updates under `.diffuse/reviews`.
+- `search_lock`, `search_jobs`, and `search_group` own active core search jobs and cooperative cancellation state.
 - `syntax_cache` stores dynamically loaded Tree-sitter parser libraries and queries.
 - `syntax_cache_lock` protects the syntax cache.
 - `repo_watcher` watches the opened repository and emits `repository/changed` or `review/changed` notifications on Linux.
@@ -134,6 +137,7 @@ Requests can run concurrently. Responses and notifications are serialized throug
 - `syntax_handlers.zig` owns syntax span and Tree-sitter grammar RPCs.
 - `lsp_handlers.zig` owns language-server status, install, hover, diagnostics, and restart RPCs.
 - `review_handlers.zig` owns review persistence and agent review state RPCs.
+- `search_handlers.zig` owns `startSearch`, `cancelSearch`, and background search job lifecycle.
 - `rpc_params.zig` owns shared parameter parsing, JSON conversion, diff target parsing, grammar-root resolution, and review ID validation helpers used by handlers.
 - `rpc_events.zig` owns shared event/progress emitters.
 - `rpc_repo.zig` owns short-lived repository snapshots used to copy stable repository root/head data under `session_lock` before handlers perform expensive work.

@@ -30,10 +30,12 @@ export const groupSearchResults = (results: SearchResult[]): SearchResultGroup[]
   const files = results.filter((result): result is FileSearchResult => result.kind === 'file');
   const content = results.filter((result): result is ContentSearchResult => result.kind === 'content');
   const comments = results.filter((result): result is CommentSearchResult => result.kind === 'comment');
+  const symbols = results.filter((result) => result.kind === 'symbol');
   const groups: SearchResultGroup[] = [];
   if (files.length > 0) groups.push({ id: 'files', label: 'File names and paths', results: files });
   if (content.length > 0) groups.push({ id: 'content', label: 'File contents', results: content });
   if (comments.length > 0) groups.push({ id: 'comments', label: 'Comments', results: comments });
+  if (symbols.length > 0) groups.push({ id: 'symbols', label: 'Symbols', results: symbols });
   return groups;
 };
 
@@ -114,6 +116,9 @@ const buildCommentResults = (
         subtitle: body || `${thread.anchor.side} line ${thread.anchor.startLine}`,
         rank: matches.reduce((total, match) => total + match.score, 0) + (thread.status === 'open' ? 220 : 80),
         matches,
+        threadId: thread.id,
+        status: thread.status,
+        anchor: thread.anchor,
         thread,
         body,
       };

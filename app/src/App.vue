@@ -300,8 +300,10 @@ const previewSearchResult = (result: SearchResult) => {
   }
 
   if (result.fileId) {
+    const target = result.kind === 'content' || result.kind === 'symbol' ? { line: result.line, side: result.side } : undefined;
+    if (target) diff.setContextMode('full');
     selectFile(result.fileId);
-    requestFileSearch(result.fileId, result.kind === 'content' ? { line: result.line, side: result.side } : undefined);
+    requestFileSearch(result.fileId, target);
   }
 };
 

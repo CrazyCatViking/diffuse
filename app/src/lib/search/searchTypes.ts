@@ -1,4 +1,4 @@
-import type { ChangedFile, ReviewThread, SyntaxSide } from '../protocol';
+import type { ChangedFile, ReviewAnchor, ReviewThread, SyntaxSide } from '../protocol';
 
 export type SearchMode = 'all' | 'files' | 'content' | 'symbols' | 'comments';
 
@@ -29,7 +29,7 @@ export type SearchMatchRange = {
 };
 
 export type SearchFieldMatch = {
-  field: 'name' | 'path' | 'body';
+  field: 'name' | 'path' | 'body' | 'symbol';
   ranges: SearchMatchRange[];
   score: number;
 };
@@ -90,6 +90,9 @@ export type CommentSearchResult = SearchResultBase & {
   kind: 'comment';
   fileId: string;
   path: string;
+  threadId: string;
+  status: 'open' | 'resolved';
+  anchor: ReviewAnchor;
   thread: ReviewThread;
   body: string;
 };
@@ -103,7 +106,18 @@ export type ContentSearchResult = SearchResultBase & {
   preview: string;
 };
 
-export type SearchResult = FileSearchResult | CommentSearchResult | ContentSearchResult;
+export type SymbolSearchResult = SearchResultBase & {
+  kind: 'symbol';
+  fileId: string;
+  path: string;
+  side: SyntaxSide;
+  line: number;
+  symbolName: string;
+  symbolKind: string;
+  containerName?: string;
+};
+
+export type SearchResult = FileSearchResult | CommentSearchResult | ContentSearchResult | SymbolSearchResult;
 
 export type SearchResultGroup = {
   id: string;

@@ -30,6 +30,7 @@ import {
   UninstallTreeSitterGrammarResult,
   VersionInfo,
 } from './protocol';
+import type { SearchFilterKind, SearchMode } from './search/searchTypes';
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -232,6 +233,28 @@ export const useClient = () => {
     return window.diffuse.coreRequest('uninstallTreeSitterGrammar', { language });
   };
 
+  const startSearch = async (request: {
+    searchId?: string;
+    sessionId: string;
+    query: string;
+    mode: SearchMode;
+    filters: SearchFilterKind[];
+    target: DiffTarget;
+  }): Promise<{ searchId: string }> => {
+    return window.diffuse.coreRequest('startSearch', {
+      searchId: request.searchId,
+      sessionId: request.sessionId,
+      query: request.query,
+      mode: request.mode,
+      filters: plainJson(request.filters),
+      target: plainDiffTarget(request.target),
+    });
+  };
+
+  const cancelSearch = async (searchId: string): Promise<{ cancelled: boolean }> => {
+    return window.diffuse.coreRequest('cancelSearch', { searchId });
+  };
+
   return {
     pickRepository,
     getVersion,
@@ -275,5 +298,7 @@ export const useClient = () => {
     listTreeSitterGrammars,
     syncTreeSitterRegistry,
     uninstallTreeSitterGrammar,
+    startSearch,
+    cancelSearch,
   };
 };

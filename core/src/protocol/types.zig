@@ -28,6 +28,34 @@ pub const ChangedFile = struct {
     signature: []const u8,
 };
 
+pub const SearchMatchRange = struct {
+    start: usize,
+    end: usize,
+};
+
+pub const SearchFieldMatch = struct {
+    field: []const u8,
+    ranges: []const SearchMatchRange,
+    score: i64,
+};
+
+pub const FileSearchMetadata = struct {
+    reviewed: bool,
+    commentCount: u32,
+    unresolvedCount: u32,
+    generated: bool,
+    @"test": bool,
+    docs: bool,
+};
+
+pub const SearchStartResult = struct {
+    searchId: []const u8,
+};
+
+pub const SearchCancelResult = struct {
+    cancelled: bool,
+};
+
 pub const DiffTarget = struct {
     base: ?[]const u8 = null,
     compare: ?[]const u8 = null,

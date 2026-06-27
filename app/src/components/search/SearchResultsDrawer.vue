@@ -18,9 +18,9 @@
     </header>
 
     <div class="drawer-controls">
-      <Button variant="secondary" size="sm" :disabled="search.pinnedResults.length === 0" @click="previousAndPreview">Previous</Button>
+      <Button variant="secondary" size="sm" :disabled="displayedPinnedEntries.length === 0" @click="previousAndPreview">Previous</Button>
 
-      <Button variant="secondary" size="sm" :disabled="search.pinnedResults.length === 0" @click="nextAndPreview">Next</Button>
+      <Button variant="secondary" size="sm" :disabled="displayedPinnedEntries.length === 0" @click="nextAndPreview">Next</Button>
 
       <Button variant="review" size="sm" :disabled="!search.pinnedSelectedResult" @click="openSelected">Open</Button>
     </div>
@@ -28,7 +28,7 @@
     <div class="drawer-summary">
       <Badge tone="neutral">{{ search.pinnedResults.length }} results</Badge>
 
-      <span v-if="search.pinnedSelectedResult">{{ search.pinnedSelectedPosition + 1 }} of {{ search.pinnedResults.length }}</span>
+      <span v-if="search.pinnedSelectedResult">{{ displayedSelectedPosition + 1 }} of {{ displayedPinnedEntries.length }}</span>
     </div>
 
     <div ref="drawerResultsRef" class="drawer-results">
@@ -120,7 +120,7 @@ import Panel from '../ui/Panel.vue';
 import TreeList, { type TreeListNode } from '../ui/TreeList.vue';
 import SearchMatchHighlight from './SearchMatchHighlight.vue';
 import { useSearchStore } from '../../stores/search';
-import type { ContentSearchResult, SearchMatchRange, SearchResult } from '../../lib/search/searchTypes';
+import type { ContentSearchResult, SearchMatchRange, SearchResult, SymbolSearchResult } from '../../lib/search/searchTypes';
 
 type PinnedEntry = {
   result: SearchResult;
@@ -134,7 +134,7 @@ type PinnedFileGroup = {
 };
 
 type PinnedGroup =
-  | { id: string; kind: 'file' | 'comment'; label: string; count: number; entries: PinnedEntry[] }
+  | { id: string; kind: 'file' | 'comment' | 'symbol'; label: string; count: number; entries: PinnedEntry[] }
   | { id: string; kind: 'content'; label: string; count: number; files: PinnedFileGroup[] };
 
 type PinnedTreeData =
@@ -154,6 +154,9 @@ const drawerResultsRef = ref<HTMLElement | null>(null);
 const pinnedGroups = computed<PinnedGroup[]>(() => {
   const fileEntries = search.pinnedResultEntries.filter((entry) => entry.result.kind === 'file');
   const commentEntries = search.pinnedResultEntries.filter((entry) => entry.result.kind === 'comment');
+  const symbolEntries = search.pinnedResultEntries.filter(
+    (entry): entry is PinnedEntry & { result: SymbolSearchResult } => entry.result.kind === 'symbol',
+  );
   const contentEntries = search.pinnedResultEntries.filter(
     (entry): entry is PinnedEntry & { result: ContentSearchResult } => entry.result.kind === 'content',
   );
@@ -172,11 +175,18 @@ const pinnedGroups = computed<PinnedGroup[]>(() => {
   }
   if (commentEntries.length > 0)
     groups.push({ id: 'comments', kind: 'comment', label: 'Comments', count: commentEntries.length, entries: commentEntries });
+  if (symbolEntries.length > 0)
+    groups.push({ id: 'symbols', kind: 'symbol', label: 'Symbols', count: symbolEntries.length, entries: symbolEntries });
 
   return groups;
 });
 
 const pinnedTreeNodes = computed<TreeListNode<PinnedTreeData>[]>(() => pinnedGroups.value.map(pinnedGroupToTreeNode));
+const displayedPinnedEntries = computed(() => pinnedGroups.value.flatMap(pinnedGroupEntries));
+const displayedSelectedPosition = computed(() => {
+  const position = displayedPinnedEntries.value.findIndex((entry) => entry.index === search.selectedIndex);
+  return position >= 0 ? position : 0;
+});
 
 const selectAndPreview = (index: number) => {
   search.selectResult(index);
@@ -185,15 +195,24 @@ const selectAndPreview = (index: number) => {
 };
 
 const previousAndPreview = () => {
-  search.previousPinnedResult();
+  moveDisplayedSelection(-1);
   previewSelected();
   void revealSelectedPinnedResult('previous');
 };
 
 const nextAndPreview = () => {
-  search.nextPinnedResult();
+  moveDisplayedSelection(1);
   previewSelected();
   void revealSelectedPinnedResult('next');
+};
+
+const moveDisplayedSelection = (direction: 1 | -1) => {
+  const entries = displayedPinnedEntries.value;
+  if (entries.length === 0) return;
+
+  const currentPosition = entries.findIndex((entry) => entry.index === search.selectedIndex);
+  const nextPosition = currentPosition === -1 ? (direction > 0 ? 0 : entries.length - 1) : (currentPosition + direction + entries.length) % entries.length;
+  search.selectResult(entries[nextPosition]?.index ?? entries[0].index);
 };
 
 const previewSelected = () => {
@@ -232,12 +251,18 @@ const revealSelectedPinnedResult = async (direction: 'next' | 'previous' | 'near
   const topMargin = direction === 'previous' ? backwardMargin : 40;
 
   if (selectedRect.bottom > containerRect.bottom - bottomMargin) {
-    container.scrollTo({ top: container.scrollTop + selectedRect.bottom - (containerRect.bottom - bottomMargin), behavior: 'smooth' });
+    container.scrollTo({
+      top: container.scrollTop + selectedRect.bottom - (containerRect.bottom - bottomMargin),
+      behavior: direction === 'nearest' ? 'smooth' : 'auto',
+    });
     return;
   }
 
   if (selectedRect.top < containerRect.top + topMargin) {
-    container.scrollTo({ top: container.scrollTop + selectedRect.top - (containerRect.top + topMargin), behavior: 'smooth' });
+    container.scrollTo({
+      top: container.scrollTop + selectedRect.top - (containerRect.top + topMargin),
+      behavior: direction === 'nearest' ? 'smooth' : 'auto',
+    });
   }
 };
 
@@ -251,6 +276,8 @@ const expandSelectedPinnedGroups = () => {
     next.delete(`content:${result.path}`);
   } else if (result.kind === 'comment') {
     next.delete('comments');
+  } else if (result.kind === 'symbol') {
+    next.delete('symbols');
   } else {
     next.delete('files');
   }
@@ -288,6 +315,11 @@ const pinnedGroupToTreeNode = (group: PinnedGroup): TreeListNode<PinnedTreeData>
       : group.entries.map(pinnedEntryToTreeNode),
 });
 
+const pinnedGroupEntries = (group: PinnedGroup): PinnedEntry[] => {
+  if (group.kind !== 'content') return group.entries;
+  return group.files.flatMap((fileGroup) => fileGroup.entries);
+};
+
 const pinnedEntryToTreeNode = (entry: PinnedEntry): TreeListNode<PinnedTreeData> => ({
   key: entry.result.id,
   label: entry.result.title,
@@ -315,6 +347,7 @@ const entryTitle = (entry: PinnedEntry) => {
 const entryAnchor = (entry: PinnedEntry) => {
   if (entry.result.kind === 'content') return `${entry.result.side}:${entry.result.line}`;
   if (entry.result.kind === 'comment') return `${entry.result.thread.anchor.side}:${entry.result.thread.anchor.startLine}`;
+  if (entry.result.kind === 'symbol') return `${entry.result.side}:${entry.result.line}`;
   return {
     added: 'A',
     modified: 'M',
@@ -331,6 +364,7 @@ const entryAnchorClass = (entry: PinnedEntry) => {
 const entryText = (entry: PinnedEntry) => {
   if (entry.result.kind === 'content') return entry.result.preview;
   if (entry.result.kind === 'comment') return entry.result.body;
+  if (entry.result.kind === 'symbol') return entry.result.symbolName;
   return entry.result.matches.some((match) => match.field === 'name') ? entry.result.title : (entry.result.subtitle ?? entry.result.title);
 };
 
@@ -339,6 +373,7 @@ const entryRanges = (entry: PinnedEntry): SearchMatchRange[] => {
     const field = entry.result.matches.some((match) => match.field === 'name') ? 'name' : 'path';
     return entry.result.matches.find((match) => match.field === field)?.ranges ?? [];
   }
+  if (entry.result.kind === 'symbol') return entry.result.matches.find((match) => match.field === 'symbol')?.ranges ?? [];
   return entry.result.matches.find((match) => match.field === 'body')?.ranges ?? [];
 };
 

@@ -1,38 +1,26 @@
 import { computed, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
-import { useDiffStore } from './diff';
 import { useRepoStore } from './repo';
 import { useReviewStore } from './review';
 import { buildSearchableFiles } from '../lib/search/searchMetadata';
 import { parseSearchQuery } from '../lib/search/searchQueryParser';
-import { buildSearchResults, groupSearchResults, searchableFilePassesFilters } from '../lib/search/searchResults';
-import type {
-  ContentSearchResult,
-  SearchFilterKind,
-  SearchMatchRange,
-  SearchMode,
-  SearchResult,
-  SearchableFile,
-} from '../lib/search/searchTypes';
-import type { DiffRenderModel, SyntaxSide } from '../lib/protocol';
+import { buildSearchResults, groupSearchResults } from '../lib/search/searchResults';
+import type { SearchFilterKind, SearchMode, SearchResult } from '../lib/search/searchTypes';
 
 const searchHistoryStorageKey = 'diffuse.search.history';
 const maxSearchHistory = 20;
-const contentSearchDelayMs = 180;
-const minContentSearchLength = 2;
-const maxConcurrentContentRequests = 3;
+const coreSearchDelayMs = 180;
 
-type ContentSearchLine = {
-  side: SyntaxSide;
-  line: number;
-  text: string;
+type SearchProgress = {
+  scannedFiles: number;
+  totalFiles: number;
+  emittedResults: number;
 };
 
 export const useSearchStore = defineStore('search', () => {
   const client = useClient();
   const repo = useRepoStore();
-  const diff = useDiffStore();
   const review = useReviewStore();
   const query = ref('');
   const treeQuery = ref('');
@@ -44,11 +32,12 @@ export const useSearchStore = defineStore('search', () => {
   const treeActiveFilters = ref<SearchFilterKind[]>([]);
   const pinnedRemovedResultIds = ref<string[]>([]);
   const history = ref(loadHistory());
-  const contentResults = ref<ContentSearchResult[]>([]);
-  const contentSearchLoading = ref(false);
-  const contentLineCache = new Map<string, ContentSearchLine[]>();
-  let contentSearchTimer: number | undefined;
-  let contentSearchGeneration = 0;
+  const coreResults = ref<SearchResult[]>([]);
+  const activeSearchId = ref<string>();
+  const searchLoading = ref(false);
+  const error = ref<string>();
+  const searchProgress = ref<SearchProgress>({ scannedFiles: 0, totalFiles: 0, emittedResults: 0 });
+  let searchTimer: number | undefined;
 
   const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
   const searchableFiles = computed(() => buildSearchableFiles(repo.changedFiles, reviewedFileIds.value, review.threads));
@@ -56,27 +45,6 @@ export const useSearchStore = defineStore('search', () => {
   const treeParsedQuery = computed(() => parseSearchQuery(treeQuery.value));
   const hasActiveSearch = computed(() => query.value.trim().length > 0 || activeFilters.value.length > 0);
   const treeHasActiveSearch = computed(() => treeQuery.value.trim().length > 0 || treeActiveFilters.value.length > 0);
-  const contentSearchTerms = computed(() => [...parsedQuery.value.terms, ...parsedQuery.value.phrases].filter(Boolean));
-  const contentScopeKey = computed(() =>
-    JSON.stringify({
-      target: repo.diffTarget,
-      context: diff.contextMode,
-      files: repo.changedFiles.map((file) => `${file.id}:${file.signature}`).join('\n'),
-    }),
-  );
-  const baseResults = computed(() => {
-    if (!hasActiveSearch.value) return [];
-    return buildSearchResults({
-      files: searchableFiles.value,
-      threads: review.threads,
-      query: parsedQuery.value,
-      activeFilters: activeFilters.value,
-    });
-  });
-  const allResults = computed<SearchResult[]>(() => {
-    if (!hasActiveSearch.value) return [];
-    return [...baseResults.value, ...contentResults.value];
-  });
   const treeResults = computed(() => {
     if (!treeHasActiveSearch.value) return [];
     return buildSearchResults({
@@ -87,11 +55,8 @@ export const useSearchStore = defineStore('search', () => {
     });
   });
   const results = computed<SearchResult[]>(() => {
-    if (mode.value === 'comments') return baseResults.value.filter((result) => result.kind === 'comment');
-    if (mode.value === 'files') return baseResults.value.filter((result) => result.kind === 'file');
-    if (mode.value === 'content') return contentResults.value;
-    if (mode.value === 'symbols') return [];
-    return groupSearchResults(allResults.value).flatMap((group) => group.results);
+    if (!hasActiveSearch.value) return [];
+    return coreResults.value;
   });
   const groups = computed(() => groupSearchResults(results.value));
   const selectedResult = computed<SearchResult | undefined>(() => results.value[selectedIndex.value]);
@@ -111,11 +76,70 @@ export const useSearchStore = defineStore('search', () => {
     const index = pinnedResultEntries.value.findIndex((entry) => entry.index === selectedIndex.value);
     return index >= 0 ? index : 0;
   });
+  const contentSearchLoading = computed(() => searchLoading.value);
+  const searchScopeKey = computed(() =>
+    JSON.stringify({
+      repository: repo.repository?.root,
+      target: repo.diffTarget,
+      files: repo.changedFiles.map((file) => `${file.id}:${file.signature}`).join('\n'),
+      sessionId: review.session?.id ?? '',
+      reviewedFiles: Object.keys(review.reviewedFiles.files).sort().join('\n'),
+      threads: review.threads.map((thread) => `${thread.id}:${thread.updatedAt}:${thread.status}`).join('\n'),
+    }),
+  );
+
+  window.diffuse.onCoreEvent((event) => {
+    if (event.method === 'search/started') {
+      if (event.params.searchId === activeSearchId.value) searchLoading.value = true;
+      return;
+    }
+
+    if (event.method === 'search/results') {
+      if (event.params.searchId !== activeSearchId.value) return;
+      coreResults.value = [...coreResults.value, ...event.params.results];
+      clampSelectedIndex();
+      return;
+    }
+
+    if (event.method === 'search/progress') {
+      if (event.params.searchId !== activeSearchId.value) return;
+      searchProgress.value = {
+        scannedFiles: event.params.scannedFiles,
+        totalFiles: event.params.totalFiles,
+        emittedResults: event.params.emittedResults,
+      };
+      return;
+    }
+
+    if (event.method === 'search/done') {
+      if (event.params.searchId !== activeSearchId.value) return;
+      searchLoading.value = false;
+      activeSearchId.value = undefined;
+      searchProgress.value = { ...searchProgress.value, scannedFiles: event.params.scannedFiles, emittedResults: event.params.totalResults };
+      clampSelectedIndex();
+      return;
+    }
+
+    if (event.method === 'search/cancelled') {
+      if (event.params.searchId !== activeSearchId.value) return;
+      searchLoading.value = false;
+      activeSearchId.value = undefined;
+      return;
+    }
+
+    if (event.method === 'search/error') {
+      if (event.params.searchId !== activeSearchId.value) return;
+      error.value = event.params.message;
+      searchLoading.value = false;
+      activeSearchId.value = undefined;
+    }
+  });
 
   const setQuery = (value: string) => {
     query.value = value;
     selectedIndex.value = 0;
     pinnedRemovedResultIds.value = [];
+    coreResults.value = [];
   };
 
   const setTreeQuery = (value: string) => {
@@ -125,6 +149,7 @@ export const useSearchStore = defineStore('search', () => {
   const setMode = (value: SearchMode) => {
     mode.value = value;
     selectedIndex.value = 0;
+    coreResults.value = [];
   };
 
   const openOverlay = (nextMode: SearchMode = 'all') => {
@@ -159,6 +184,7 @@ export const useSearchStore = defineStore('search', () => {
     activeFilters.value = [...treeActiveFilters.value];
     selectedIndex.value = 0;
     pinnedRemovedResultIds.value = [];
+    coreResults.value = [];
     drawerOpen.value = true;
     overlayOpen.value = false;
     rememberQuery();
@@ -168,6 +194,7 @@ export const useSearchStore = defineStore('search', () => {
     query.value = '';
     activeFilters.value = [];
     selectedIndex.value = 0;
+    coreResults.value = [];
   };
 
   const clearTreeQuery = () => {
@@ -180,6 +207,7 @@ export const useSearchStore = defineStore('search', () => {
       ? activeFilters.value.filter((item) => item !== filter)
       : [...activeFilters.value, filter];
     selectedIndex.value = 0;
+    coreResults.value = [];
   };
 
   const toggleTreeFilter = (filter: SearchFilterKind) => {
@@ -245,120 +273,75 @@ export const useSearchStore = defineStore('search', () => {
     window.localStorage.setItem(searchHistoryStorageKey, JSON.stringify(history.value));
   };
 
-  const scheduleContentSearch = () => {
-    if (contentSearchTimer !== undefined) window.clearTimeout(contentSearchTimer);
+  const scheduleCoreSearch = () => {
+    if (searchTimer !== undefined) window.clearTimeout(searchTimer);
 
-    if (!shouldSearchContent()) {
-      contentSearchGeneration += 1;
-      contentResults.value = [];
-      contentSearchLoading.value = false;
+    if (!repo.repository || !hasActiveSearch.value) {
+      coreResults.value = [];
+      searchLoading.value = false;
+      error.value = undefined;
+      searchProgress.value = { scannedFiles: 0, totalFiles: 0, emittedResults: 0 };
+      void cancelActiveSearch();
       return;
     }
 
-    contentSearchLoading.value = true;
-    contentResults.value = [];
-    contentSearchTimer = window.setTimeout(() => {
-      contentSearchTimer = undefined;
-      void refreshContentResults();
-    }, contentSearchDelayMs);
+    searchLoading.value = true;
+    error.value = undefined;
+    searchTimer = window.setTimeout(() => {
+      searchTimer = undefined;
+      void refreshResults();
+    }, coreSearchDelayMs);
   };
 
-  const shouldSearchContent = () => {
-    if (mode.value !== 'all' && mode.value !== 'content') return false;
-    const raw = query.value.trim();
-    if (raw.length < minContentSearchLength) return false;
-    return contentSearchTerms.value.length > 0;
-  };
+  const refreshResults = async () => {
+    if (!repo.repository || !hasActiveSearch.value) return;
 
-  const refreshContentResults = async () => {
-    const generation = ++contentSearchGeneration;
-    const terms = contentSearchTerms.value;
-    const files = searchableFiles.value.filter((file) => searchableFilePassesFilters(file, parsedQuery.value.filters, activeFilters.value));
-    const nextResults: ContentSearchResult[] = [];
-    let fileIndex = 0;
-
-    const runWorker = async () => {
-      while (fileIndex < files.length && generation === contentSearchGeneration) {
-        const file = files[fileIndex];
-        fileIndex += 1;
-        const matches = await contentResultsForFile(file, terms);
-        nextResults.push(...matches);
-      }
-    };
+    const searchId = createSearchId();
+    await cancelActiveSearch();
+    activeSearchId.value = searchId;
+    coreResults.value = [];
+    searchLoading.value = true;
+    error.value = undefined;
+    searchProgress.value = { scannedFiles: 0, totalFiles: repo.changedFiles.length, emittedResults: 0 };
 
     try {
-      await Promise.all(Array.from({ length: Math.min(maxConcurrentContentRequests, files.length) }, runWorker));
-      if (generation !== contentSearchGeneration) return;
-
-      contentResults.value = sortContentResults(nextResults);
-    } finally {
-      if (generation === contentSearchGeneration) contentSearchLoading.value = false;
-    }
-  };
-
-  const contentResultsForFile = async (file: SearchableFile, terms: string[]): Promise<ContentSearchResult[]> => {
-    const lines = await contentLinesForFile(file);
-    const results: ContentSearchResult[] = [];
-
-    for (const line of lines) {
-      const match = matchContentLine(line.text, terms);
-      if (!match) continue;
-
-      const preview = contentPreview(line.text, match.ranges);
-      results.push({
-        id: `content:${file.file.id}:${line.side}:${line.line}:${results.length}`,
-        kind: 'content',
-        fileId: file.file.id,
-        path: file.path,
-        line: line.line,
-        side: line.side,
-        title: file.name,
-        subtitle: `${file.path}:${line.line}`,
-        rank: match.score + (file.metadata.reviewed ? 0 : 20),
-        matches: [{ field: 'body', ranges: preview.ranges, score: match.score }],
-        preview: preview.text,
+      const response = await client.startSearch({
+        searchId,
+        sessionId: review.session?.id ?? '',
+        query: query.value,
+        mode: mode.value,
+        filters: activeFilters.value,
+        target: repo.diffTarget,
       });
+      if (activeSearchId.value === searchId && response.searchId !== searchId) activeSearchId.value = response.searchId;
+    } catch (err) {
+      if (activeSearchId.value !== searchId) return;
+      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      searchLoading.value = false;
+      activeSearchId.value = undefined;
     }
-
-    return results;
   };
 
-  const contentLinesForFile = async (file: SearchableFile): Promise<ContentSearchLine[]> => {
-    const cacheKey = `${contentScopeKey.value}:${file.file.id}`;
-    const cached = contentLineCache.get(cacheKey);
-    if (cached) return cached;
-
-    const model = await client.getDiffRenderModel(file.file.id, { mode: 'inline', context: diff.contextMode }, repo.diffTarget);
-    const lines = linesFromDiffModel(model);
-    contentLineCache.set(cacheKey, lines);
-    return lines;
-  };
-
-  const linesFromDiffModel = (model: DiffRenderModel): ContentSearchLine[] => {
-    const lines: ContentSearchLine[] = [];
-    const seen = new Set<string>();
-
-    for (const row of model.rows) {
-      const side = row.newLine ? 'new' : row.oldLine ? 'old' : undefined;
-      const line = side === 'new' ? row.newLine : row.oldLine;
-      const text = side === 'new' ? row.newText : row.oldText;
-      if (!side || !line || text === undefined) continue;
-
-      const key = `${side}:${line}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      lines.push({ side, line, text });
+  const cancelActiveSearch = async () => {
+    const searchId = activeSearchId.value;
+    if (!searchId) return;
+    activeSearchId.value = undefined;
+    try {
+      await client.cancelSearch(searchId);
+    } catch {
+      // Cancellation is best-effort; stale events are still ignored by searchId.
     }
-
-    return lines;
   };
 
-  watch(contentScopeKey, () => {
-    contentLineCache.clear();
-    scheduleContentSearch();
-  });
+  const clampSelectedIndex = () => {
+    selectedIndex.value = Math.min(selectedIndex.value, Math.max(0, results.value.length - 1));
+  };
 
-  watch([() => query.value, () => mode.value, () => activeFilters.value], scheduleContentSearch);
+  watch([() => query.value, () => mode.value, () => activeFilters.value, searchScopeKey], scheduleCoreSearch);
+  watch(
+    () => results.value.length,
+    () => clampSelectedIndex(),
+  );
 
   return {
     query,
@@ -382,6 +365,10 @@ export const useSearchStore = defineStore('search', () => {
     pinnedSelectedPosition,
     hasActiveSearch,
     treeHasActiveSearch,
+    activeSearchId,
+    searchLoading,
+    searchProgress,
+    error,
     contentSearchLoading,
     setQuery,
     setTreeQuery,
@@ -406,77 +393,8 @@ export const useSearchStore = defineStore('search', () => {
   };
 });
 
-const matchContentLine = (text: string, terms: string[]): { score: number; ranges: SearchMatchRange[] } | undefined => {
-  const lowerText = text.toLowerCase();
-  const ranges: SearchMatchRange[] = [];
-  let score = 0;
-
-  for (const term of terms) {
-    const lowerTerm = term.toLowerCase();
-    if (!lowerTerm) continue;
-
-    const termRanges = rangesForTerm(lowerText, lowerTerm);
-    if (termRanges.length === 0) return undefined;
-
-    ranges.push(...termRanges);
-    score += 1200 - termRanges[0].start + Math.min(termRanges.length, 8) * 30;
-  }
-
-  return { score, ranges: mergeRanges(ranges) };
-};
-
-const rangesForTerm = (lowerText: string, lowerTerm: string): SearchMatchRange[] => {
-  const ranges: SearchMatchRange[] = [];
-  let searchFrom = 0;
-
-  while (searchFrom < lowerText.length) {
-    const index = lowerText.indexOf(lowerTerm, searchFrom);
-    if (index === -1) break;
-    ranges.push({ start: index, end: index + lowerTerm.length });
-    searchFrom = index + lowerTerm.length;
-  }
-
-  return ranges;
-};
-
-const contentPreview = (text: string, ranges: SearchMatchRange[]): { text: string; ranges: SearchMatchRange[] } => {
-  const firstRange = ranges[0];
-  const previewLength = 150;
-  const prefixLength = 48;
-  const start = Math.max(0, (firstRange?.start ?? 0) - prefixLength);
-  const end = Math.min(text.length, start + previewLength);
-  const prefix = start > 0 ? '...' : '';
-  const suffix = end < text.length ? '...' : '';
-  const previewText = `${prefix}${text.slice(start, end)}${suffix}`;
-  const offset = prefix.length - start;
-  const previewRanges = ranges
-    .map((range) => ({ start: Math.max(start, range.start), end: Math.min(end, range.end) }))
-    .filter((range) => range.end > range.start)
-    .map((range) => ({ start: range.start + offset, end: range.end + offset }));
-
-  return { text: previewText, ranges: previewRanges };
-};
-
-const sortContentResults = (results: ContentSearchResult[]) => {
-  return [...results].sort(
-    (first, second) => second.rank - first.rank || first.path.localeCompare(second.path) || first.line - second.line,
-  );
-};
-
-const mergeRanges = (ranges: SearchMatchRange[]): SearchMatchRange[] => {
-  const sorted = [...ranges].sort((first, second) => first.start - second.start || first.end - second.end);
-  const merged: SearchMatchRange[] = [];
-
-  for (const range of sorted) {
-    const last = merged[merged.length - 1];
-    if (!last || range.start > last.end) {
-      merged.push({ ...range });
-      continue;
-    }
-    last.end = Math.max(last.end, range.end);
-  }
-
-  return merged;
+const createSearchId = () => {
+  return `search-${Date.now()}-${window.crypto.randomUUID()}`;
 };
 
 const loadHistory = (): string[] => {

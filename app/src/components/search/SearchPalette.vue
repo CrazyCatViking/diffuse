@@ -43,7 +43,9 @@
 
           <span v-if="search.selectedResult">{{ search.selectedIndex + 1 }} of {{ search.results.length }}</span>
 
-          <span v-if="search.contentSearchLoading">Scanning contents...</span>
+          <span v-if="search.searchLoading">Searching in core...</span>
+
+          <span v-else-if="search.error">{{ search.error }}</span>
         </div>
 
         <div class="result-actions">
@@ -59,7 +61,7 @@
           align="start"
           bordered
           title="Search mode coming next"
-          description="Symbol search needs core RPC support. File, content, and comment search are available now."
+          description="Symbol extraction is not implemented yet. File, content, and comment search are core-backed now."
         />
 
         <EmptyState

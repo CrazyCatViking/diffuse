@@ -6,6 +6,10 @@ const session_mod = @import("../core/session.zig");
 const lsp = @import("../core/lsp.zig");
 const syntax = @import("../core/syntax.zig");
 
+pub const SearchJobState = struct {
+    cancelled: bool = false,
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -17,7 +21,10 @@ pub const Runtime = struct {
     syntax_cache_lock: std.Io.Mutex = .init,
     lsp_lock: std.Io.Mutex = .init,
     review_lock: std.Io.Mutex = .init,
+    search_lock: std.Io.Mutex = .init,
     session_lock: std.Io.RwLock = .init,
+    search_jobs: std.StringHashMap(SearchJobState),
+    search_group: std.Io.Group = .init,
     outbound_buffer: [128][]u8 = undefined,
     outbound: std.Io.Queue([]u8),
 
@@ -31,7 +38,10 @@ pub const Runtime = struct {
         runtime.syntax_cache_lock = .init;
         runtime.lsp_lock = .init;
         runtime.review_lock = .init;
+        runtime.search_lock = .init;
         runtime.session_lock = .init;
+        runtime.search_jobs = std.StringHashMap(SearchJobState).init(allocator);
+        runtime.search_group = .init;
         runtime.outbound_buffer = undefined;
         runtime.outbound = .init(&runtime.outbound_buffer);
         runtime.repo_watcher = repository_watcher.RepositoryWatcher.init(allocator, io, &runtime.outbound);
@@ -39,9 +49,19 @@ pub const Runtime = struct {
 
     pub fn deinit(runtime: *Runtime) void {
         runtime.repo_watcher.deinit();
+        runtime.search_jobs.deinit();
         runtime.lsp_manager.deinit(runtime.io);
         runtime.syntax_cache.deinit();
         runtime.session.deinit();
+    }
+
+    pub fn cancelAndAwaitSearchJobs(runtime: *Runtime) !void {
+        try runtime.search_lock.lock(runtime.io);
+        var iterator = runtime.search_jobs.iterator();
+        while (iterator.next()) |entry| entry.value_ptr.cancelled = true;
+        runtime.search_lock.unlock(runtime.io);
+
+        try runtime.search_group.await(runtime.io);
     }
 
     pub fn enqueue(runtime: *Runtime, message: []u8) (std.Io.QueueClosedError || std.Io.Cancelable)!void {

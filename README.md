@@ -213,7 +213,7 @@ After opening a repository, Diffuse shows a review overview alongside changed fi
 
 Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder. Selecting a review thread from the overview opens its file, scrolls to the anchored review row, and briefly flashes the target.
 
-Use the changed-file search box or the top-bar `Search` action to find files by fuzzy filename/path matches, review state, comments, generated/test/docs classification, extension, status, and line-count filters. `Ctrl+P` or `Cmd+P` opens the global search palette, and matching results can be pinned into an independent right-side search drawer so you can walk through them while reviewing. Content and symbol search modes are reserved for the planned core-backed search RPCs.
+Use the changed-file search box or the top-bar `Search` action to find files by fuzzy filename/path matches, review state, comments, generated/test/docs classification, extension, status, and line-count filters. `Ctrl+P` or `Cmd+P` opens the global search palette, and matching results can be pinned into an independent right-side search drawer so you can walk through them while reviewing. The global palette streams file, full changed-file content, and persisted comment results from the Zig core with cooperative cancellation; opening a content match automatically switches the diff viewer to full-file mode so the matched line is visible. Symbol extraction is planned next.
 
 The top-bar `Compare` menu controls what Diffuse reviews. Open it to search local or remote branches, choose suggested refs such as `HEAD` or the default upstream, or type a custom branch, tag, SHA, or Git ref.
 

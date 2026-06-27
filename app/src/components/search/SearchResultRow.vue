@@ -40,6 +40,12 @@
       <template v-else-if="result.kind === 'content'">
         <Badge tone="info">{{ result.side }}:{{ result.line }}</Badge>
       </template>
+
+      <template v-else-if="result.kind === 'symbol'">
+        <Badge tone="ai">{{ result.symbolKind }}</Badge>
+
+        <Badge tone="neutral">{{ result.side }}:{{ result.line }}</Badge>
+      </template>
     </span>
   </button>
 </template>
@@ -65,13 +71,15 @@ const kindLabel = computed(() => {
   if (props.compact) {
     if (props.result.kind === 'comment') return 'C';
     if (props.result.kind === 'content') return 'T';
+    if (props.result.kind === 'symbol') return 'S';
     return 'F';
   }
   if (props.result.kind === 'comment') return 'Comment';
   if (props.result.kind === 'content') return 'Content';
+  if (props.result.kind === 'symbol') return 'Symbol';
   return 'File';
 });
-const titleRanges = computed(() => props.result.matches.find((match) => match.field === 'name')?.ranges ?? []);
+const titleRanges = computed(() => props.result.matches.find((match) => match.field === (props.result.kind === 'symbol' ? 'symbol' : 'name'))?.ranges ?? []);
 const subtitleRanges = computed(() => {
   const field = props.result.kind === 'comment' ? 'body' : 'path';
   return props.result.matches.find((match) => match.field === field)?.ranges ?? [];
@@ -152,6 +160,12 @@ const statusTone = computed(() => {
   color: var(--color-info);
   background: var(--color-info-muted);
   border-color: rgba(77, 166, 255, 0.25);
+}
+
+.kind-symbol {
+  color: var(--color-ai);
+  background: var(--color-ai-muted);
+  border-color: rgba(167, 139, 250, 0.25);
 }
 
 .result-main {

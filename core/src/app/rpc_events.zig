@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const runtime_mod = @import("rpc_runtime.zig");
+const search = @import("../core/search.zig");
 const types = @import("../protocol/types.zig");
 
 const Runtime = runtime_mod.Runtime;
@@ -58,3 +59,82 @@ pub const LspInstallProgress = struct {
         try self.runtime.enqueue(try message.toOwnedSlice());
     }
 };
+
+pub fn emitSearchStarted(runtime: *Runtime, search_id: []const u8) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"search/started\",\"params\":{");
+    try message.writer.writeAll("\"searchId\":");
+    try types.writeJson(&message.writer, search_id);
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}
+
+pub fn emitSearchResults(runtime: *Runtime, search_id: []const u8, results: []const search.ResultJson) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"search/results\",\"params\":{");
+    try message.writer.writeAll("\"searchId\":");
+    try types.writeJson(&message.writer, search_id);
+    try message.writer.writeAll(",\"results\":");
+    try search.writeRawResultArray(&message.writer, results);
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}
+
+pub fn emitSearchProgress(runtime: *Runtime, search_id: []const u8, scanned_files: u32, total_files: u32, emitted_results: u32) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"search/progress\",\"params\":{");
+    try message.writer.writeAll("\"searchId\":");
+    try types.writeJson(&message.writer, search_id);
+    try message.writer.print(",\"scannedFiles\":{},\"totalFiles\":{},\"emittedResults\":{}", .{ scanned_files, total_files, emitted_results });
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}
+
+pub fn emitSearchDone(runtime: *Runtime, search_id: []const u8, total_results: u32, scanned_files: u32) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"search/done\",\"params\":{");
+    try message.writer.writeAll("\"searchId\":");
+    try types.writeJson(&message.writer, search_id);
+    try message.writer.print(",\"totalResults\":{},\"scannedFiles\":{}", .{ total_results, scanned_files });
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}
+
+pub fn emitSearchCancelled(runtime: *Runtime, search_id: []const u8, scanned_files: u32, emitted_results: u32) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"search/cancelled\",\"params\":{");
+    try message.writer.writeAll("\"searchId\":");
+    try types.writeJson(&message.writer, search_id);
+    try message.writer.print(",\"scannedFiles\":{},\"emittedResults\":{}", .{ scanned_files, emitted_results });
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}
+
+pub fn emitSearchError(runtime: *Runtime, search_id: []const u8, error_message: []const u8) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"search/error\",\"params\":{");
+    try message.writer.writeAll("\"searchId\":");
+    try types.writeJson(&message.writer, search_id);
+    try message.writer.writeAll(",\"message\":");
+    try types.writeJson(&message.writer, error_message);
+    try message.writer.writeAll("}}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}
