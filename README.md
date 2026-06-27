@@ -209,16 +209,20 @@ diffuse diff --repo /path/to/repository --file src/example.ts
 
 When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository.
 
-After opening a repository, Diffuse shows a review overview alongside changed files in a collapsible folder tree. The overview summarizes review progress, change totals, review threads, AI activity, and LSP diagnostics for supported changed files. Diagnostics are checked while the overview is open, so the diff workspace does not spend space on an always-visible review panel.
+After opening a repository, Diffuse shows a review overview alongside changed files in a collapsible folder tree. The overview summarizes review progress, change totals, review threads, AI activity, and LSP diagnostics for supported changed files. Use the overview to create review sessions and start or stop AI review runs. Diagnostics are checked while the overview is open, so the diff workspace does not spend space on always-visible review controls.
 
 Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder. Selecting a review thread from the overview opens its file, scrolls to the anchored review row, and briefly flashes the target.
 
 Use the changed-file search box or the top-bar `Search` action to find files by fuzzy filename/path matches, review state, comments, generated/test/docs classification, extension, status, and line-count filters. `Ctrl+P` or `Cmd+P` opens the global search palette, and matching results can be pinned into an independent right-side search drawer so you can walk through them while reviewing. Content and symbol search modes are reserved for the planned core-backed search RPCs.
 
-The compare bar supports two main modes:
+The top-bar `Compare` menu controls what Diffuse reviews. Open it to search local or remote branches, choose suggested refs such as `HEAD` or the default upstream, or type a custom branch, tag, SHA, or Git ref.
+
+It supports two main modes:
 
 1. `Working tree against <target>` compares local staged and unstaged changes against a target ref, usually `HEAD`.
 2. `<source ref> against <target ref>` compares two Git refs or branches without including working tree changes.
+
+When the source is `Working tree`, use the scope buttons to switch between all local changes, staged changes only, or unstaged changes only. For branch/ref comparisons, use `Swap` to invert source and target quickly.
 
 Diffuse chooses defaults from repository state. Dirty repositories default to working tree changes against `HEAD`. Clean repositories default to `HEAD` against the configured upstream when available, falling back to `origin/main`, `origin/master`, or `HEAD`.
 

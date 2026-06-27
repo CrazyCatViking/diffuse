@@ -12,6 +12,10 @@
           {{ loading ? 'Opening...' : 'Open Repository' }}
         </Button>
 
+        <div v-if="$slots['repository-controls']" class="repository-controls">
+          <slot name="repository-controls" />
+        </div>
+
         <div class="repo-path" :title="repoPath ?? ''">{{ repoPath ?? 'No repository selected' }}</div>
       </Row>
 
@@ -81,5 +85,10 @@ defineEmits<{
   font-size: var(--font-size-body);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.repository-controls {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 </style>

@@ -9,7 +9,19 @@
       @open-search="search.openOverlay()"
       @refresh="repo.refreshChangedFiles()"
       @open-settings="showSettings = true"
-    />
+    >
+      <template #repository-controls>
+        <DiffTargetMenu
+          v-if="repo.repository"
+          :target="repo.diffTarget"
+          :defaults="repo.diffTargetDefaults"
+          :branches="repo.branches"
+          :loading="repo.loading"
+          @apply="applyDiffTarget"
+          @reset="repo.resetDiffTarget()"
+        />
+      </template>
+    </TopBar>
 
     <RecentRepositoriesDialog
       v-if="showRecentRepositories"
@@ -33,31 +45,6 @@
     </main>
 
     <template v-else>
-      <DiffTargetBar
-        :target="repo.diffTarget"
-        :defaults="repo.diffTargetDefaults"
-        :branches="repo.branches"
-        :loading="repo.loading"
-        @apply="applyDiffTarget"
-        @reset="repo.resetDiffTarget()"
-      />
-
-      <ReviewAgentBar
-        :enabled="Boolean(repo.repository && repo.changedFiles.length > 0)"
-        :loading="review.loading"
-        :progress="review.progress"
-        :active-run="review.activeRun"
-        :active-agent-state="review.activeAgentState"
-        :session="review.session"
-        :sessions="review.sessions"
-        :runs="review.runs"
-        :open-thread-count="review.openThreads.length"
-        :error="review.error"
-        @new-session="review.startNewSession()"
-        @start="review.startAgentReview()"
-        @stop="review.stopAgentReview()"
-      />
-
       <main
         class="workspace"
         :class="{ resizing: fileTreeResizing, 'has-pinned-search': search.drawerOpen }"
@@ -152,13 +139,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
-import DiffTargetBar from './components/diff/DiffTargetBar.vue';
+import DiffTargetMenu from './components/diff/DiffTargetMenu.vue';
 import DiffViewer from './components/diff/DiffViewer.vue';
 import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import RepositoryStartView from './components/repositories/RepositoryStartView.vue';
-import ReviewAgentBar from './components/review/ReviewAgentBar.vue';
 import ReviewOverviewView from './components/review/ReviewOverviewView.vue';
 import SearchPalette from './components/search/SearchPalette.vue';
 import SearchResultsDrawer from './components/search/SearchResultsDrawer.vue';
@@ -479,7 +465,7 @@ watch(
 <style scoped lang="scss">
 .app-shell {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   overflow: hidden;
