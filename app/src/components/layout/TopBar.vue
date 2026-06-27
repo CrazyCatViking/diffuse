@@ -27,7 +27,7 @@
         <Button variant="ghost" size="sm" @click="$emit('openSettings')">Settings</Button>
 
         <Badge :tone="error ? 'danger' : version ? 'success' : 'neutral'" :title="error ?? undefined">
-          {{ error ?? (version ? `core ${version}` : 'connecting') }}
+          {{ error ?? (version ? `${version}` : 'connecting') }}
         </Badge>
       </Row>
     </Row>

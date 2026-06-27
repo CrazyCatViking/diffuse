@@ -1,15 +1,5 @@
 <template>
   <aside class="changed-files">
-    <header class="pane-header">
-      <div>
-        <Badge tone="review">Workspace</Badge>
-
-        <h2>Changed files</h2>
-      </div>
-
-      <Badge tone="neutral">{{ fileCountLabel }}</Badge>
-    </header>
-
     <button class="overview-row" :class="{ active: overviewActive }" type="button" @click="emit('selectOverview')">
       <span class="overview-icon">R</span>
 
@@ -19,6 +9,12 @@
         <span class="overview-subtitle">Session state, threads, diagnostics</span>
       </span>
     </button>
+
+    <header class="pane-header">
+      <h2>Changed files</h2>
+
+      <Badge tone="neutral">{{ fileCountLabel }}</Badge>
+    </header>
 
     <div v-if="files.length > 0" class="search-stack">
       <SearchInput
@@ -377,7 +373,7 @@ const sortTree = (nodes: TreeNode[]) => {
 .pane-header {
   display: flex;
   gap: var(--space-6);
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-6);
 }

@@ -1,5 +1,16 @@
 <template>
   <div class="controls">
+    <Button
+      v-if="showSyncScroll && viewMode === 'split'"
+      variant="secondary"
+      size="sm"
+      :pressed="syncScroll"
+      :aria-pressed="syncScroll"
+      @click="emit('update:syncScroll', !syncScroll)"
+    >
+      {{ syncScroll ? 'Synced' : 'Desynced' }}
+    </Button>
+
     <div class="mode-group" role="group" aria-label="Diff layout">
       <Button
         variant="secondary"
@@ -21,17 +32,6 @@
         Inline
       </Button>
     </div>
-
-    <Button
-      v-if="showSyncScroll && viewMode === 'split'"
-      variant="secondary"
-      size="sm"
-      :pressed="syncScroll"
-      :aria-pressed="syncScroll"
-      @click="emit('update:syncScroll', !syncScroll)"
-    >
-      {{ syncScroll ? 'Synced' : 'Desynced' }}
-    </Button>
 
     <Button
       variant="secondary"
