@@ -125,7 +125,7 @@ else
   mkdir -p "$apps_dir"
   mkdir -p "$tmp/app"
   unzip -q "$tmp/$asset" -d "$tmp/app"
-  app_source="$(find "$tmp/app" -maxdepth 3 -type d -name Diffuse.app -print | head -n 1)"
+  app_source="$(find "$tmp/app" -maxdepth 3 -type d -iname Diffuse.app -print | head -n 1)"
   if [ -z "$app_source" ]; then
     echo "Could not find Diffuse.app in $asset" >&2
     exit 1
