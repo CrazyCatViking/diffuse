@@ -1,6 +1,7 @@
 import { computed, ref, watch } from 'vue';
-import { parseDiffKeybinding, type DiffKeybindingAction, type DiffKeybindingMap } from '../../lib/diffKeybindings';
+import { diffKeyTokenForEvent, parseDiffKeybinding, type DiffKeybindingAction, type DiffKeybindingMap } from '../../lib/diffKeybindings';
 import type { DiffRenderModel, DiffRow, DiffViewMode, LspDiagnostic, ReviewAnchor, SyntaxSide } from '../../lib/protocol';
+import type { DiffSurface } from '../../stores/cursor';
 import type { CodeLineModel, CodeTextHighlight } from '../code/codeModels';
 import type { DisplayRow } from './reviewRows';
 
@@ -48,6 +49,7 @@ export const useDiffCursor = (options: {
   halfPageLines: () => number;
   shouldRestoreStoredPosition?: () => boolean;
   onOpenFile?: (fileId: string) => void;
+  onMoveSurface?: (direction: -1 | 1) => void;
   onOpenSearch: () => void;
   onMoveSearch: (direction: number) => void;
   onHover: (position: DiffCursorPosition) => void;
@@ -135,7 +137,7 @@ export const useDiffCursor = (options: {
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    const token = keyTokenForEvent(event);
+    const token = diffKeyTokenForEvent(event);
     if (!token) return false;
 
     if (token === '<Esc>') {
@@ -167,18 +169,58 @@ export const useDiffCursor = (options: {
 
   const moveCursorToLine = (side: SyntaxSide, line: number, column: number) => {
     const target = sideLines(side).find((item) => item.line === line);
-    if (!target) return;
+    if (!target) return false;
 
     clearVisual();
     setCursor(target, clampColumn(column, target.text), true, column);
+    return true;
   };
 
   const moveCursorToReviewKey = (reviewKey: string) => {
     const target = reviewEntries().find((entry) => entry.reviewKey === reviewKey);
-    if (!target) return;
+    if (!target) return false;
 
     clearVisual();
     setCursor(target, 0, true, 0);
+    return true;
+  };
+
+  const moveCursorToSurfacePosition = (position: DiffSurface['position']) => {
+    if (position.target === 'review' && position.reviewKey) {
+      return moveCursorToReviewKey(position.reviewKey);
+    }
+
+    return moveCursorToLine(position.side, position.line, position.column);
+  };
+
+  const currentSurfacePosition = (): DiffSurface['position'] | undefined => {
+    const active = cursor.value;
+    if (!active) return undefined;
+
+    return {
+      fileId: active.fileId,
+      pane: active.pane === 'left' ? 'old' : active.pane === 'right' ? 'new' : active.pane === 'syncedSplit' ? active.side : 'inline',
+      side: active.side,
+      line: active.line,
+      column: active.column,
+      rowIndex: active.rowIndex,
+      displayIndex: active.displayIndex,
+      target: active.target,
+      reviewKey: active.reviewKey,
+    };
+  };
+
+  const moveCursorToPane = (pane: DiffCursorPane) => {
+    ensureCursor();
+    const active = cursor.value;
+    if (!active) return false;
+
+    const target = lineForPane(pane, active);
+    if (!target) return false;
+
+    clearVisual();
+    setCursor(target, Math.min(desiredColumn.value, maxCursorColumn(target.text)), true, desiredColumn.value);
+    return true;
   };
 
   const isReviewFocused = (reviewKey: string) => cursor.value?.target === 'review' && cursor.value.reviewKey === reviewKey;
@@ -252,16 +294,18 @@ export const useDiffCursor = (options: {
     return false;
   };
 
+  const handleAction = (action: DiffKeybindingAction, count = 1, hasCount = false) => runAction(action, Math.max(1, count), hasCount);
+
   const runAction = (action: DiffKeybindingAction, count: number, hasCount: boolean) => {
     ensureCursor();
 
     if (action === 'clear') {
       clearVisual();
       options.onClear();
-      return;
+      return true;
     }
 
-    if (!cursor.value && action !== 'openSearch') return;
+    if (!cursor.value && action !== 'openSearch') return false;
 
     if (action === 'moveLeft') moveHorizontal(-count);
     else if (action === 'moveRight') moveHorizontal(count);
@@ -288,13 +332,18 @@ export const useDiffCursor = (options: {
     else if (action === 'nextReview') moveToReview(count);
     else if (action === 'previousCursorPosition') moveThroughHistory(-1);
     else if (action === 'nextCursorPosition') moveThroughHistory(1);
-    else if (action === 'splitLeft') moveToSplitSide('old');
-    else if (action === 'splitRight') moveToSplitSide('new');
+    else if (action === 'splitLeft') moveToSplitSide('old', -1);
+    else if (action === 'splitRight') moveToSplitSide('new', 1);
+    else if (action === 'diffSideLeft') moveToDiffSide('old');
+    else if (action === 'diffSideRight') moveToDiffSide('new');
     else if (action === 'visualChar') toggleVisualMode('visual-char');
     else if (action === 'visualLine') toggleVisualMode('visual-line');
     else if (action === 'hover' && cursor.value) options.onHover(cursor.value);
     else if (action === 'comment') commentAtCursor();
     else if (action === 'askAi') askAiAtCursor();
+    else return false;
+
+    return true;
   };
 
   const moveHorizontal = (delta: number) => {
@@ -444,9 +493,28 @@ export const useDiffCursor = (options: {
     moveToRelativeTarget(reviewEntries(), active, delta);
   };
 
-  const moveToSplitSide = (side: SyntaxSide) => {
+  const moveToSplitSide = (side: SyntaxSide, surfaceDirection: -1 | 1) => {
     const active = cursor.value;
-    if (!active || options.viewMode() !== 'split') return;
+    if (!active || options.viewMode() !== 'split') {
+      options.onMoveSurface?.(surfaceDirection);
+      return;
+    }
+
+    if (active.side === side) {
+      options.onMoveSurface?.(surfaceDirection);
+      return;
+    }
+
+    clearVisual();
+    const target = nearestLineForSide(side, active.rowIndex);
+    if (!target) return;
+
+    setCursor(target, Math.min(desiredColumn.value, maxCursorColumn(target.text)), true, desiredColumn.value);
+  };
+
+  const moveToDiffSide = (side: SyntaxSide) => {
+    const active = cursor.value;
+    if (!active || options.viewMode() !== 'split' || active.side === side) return;
 
     clearVisual();
     const target = nearestLineForSide(side, active.rowIndex);
@@ -656,6 +724,16 @@ export const useDiffCursor = (options: {
     );
   };
 
+  const lineForPane = (pane: DiffCursorPane, active: DiffCursorPosition) => {
+    if (pane === 'left') return nearestLineForSide('old', active.rowIndex);
+    if (pane === 'right') return nearestLineForSide('new', active.rowIndex);
+    return (
+      nearestLineForSide(active.side, active.rowIndex) ??
+      nearestLineForSide('new', active.rowIndex) ??
+      nearestLineForSide('old', active.rowIndex)
+    );
+  };
+
   const lineForSearchMatch = (match: DiffCursorSearchMatch) => {
     return sideLines(match.side).find((line) => line.target === 'code' && line.line === match.line && line.rowIndex === match.rowIndex);
   };
@@ -749,34 +827,20 @@ export const useDiffCursor = (options: {
     mode,
     visualAnchor,
     ensureCursor,
+    handleAction,
     handleKeyDown,
+    currentSurfacePosition,
     moveCursorToSearchMatch,
     moveCursorToLine,
     moveCursorToReviewKey,
+    moveCursorToSurfacePosition,
+    moveCursorToPane,
     lineStateForLine,
     isReviewFocused,
     currentLineAnchor,
     clearVisual,
     clearPending,
   };
-};
-
-const keyTokenForEvent = (event: KeyboardEvent) => {
-  if (event.metaKey || event.altKey) return undefined;
-  if (event.ctrlKey) {
-    if (event.key === 'Tab') return '<C-i>';
-    const key = event.key.toLowerCase();
-    if (/^[a-z]$/.test(key)) return `<C-${key}>`;
-    return undefined;
-  }
-
-  if (event.key === 'ArrowLeft') return '<Left>';
-  if (event.key === 'ArrowRight') return '<Right>';
-  if (event.key === 'ArrowUp') return '<Up>';
-  if (event.key === 'ArrowDown') return '<Down>';
-  if (event.key === 'Escape') return '<Esc>';
-  if (event.key.length === 1) return event.key;
-  return undefined;
 };
 
 const parsedBindings = (keybindings: DiffKeybindingMap): ParsedBinding[] => {

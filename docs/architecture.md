@@ -29,9 +29,13 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 - `coreRequest(method, params)` sends a whitelisted request to the Zig core.
 - `onCoreEvent(listener)` subscribes to core notifications such as repository changes and Tree-sitter install progress.
 
-`app/electron/main.ts` creates browser windows, owns one `CoreRpcClient` per window, and registers IPC handlers. `app/electron/coreProcess.ts` resolves the core executable in this order:
+`app/electron/main.ts` creates browser windows, owns one `CoreRpcClient` per window, and registers IPC handlers.
 
-The main process disables Electron's default application menu before creating windows. Window chrome should stay owned by the operating system and Diffuse's renderer UI rather than Electron's built-in menu template.
+The main process disables Electron's default application menu before creating windows. It also blocks Chromium/Electron reserved keyboard defaults such as reload, zoom, devtools, fullscreen, and browser back/forward before they reach the page. Window chrome should stay owned by the operating system and Diffuse's renderer UI rather than Electron's built-in menu template.
+
+The renderer owns keyboard defaults outside editable controls. `App.vue` lets app-level shortcuts and `useCursorStore()` process key events first, then prevents any remaining browser default for non-text-entry targets so DOM focus traversal, page scrolling, and native browser navigation cannot compete with the app cursor model. Inputs, textareas, selects, and contenteditable elements keep native text-editing behavior.
+
+`app/electron/coreProcess.ts` resolves the core executable in this order:
 
 - `DIFFUSE_CORE_EXECUTABLE` when set and pointing at an existing file.
 - Development build paths such as `core/zig-out/bin/diffuse`.
@@ -49,7 +53,7 @@ diffuse rpc
 `app/electron/coreRpcClient.ts` wraps a child process. Each request is serialized as a single JSON line:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"listChangedFiles","params":{}}
+{ "jsonrpc": "2.0", "id": 1, "method": "listChangedFiles", "params": {} }
 ```
 
 The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits messages without an `id` as events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
@@ -73,23 +77,33 @@ Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invoc
 
 ## Renderer State
 
-The Vue app starts in `app/src/main.ts`, installs Pinia, and renders `App.vue`.
+The Vue app starts in `app/src/main.ts`, installs Pinia and Vue Router with memory history, and renders `App.vue`.
 
 The main page is organized around stores:
 
 - `useRepoStore()` owns app version, current repository, changed files, active file, loading, and errors.
 - `useDiffStore()` owns the current diff model, view mode, context mode, synchronized scrolling, grammar install state, and diff errors.
 - `useSearchStore()` owns the renderer-side search query, mode, active filters, grouped results, global palette state, pinned drawer state, and selected result cursor.
+- `useCursorStore()` owns persisted cursor surface state, the active surface id, currently mounted/open surface handlers, geometry-based surface movement, global cursor key parsing, and recorded cursor-position history.
+
+`App.vue` owns the shell around the workspace: top bar, repository picker, settings dialog, changed-file tree, pinned search drawer, global keyboard suppression, and search result routing. The main workspace surface is route-driven through `<RouterView />`. Routes live in `app/src/routes.ts` and currently cover review overview, single-file diff, and folder diff. Routed views read store-backed state directly instead of receiving repository, diff, review, and target state through `App.vue` props.
+
+Cursor surfaces are registered by the mounted Vue components that render them. `ChangedFilesPane.vue`, `DiffViewer.vue`, `SearchResultsDrawer.vue`, `ReviewOverviewView.vue`, and `FolderDiffViewer.vue` each register a surface id, persisted position state, live rectangle lookup, and optional motion/command handlers. The cursor store keeps the persisted surface state in a plain map even after a surface unmounts, while a separate mounted-surface set decides which surfaces participate in geometry-based movement. Surface ids encode enough route information for restoration, such as `diff:<encoded file id>:old`, `diff:<encoded file id>:new`, and `folder-diff:<encoded folder path>`.
+
+Single-file diffs keep their row/column/side cursor math in `useDiffCursor()`, but keyboard dispatch is global through `useCursorStore()`. Diff views register side-specific surfaces for the old and new sides that exist in the rendered model. App surface movement remains separate from diff-side movement: `<C-w>h` and `<C-w>l` move between cursor surfaces and skip the opposite side of the same file, while the dedicated diff-side actions move between old and new sides inside the current diff. Surface movement into an already visible diff restores the old cursor only when it is still visible without scrolling. Reopening a previously opened file restores the cursor location and lets the diff viewer reveal that line instead of restoring an exact scroll offset, while opening a new file starts at the top and prefers the new side in split mode. Significant diff motions record cloned surface snapshots into the cursor store's position history so `<C-o>` and `<C-i>` can restore earlier positions, with multiple entries per file and side and route restoration back to the owning file when the target surface is not currently mounted.
+
+Workspace route helpers live in `app/src/lib/workspaceRoutes.ts`. They normalize route names, catch-all file/folder path params, search-result reveal query parameters, and sidebar path sorting so route-producing surfaces use the same conventions.
 
 The main user flow is:
 
 1. The top bar emits `open-repository`.
 2. `repo.pickAndOpenRepository()` asks Electron for a directory.
 3. `repo.openRepository(path)` sends `openRepository`, then `listChangedFiles`.
-4. The first changed file becomes `activeFileId`.
-5. `App.vue` watches `activeFileId` and calls `diff.loadDiff(fileId)`.
-6. `diff.loadDiff()` sends `getDiffRenderModel` with the current view/context options.
-7. `DiffViewer.vue` renders the returned rows.
+4. `App.vue` routes the workspace to the review overview for the opened repository.
+5. Selecting a file or folder updates the workspace route.
+6. `DiffViewer.vue` watches the file route param and calls `diff.loadDiff(fileId)`.
+7. `diff.loadDiff()` sends `getDiffRenderModel` with the current view/context options.
+8. `DiffViewer.vue` renders the returned rows.
 
 Changed-file search is split by surface. `ChangedFilesPane.vue` keeps a local renderer-backed sidebar query/filter state so command-palette searches do not filter the file tree. `SearchPalette.vue` and `SearchResultsDrawer.vue` share the palette result model for file/path hits, full changed-file content hits, comments, and pinned result walking. Palette and drawer execution is core-backed: `useSearchStore()` keeps query text, mode, filters, selected index, history, and pinned drawer state locally, then starts a debounced `startSearch` RPC and appends streamed `search/results` notifications for the active `searchId`. The renderer cancels stale searches with `cancelSearch` and ignores events whose `searchId` no longer matches. Symbol extraction is not implemented yet and currently returns no streamed results.
 
@@ -250,7 +264,11 @@ If a file language is detected but no grammar is installed, the UI can show an i
 During installation, the core sends JSON-RPC notifications like:
 
 ```json
-{"jsonrpc":"2.0","method":"treeSitter/installProgress","params":{"language":"typescript","step":"Building parser library"}}
+{
+  "jsonrpc": "2.0",
+  "method": "treeSitter/installProgress",
+  "params": { "language": "typescript", "step": "Building parser library" }
+}
 ```
 
 Electron forwards these notifications to the renderer via `core:event`.

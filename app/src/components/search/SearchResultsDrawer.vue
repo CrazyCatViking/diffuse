@@ -1,11 +1,13 @@
 <template>
   <Panel
     v-if="search.drawerOpen"
+    ref="rootRef"
     class="search-drawer"
     padding="none"
     role="complementary"
     aria-label="Pinned search results"
-    @keydown="onKeydown"
+    :class="{ 'navigation-active': cursor.isActiveSurface(pinnedResultsSurfaceId) }"
+    @pointerdown.capture="cursor.setActiveSurface(pinnedResultsSurfaceId)"
   >
     <header class="drawer-header">
       <div class="drawer-title">
@@ -112,13 +114,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import Panel from '../ui/Panel.vue';
 import TreeList, { type TreeListNode } from '../ui/TreeList.vue';
 import SearchMatchHighlight from './SearchMatchHighlight.vue';
+import {
+  pinnedResultsSurfaceId,
+  type CursorActionContext,
+  type CursorCommand,
+  type CursorMotion,
+  type PinnedResultsSurface,
+  useCursorStore,
+} from '../../stores/cursor';
 import { useSearchStore } from '../../stores/search';
 import type { ContentSearchResult, SearchMatchRange, SearchResult, SymbolSearchResult } from '../../lib/search/searchTypes';
 
@@ -148,8 +158,21 @@ const emit = defineEmits<{
 }>();
 
 const search = useSearchStore();
+const cursor = useCursorStore();
 const collapsedGroups = ref(new Set<string>());
 const drawerResultsRef = ref<HTMLElement | null>(null);
+const rootRef = ref<{ $el?: Element } | null>(null);
+const pinnedResultsSurface = cursor.registerSurface<PinnedResultsSurface>(
+  { id: pinnedResultsSurfaceId, type: 'pinned-results', position: { selectedIndex: 0 } },
+  {
+    id: pinnedResultsSurfaceId,
+    getRect: () => (rootRef.value?.$el instanceof HTMLElement ? rootRef.value.$el.getBoundingClientRect() : undefined),
+    isEligible: () => search.drawerOpen,
+    activate: () => (rootRef.value?.$el instanceof HTMLElement ? rootRef.value.$el.focus({ preventScroll: true }) : undefined),
+    onMotion: handleSurfaceMotion,
+    onCommand: handleSurfaceCommand,
+  },
+);
 
 const pinnedGroups = computed<PinnedGroup[]>(() => {
   const fileEntries = search.pinnedResultEntries.filter((entry) => entry.result.kind === 'file');
@@ -190,29 +213,34 @@ const displayedSelectedPosition = computed(() => {
 
 const selectAndPreview = (index: number) => {
   search.selectResult(index);
+  syncPinnedSurfacePosition();
   previewSelected();
   void revealSelectedPinnedResult('nearest');
 };
 
-const previousAndPreview = () => {
-  moveDisplayedSelection(-1);
+const previousAndPreview = (count = 1) => {
+  moveDisplayedSelection(-1, count);
   previewSelected();
   void revealSelectedPinnedResult('previous');
 };
 
-const nextAndPreview = () => {
-  moveDisplayedSelection(1);
+const nextAndPreview = (count = 1) => {
+  moveDisplayedSelection(1, count);
   previewSelected();
   void revealSelectedPinnedResult('next');
 };
 
-const moveDisplayedSelection = (direction: 1 | -1) => {
+const moveDisplayedSelection = (direction: 1 | -1, count = 1) => {
   const entries = displayedPinnedEntries.value;
   if (entries.length === 0) return;
 
-  const currentPosition = entries.findIndex((entry) => entry.index === search.selectedIndex);
-  const nextPosition = currentPosition === -1 ? (direction > 0 ? 0 : entries.length - 1) : (currentPosition + direction + entries.length) % entries.length;
-  search.selectResult(entries[nextPosition]?.index ?? entries[0].index);
+  for (let step = 0; step < Math.max(1, count); step += 1) {
+    const currentPosition = entries.findIndex((entry) => entry.index === search.selectedIndex);
+    const nextPosition =
+      currentPosition === -1 ? (direction > 0 ? 0 : entries.length - 1) : (currentPosition + direction + entries.length) % entries.length;
+    search.selectResult(entries[nextPosition]?.index ?? entries[0].index);
+  }
+  syncPinnedSurfacePosition();
 };
 
 const previewSelected = () => {
@@ -377,27 +405,42 @@ const entryRanges = (entry: PinnedEntry): SearchMatchRange[] => {
   return entry.result.matches.find((match) => match.field === 'body')?.ranges ?? [];
 };
 
-const onKeydown = (event: KeyboardEvent) => {
-  if (event.key === ']') {
-    event.preventDefault();
-    nextAndPreview();
-    return;
+function handleSurfaceMotion(motion: CursorMotion, context: CursorActionContext) {
+  if (motion === 'moveDown') {
+    nextAndPreview(context.count);
+    return true;
   }
-  if (event.key === '[') {
-    event.preventDefault();
-    previousAndPreview();
-    return;
+  if (motion === 'moveUp') {
+    previousAndPreview(context.count);
+    return true;
   }
-  if (event.key === 'Enter') {
-    event.preventDefault();
+  return false;
+}
+
+function handleSurfaceCommand(command: CursorCommand) {
+  if (command === 'activate') {
     openSelected();
-    return;
+    return true;
   }
-  if (event.key === 'Escape') {
-    event.preventDefault();
+  if (command === 'clear') {
     search.closeDrawer();
+    return true;
   }
+  return false;
+}
+
+const syncPinnedSurfacePosition = () => {
+  pinnedResultsSurface.value.position = {
+    resultId: search.pinnedSelectedResult?.id,
+    selectedIndex: search.selectedIndex,
+  };
 };
+
+watch(() => [search.selectedIndex, search.pinnedSelectedResult?.id] as const, syncPinnedSurfacePosition, { immediate: true });
+
+onBeforeUnmount(() => {
+  cursor.unregisterSurface(pinnedResultsSurfaceId);
+});
 </script>
 
 <style scoped lang="scss">
@@ -412,6 +455,12 @@ const onKeydown = (event: KeyboardEvent) => {
   border-width: 0 0 0 1px;
   border-radius: 0;
   box-shadow: var(--shadow-inset-highlight);
+
+  &.navigation-active {
+    box-shadow:
+      inset 3px 0 0 var(--color-border-focus),
+      var(--shadow-inset-highlight);
+  }
 }
 
 .drawer-header,

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type Input, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
@@ -124,6 +124,7 @@ function createWindow(launchRepository?: string): WindowState {
   window.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error(`Failed to load preload script ${preloadPath}:`, error);
   });
+  installKeyboardDefaultGuards(window);
 
   window.on('closed', () => {
     state.reviewAgentRunner?.dispose();
@@ -139,6 +140,51 @@ function createWindow(launchRepository?: string): WindowState {
 
   getCore(state);
   return state;
+}
+
+function installKeyboardDefaultGuards(window: BrowserWindow): void {
+  window.webContents.on('before-input-event', (event, input) => {
+    if (shouldToggleDevTools(input)) {
+      event.preventDefault();
+      toggleDevTools(window);
+      return;
+    }
+
+    if (shouldBlockElectronDefaultShortcut(input)) event.preventDefault();
+  });
+}
+
+function shouldToggleDevTools(input: Input): boolean {
+  if (input.isComposing) return false;
+
+  const key = input.key.toLowerCase();
+  if (key === 'f12') return true;
+  if (input.control && input.shift && (key === 'i' || key === 'j' || key === 'c')) return true;
+  return input.meta && input.alt && (key === 'i' || key === 'j' || key === 'c');
+}
+
+function toggleDevTools(window: BrowserWindow): void {
+  if (window.webContents.isDevToolsOpened()) {
+    window.webContents.closeDevTools();
+    return;
+  }
+
+  window.webContents.openDevTools({ mode: 'detach' });
+}
+
+function shouldBlockElectronDefaultShortcut(input: Input): boolean {
+  if (input.isComposing) return false;
+
+  const key = input.key.toLowerCase();
+  const command = input.control || input.meta;
+  if (key === 'browserback' || key === 'browserforward') return true;
+  if (input.alt && (key === 'arrowleft' || key === 'arrowright')) return true;
+  if (key === 'f5' || key === 'f11' || key === 'f12') return true;
+  if (!command) return false;
+
+  if (key === 'r') return true;
+  if (input.shift && (key === 'i' || key === 'j' || key === 'c')) return true;
+  return key === '+' || key === '=' || key === '-' || key === '_' || key === '0';
 }
 
 function parseLaunchRepository(args: string[], cwd = process.cwd()): string | undefined {

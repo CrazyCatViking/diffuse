@@ -26,6 +26,8 @@ export const diffKeybindingActionIds = [
   'nextCursorPosition',
   'splitLeft',
   'splitRight',
+  'diffSideLeft',
+  'diffSideRight',
   'visualChar',
   'visualLine',
   'clear',
@@ -86,8 +88,30 @@ export const diffKeybindingDefinitions: DiffKeybindingDefinition[] = [
     group: 'Navigation',
   },
   { id: 'nextCursorPosition', label: 'Next cursor position', description: 'Jump forward through cursor history.', group: 'Navigation' },
-  { id: 'splitLeft', label: 'Split left', description: 'Move to the old-side split pane.', group: 'Navigation' },
-  { id: 'splitRight', label: 'Split right', description: 'Move to the new-side split pane.', group: 'Navigation' },
+  {
+    id: 'splitLeft',
+    label: 'Move surface left',
+    description: 'Move to the cursor surface to the left.',
+    group: 'Navigation',
+  },
+  {
+    id: 'splitRight',
+    label: 'Move surface right',
+    description: 'Move to the cursor surface to the right.',
+    group: 'Navigation',
+  },
+  {
+    id: 'diffSideLeft',
+    label: 'Move diff side left',
+    description: 'Move to the old side of a split diff without leaving the diff surface.',
+    group: 'Navigation',
+  },
+  {
+    id: 'diffSideRight',
+    label: 'Move diff side right',
+    description: 'Move to the new side of a split diff without leaving the diff surface.',
+    group: 'Navigation',
+  },
   { id: 'visualChar', label: 'Visual selection', description: 'Start character-wise visual selection.', group: 'Selection' },
   { id: 'visualLine', label: 'Visual line selection', description: 'Start line-wise visual selection.', group: 'Selection' },
   { id: 'clear', label: 'Clear', description: 'Clear visual mode, pending keys, or hover.', group: 'Selection' },
@@ -124,6 +148,8 @@ export const defaultDiffKeybindings: DiffKeybindingMap = {
   nextCursorPosition: ['<C-i>'],
   splitLeft: ['<C-w>h'],
   splitRight: ['<C-w>l'],
+  diffSideLeft: ['<C-w><Left>'],
+  diffSideRight: ['<C-w><Right>'],
   visualChar: ['v'],
   visualLine: ['V'],
   clear: ['<Esc>'],
@@ -139,7 +165,31 @@ export const normalizeDiffKeybindingList = (value: string): string[] => {
     .filter((binding) => binding.length > 0);
 };
 
-export const normalizeDiffKeybinding = (value: string): string => value.trim().replace(/\s+/g, '');
+export const normalizeDiffKeybinding = (value: string): string => {
+  return value
+    .trim()
+    .replace(/\b(?:ctrl|control)\s*\+\s*([a-z])\b/gi, (_, key: string) => `<C-${key.toLowerCase()}>`)
+    .replace(/\s+/g, '');
+};
+
+export const diffKeyTokenForEvent = (event: KeyboardEvent): string | undefined => {
+  if (event.metaKey || event.altKey) return undefined;
+  if (event.ctrlKey) {
+    if (event.key === 'Tab') return '<C-i>';
+    if (event.key === 'Backspace') return '<C-h>';
+    const key = event.key.toLowerCase();
+    if (/^[a-z]$/.test(key)) return `<C-${key}>`;
+    return undefined;
+  }
+
+  if (event.key === 'ArrowLeft') return '<Left>';
+  if (event.key === 'ArrowRight') return '<Right>';
+  if (event.key === 'ArrowUp') return '<Up>';
+  if (event.key === 'ArrowDown') return '<Down>';
+  if (event.key === 'Escape') return '<Esc>';
+  if (event.key.length === 1) return event.key;
+  return undefined;
+};
 
 export const parseDiffKeybinding = (binding: string): string[] | undefined => {
   const normalized = normalizeDiffKeybinding(binding);
@@ -236,7 +286,8 @@ const labelForDiffKeybindingAction = (action: DiffKeybindingAction) => {
 const normalizeSpecialToken = (token: string) => {
   const content = token.slice(1, -1);
   const lower = content.toLowerCase();
-  if (lower.startsWith('c-') && lower.length === 3) return `<C-${lower[2]}>`;
+  const controlToken = lower.match(/^(?:c|ctrl|control)-([a-z])$/);
+  if (controlToken) return `<C-${controlToken[1]}>`;
   if (lower === 'left') return '<Left>';
   if (lower === 'right') return '<Right>';
   if (lower === 'up') return '<Up>';
