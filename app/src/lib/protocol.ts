@@ -42,6 +42,7 @@ export type DiffContextMode = 'diff' | 'full';
 export type DiffRenderOptions = {
   mode: DiffViewMode;
   context: DiffContextMode;
+  intelligence?: 'basic' | 'full';
 };
 
 export type DiffRenderModel = {
@@ -57,6 +58,7 @@ export type DiffAnnotations = {
   columnUnit: 'utf16' | string;
   linePairs: DiffLinePair[];
   changeGroups: DiffChangeGroup[];
+  anchorRemaps?: DiffAnchorRemap[];
 };
 
 export type DiffLinePair = {
@@ -70,13 +72,46 @@ export type DiffLinePair = {
 
 export type DiffChangeGroup = {
   id: string;
-  kind: 'moved-block' | 'symbol-change' | string;
+  kind:
+    | 'moved-block'
+    | 'moved-and-edited-block'
+    | 'symbol-change'
+    | 'identifier-rename'
+    | 'formatter-only'
+    | 'import-reorder'
+    | 'wrapper-added'
+    | 'argument-change'
+    | 'extracted-function'
+    | 'inlined-function'
+    | 'call-site-update'
+    | 'condition-change'
+    | 'condition-inverted'
+    | 'control-flow-change'
+    | 'return-value-change'
+    | 'assignment-change'
+    | 'cross-file-move'
+    | string;
   oldStartLine?: number;
   oldEndLine?: number;
   newStartLine?: number;
   newEndLine?: number;
   confidence: number;
   symbol?: string;
+  summary?: string;
+  relatedFile?: string;
+  oldName?: string;
+  newName?: string;
+};
+
+export type DiffAnchorRemap = {
+  oldLine: number;
+  newLine: number;
+  oldRow?: number;
+  newRow?: number;
+  kind: string;
+  confidence: number;
+  summary?: string;
+  relatedFile?: string;
 };
 
 export type DiffTokenSpanKind = 'inserted-token' | 'deleted-token' | 'replaced-token' | 'whitespace' | string;
@@ -380,4 +415,5 @@ export type DiffRow = {
   changeRole?: 'moved-from' | 'moved-to' | string;
   changeConfidence?: number;
   symbol?: string;
+  semanticSummary?: string;
 };

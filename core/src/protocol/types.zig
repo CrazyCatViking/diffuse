@@ -90,11 +90,14 @@ pub const DiffAnnotations = struct {
     columnUnit: []const u8,
     linePairs: []const DiffLinePair,
     changeGroups: []const DiffChangeGroup,
+    anchorRemaps: []const DiffAnchorRemap,
 };
 
 pub const DiffLinePair = diff.DiffLinePair;
 
 pub const DiffChangeGroup = diff.DiffChangeGroup;
+
+pub const DiffAnchorRemap = diff.DiffAnchorRemap;
 
 pub const DiffTokenSpan = diff.DiffTokenSpan;
 
@@ -242,6 +245,7 @@ pub const DiffRow = struct {
     changeRole: ?[]const u8 = null,
     changeConfidence: ?f32 = null,
     symbol: ?[]const u8 = null,
+    semanticSummary: ?[]const u8 = null,
 };
 
 pub fn versionInfo() VersionInfo {
@@ -302,6 +306,7 @@ pub fn diffRow(row: diff.DiffRow) DiffRow {
         .changeRole = row.change_role,
         .changeConfidence = row.change_confidence,
         .symbol = row.symbol,
+        .semanticSummary = row.semantic_summary,
     };
 }
 
@@ -310,6 +315,7 @@ pub fn diffAnnotations(value: diff.DiffAnnotations) DiffAnnotations {
         .columnUnit = value.column_unit,
         .linePairs = value.line_pairs.items,
         .changeGroups = value.change_groups.items,
+        .anchorRemaps = value.anchor_remaps.items,
     };
 }
 

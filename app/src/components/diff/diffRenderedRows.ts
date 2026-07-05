@@ -168,17 +168,38 @@ const diffHighlightKind = (kind: DiffTokenSpan['kind']): CodeTextHighlight['kind
 
 const diffClassName = (row: DiffRow | undefined, side: SyntaxSide): string | undefined => {
   if (!row?.changeRole) return undefined;
-  if (row.changeRole === 'moved-from' && side === 'old') return 'diff-moved diff-moved-from';
-  if (row.changeRole === 'moved-to' && side === 'new') return 'diff-moved diff-moved-to';
+  if (
+    (row.changeRole === 'moved-from' || row.changeRole === 'moved-edited-from' || row.changeRole === 'cross-file-move-from') &&
+    side === 'old'
+  )
+    return 'diff-moved diff-moved-from';
+  if ((row.changeRole === 'moved-to' || row.changeRole === 'moved-edited-to' || row.changeRole === 'cross-file-move-to') && side === 'new')
+    return 'diff-moved diff-moved-to';
   return undefined;
 };
 
 const diffExplanation = (row: DiffRow, group: DiffChangeGroup | undefined, spans: DiffTokenSpan[] | undefined): string | undefined => {
   const parts: string[] = [];
+  if (row.semanticSummary) parts.push(row.semanticSummary);
+  if (group?.summary && !parts.includes(group.summary)) parts.push(group.summary);
   if (row.changeRole === 'moved-from') {
     parts.push(group?.newStartLine ? `Moved to new ${lineRange(group.newStartLine, group.newEndLine)}` : 'Moved from this location');
   } else if (row.changeRole === 'moved-to') {
     parts.push(group?.oldStartLine ? `Moved from old ${lineRange(group.oldStartLine, group.oldEndLine)}` : 'Moved to this location');
+  } else if (row.changeRole === 'moved-edited-from') {
+    parts.push(
+      group?.newStartLine
+        ? `Moved and edited to new ${lineRange(group.newStartLine, group.newEndLine)}`
+        : 'Moved and edited from this location',
+    );
+  } else if (row.changeRole === 'moved-edited-to') {
+    parts.push(
+      group?.oldStartLine ? `Moved and edited from old ${lineRange(group.oldStartLine, group.oldEndLine)}` : 'Moved here with edits',
+    );
+  } else if (group?.kind === 'cross-file-move' && group.relatedFile) {
+    parts.push(`Related file: ${group.relatedFile}`);
+  } else if (group?.kind === 'identifier-rename' && group.oldName && group.newName) {
+    parts.push(`Identifier rename: ${group.oldName} -> ${group.newName}`);
   } else if (group?.kind === 'symbol-change') {
     parts.push(`Related change in ${group.symbol ?? 'this symbol'}`);
   }

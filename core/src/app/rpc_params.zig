@@ -9,7 +9,9 @@ const types = @import("../protocol/types.zig");
 pub const DiffRenderOptions = struct {
     mode: []const u8,
     context: []const u8,
+    intelligence: []const u8,
     diff_context: diff.DiffContextMode,
+    enrichment: diff.DiffEnrichmentMode,
 };
 
 pub fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !?[]u8 {
@@ -20,10 +22,13 @@ pub fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.
 
 pub fn getDiffRenderOptions(request: json_rpc.Request) !DiffRenderOptions {
     const context = try getDiffContextText(request);
+    const intelligence = (try getDiffOptionEnum(request, "intelligence", &.{ "basic", "full" })) orelse "full";
     return .{
         .mode = (try getDiffOptionEnum(request, "mode", &.{ "split", "inline" })) orelse "split",
         .context = context,
+        .intelligence = intelligence,
         .diff_context = diffContextMode(context),
+        .enrichment = diffEnrichmentMode(intelligence),
     };
 }
 
@@ -37,6 +42,10 @@ pub fn getDiffContextMode(request: json_rpc.Request) !diff.DiffContextMode {
 
 fn diffContextMode(context: []const u8) diff.DiffContextMode {
     return if (std.mem.eql(u8, context, "full")) .full else .diff;
+}
+
+fn diffEnrichmentMode(intelligence: []const u8) diff.DiffEnrichmentMode {
+    return if (std.mem.eql(u8, intelligence, "basic")) .basic else .full;
 }
 
 fn getDiffOptionEnum(request: json_rpc.Request, name: []const u8, allowed: []const []const u8) !?[]const u8 {
@@ -284,7 +293,18 @@ test "rpc params validates diff render options" {
     const options = try getDiffRenderOptions(request);
     try std.testing.expectEqualStrings("inline", options.mode);
     try std.testing.expectEqualStrings("full", options.context);
+    try std.testing.expectEqualStrings("full", options.intelligence);
     try std.testing.expectEqual(diff.DiffContextMode.full, options.diff_context);
+    try std.testing.expectEqual(diff.DiffEnrichmentMode.full, options.enrichment);
+}
+
+test "rpc params validates basic diff intelligence option" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getDiffRenderModel\",\"params\":{\"options\":{\"intelligence\":\"basic\"}}}");
+    defer request.deinit();
+
+    const options = try getDiffRenderOptions(request);
+    try std.testing.expectEqualStrings("basic", options.intelligence);
+    try std.testing.expectEqual(diff.DiffEnrichmentMode.basic, options.enrichment);
 }
 
 test "rpc params rejects invalid diff render option enum" {

@@ -100,6 +100,9 @@ const diagnosticsByFile = shallowRef<Record<string, LspDiagnostic[]>>({});
 const draftBody = ref('');
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
+const maxEnrichedModelCacheEntries = 80;
+const enrichedModelCache = new Map<string, DiffRenderModel>();
+const pendingEnrichment = new Map<string, Promise<DiffRenderModel>>();
 let loadGeneration = 0;
 let activeFolderSurfaceId: string | undefined;
 
@@ -358,7 +361,7 @@ const emptyModel = (): DiffRenderModel => ({
   context: contextMode.value,
   syntax: { grammarInstalled: false, highlightsInstalled: false },
   rows: [],
-  annotations: { columnUnit: 'utf16', linePairs: [], changeGroups: [] },
+  annotations: { columnUnit: 'utf16', linePairs: [], changeGroups: [], anchorRemaps: [] },
 });
 
 const fileSideKey = (fileId: string, side: SyntaxSide) => `${fileId}:${side}`;
@@ -386,12 +389,21 @@ const loadFolderDiff = async () => {
   try {
     const loaded: DiffRenderModel[] = [];
     for (const file of files.value) {
-      const model = await client.getDiffRenderModel(file.id, { mode: viewMode.value, context: contextMode.value }, target.value);
+      const cacheKey = folderDiffCacheKey(file.id, file.signature);
+      const cached = enrichedModelCache.get(cacheKey);
+      const model =
+        cached ??
+        (await client.getDiffRenderModel(
+          file.id,
+          { mode: viewMode.value, context: contextMode.value, intelligence: 'basic' },
+          target.value,
+        ));
       if (generation !== loadGeneration) return;
       loaded.push(markRaw(model));
       models.value = [...loaded];
       void loadSyntaxForModel(model, generation);
       void loadDiagnosticsForModel(model, generation);
+      if (!cached) void loadEnrichedFolderModel(file.id, file.signature, generation);
     }
   } catch (err) {
     if (generation === loadGeneration) error.value = err instanceof Error ? err.message : JSON.stringify(err);
@@ -399,6 +411,67 @@ const loadFolderDiff = async () => {
     if (generation === loadGeneration) loading.value = false;
   }
 };
+
+const loadEnrichedFolderModel = async (fileId: string, signature: string, generation: number) => {
+  const cacheKey = folderDiffCacheKey(fileId, signature);
+  try {
+    const enriched = await enrichedFolderModel(fileId, cacheKey);
+    if (generation !== loadGeneration || cacheKey !== folderDiffCacheKey(fileId, signature)) return;
+
+    const index = models.value.findIndex((model) => model.fileId === fileId);
+    if (index === -1) return;
+    const next = [...models.value];
+    next[index] = markRaw(enriched);
+    models.value = next;
+    void loadSyntaxForModel(enriched, generation);
+    void loadDiagnosticsForModel(enriched, generation);
+  } catch {
+    // Basic folder diffs stay usable when semantic enrichment fails.
+  }
+};
+
+const enrichedFolderModel = async (fileId: string, cacheKey: string) => {
+  const cached = enrichedModelCache.get(cacheKey);
+  if (cached) return cached;
+
+  const pending =
+    pendingEnrichment.get(cacheKey) ??
+    client
+      .getDiffRenderModel(fileId, { mode: viewMode.value, context: contextMode.value, intelligence: 'full' }, target.value)
+      .then((model) => {
+        rememberEnrichedModel(cacheKey, model);
+        return model;
+      })
+      .finally(() => pendingEnrichment.delete(cacheKey));
+  pendingEnrichment.set(cacheKey, pending);
+  return pending;
+};
+
+const rememberEnrichedModel = (cacheKey: string, model: DiffRenderModel) => {
+  enrichedModelCache.delete(cacheKey);
+  enrichedModelCache.set(cacheKey, markRaw(model));
+  while (enrichedModelCache.size > maxEnrichedModelCacheEntries) {
+    const oldest = enrichedModelCache.keys().next().value;
+    if (!oldest) break;
+    enrichedModelCache.delete(oldest);
+  }
+};
+
+const folderDiffCacheKey = (fileId: string, signature?: string) =>
+  JSON.stringify({
+    root: repo.repository?.root,
+    head: repo.repository?.head,
+    fileId,
+    signature,
+    mode: viewMode.value,
+    context: contextMode.value,
+    target: {
+      base: target.value.base,
+      compare: target.value.compare,
+      includeStaged: target.value.includeStaged,
+      includeUnstaged: target.value.includeUnstaged,
+    },
+  });
 
 const loadDiagnosticsForModel = async (model: DiffRenderModel, generation: number) => {
   if (!supportsLspFile(model.fileId)) return;

@@ -24,7 +24,7 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
     defer snapshot.deinit();
     const repo = snapshot.toRepository();
 
-    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = options.diff_context, .grammar_root = grammar_root, .target = target });
+    var model = try diff.getDiffRenderModel(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = options.diff_context, .enrichment = options.enrichment, .grammar_root = grammar_root, .target = target });
     defer model.deinit(runtime.allocator);
 
     var rows: std.ArrayList(types.DiffRow) = .empty;

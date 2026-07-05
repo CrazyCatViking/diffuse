@@ -753,11 +753,10 @@ fn collectStructuralSymbols(allocator: std.mem.Allocator, source: []const u8, no
         }
     }
 
-    var cursor = node.walk();
-    defer cursor.destroy();
-    const children = try node.namedChildren(&cursor, allocator);
-    defer allocator.free(children);
-    for (children) |child| try collectStructuralSymbols(allocator, source, child, depth + 1, result);
+    var index: u32 = 0;
+    while (index < node.namedChildCount()) : (index += 1) {
+        if (node.namedChild(index)) |child| try collectStructuralSymbols(allocator, source, child, depth + 1, result);
+    }
 }
 
 fn isStructuralNode(node: ts.Node) bool {

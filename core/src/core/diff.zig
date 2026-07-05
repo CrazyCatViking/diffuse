@@ -35,20 +35,45 @@ pub const DiffChangeGroup = struct {
     newEndLine: ?u32 = null,
     confidence: f32,
     symbol: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    relatedFile: ?[]const u8 = null,
+    oldName: ?[]const u8 = null,
+    newName: ?[]const u8 = null,
+};
+
+pub const DiffAnchorRemap = struct {
+    oldLine: u32,
+    newLine: u32,
+    oldRow: ?u32 = null,
+    newRow: ?u32 = null,
+    kind: []const u8,
+    confidence: f32,
+    summary: ?[]const u8 = null,
+    relatedFile: ?[]const u8 = null,
 };
 
 pub const DiffAnnotations = struct {
     column_unit: []const u8 = "utf16",
     line_pairs: std.ArrayList(DiffLinePair) = .empty,
     change_groups: std.ArrayList(DiffChangeGroup) = .empty,
+    anchor_remaps: std.ArrayList(DiffAnchorRemap) = .empty,
 
     pub fn deinit(self: *DiffAnnotations, allocator: std.mem.Allocator) void {
         for (self.change_groups.items) |group| {
             allocator.free(group.id);
             if (group.symbol) |symbol| allocator.free(symbol);
+            if (group.summary) |summary| allocator.free(summary);
+            if (group.relatedFile) |related_file| allocator.free(related_file);
+            if (group.oldName) |old_name| allocator.free(old_name);
+            if (group.newName) |new_name| allocator.free(new_name);
+        }
+        for (self.anchor_remaps.items) |remap| {
+            if (remap.summary) |summary| allocator.free(summary);
+            if (remap.relatedFile) |related_file| allocator.free(related_file);
         }
         self.line_pairs.deinit(allocator);
         self.change_groups.deinit(allocator);
+        self.anchor_remaps.deinit(allocator);
     }
 };
 
@@ -68,6 +93,7 @@ pub const DiffRow = struct {
     change_role: ?[]const u8 = null,
     change_confidence: ?f32 = null,
     symbol: ?[]const u8 = null,
+    semantic_summary: ?[]const u8 = null,
 
     pub fn kindString(self: DiffRow) []const u8 {
         return switch (self.kind) {
@@ -122,8 +148,14 @@ pub const DiffContextMode = enum {
     full,
 };
 
+pub const DiffEnrichmentMode = enum {
+    basic,
+    full,
+};
+
 pub const DiffOptions = struct {
     context: DiffContextMode = .diff,
+    enrichment: DiffEnrichmentMode = .full,
     grammar_root: ?[]const u8 = null,
     target: repository.DiffTarget = .{},
 };
@@ -145,8 +177,10 @@ pub fn getDiffRenderModel(allocator: std.mem.Allocator, io: std.Io, repo_root: [
     errdefer model.deinit(allocator);
 
     try parseUnifiedDiff(allocator, output, &model.rows);
-    applyStructuralSymbols(allocator, io, repo_root, path, options, model.syntax_status, &model.rows) catch {};
-    try enrichDiffRows(allocator, &model.rows, &model.annotations);
+    if (options.enrichment == .full) {
+        applyStructuralSymbols(allocator, io, repo_root, path, options, model.syntax_status, &model.rows) catch {};
+        try enrichDiffRowsWithRepo(allocator, io, repo_root, path, options, &model.rows, &model.annotations);
+    }
     return model;
 }
 
@@ -492,7 +526,14 @@ const ChangeBlock = struct {
 fn enrichDiffRows(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations) !void {
     try addLinePairsAndTokenSpans(allocator, rows, annotations);
     try addMovedGroups(allocator, rows, annotations);
+    try addMovedAndEditedGroups(allocator, rows, annotations);
+    try addSemanticRelationshipGroups(allocator, rows, annotations);
     try addSymbolGroups(allocator, rows, annotations);
+}
+
+fn enrichDiffRowsWithRepo(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, options: DiffOptions, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations) !void {
+    try enrichDiffRows(allocator, rows, annotations);
+    addCrossFileGroups(allocator, io, repo_root, path, options, rows, annotations) catch {};
 }
 
 fn addLinePairsAndTokenSpans(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations) !void {
@@ -530,6 +571,94 @@ fn addLinePairsAndTokenSpans(allocator: std.mem.Allocator, rows: *std.ArrayList(
     }
 }
 
+fn addSeparatedImportReorderGroups(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, group_index: *u32) !void {
+    var start: usize = 0;
+    while (start < rows.items.len) {
+        while (start < rows.items.len and rows.items[start].kind == .hunk) : (start += 1) {}
+        const end = hunkBodyEnd(rows.items, start);
+        if (end > start) try classifySeparatedImportReorderRange(allocator, rows, annotations, start, end, group_index);
+        start = end + 1;
+    }
+}
+
+fn hunkBodyEnd(rows: []const DiffRow, start: usize) usize {
+    var index = start;
+    while (index < rows.len and rows[index].kind != .hunk) : (index += 1) {}
+    return index;
+}
+
+fn classifySeparatedImportReorderRange(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, start: usize, end: usize, group_index: *u32) !void {
+    var deleted_count: usize = 0;
+    var added_count: usize = 0;
+    var index = start;
+    while (index < end) : (index += 1) {
+        if (rows.items[index].kind == .deleted and normalizedImportLine(rowText(rows.items[index], .old)) != null) deleted_count += 1;
+        if (rows.items[index].kind == .added and normalizedImportLine(rowText(rows.items[index], .new)) != null) added_count += 1;
+    }
+    if (deleted_count == 0 or deleted_count != added_count) return;
+
+    var matched = try allocator.alloc(bool, added_count);
+    defer allocator.free(matched);
+    @memset(matched, false);
+    index = start;
+    while (index < end) : (index += 1) {
+        if (rows.items[index].kind != .deleted) continue;
+        const old_line = normalizedImportLine(rowText(rows.items[index], .old)) orelse continue;
+        var added_seen: usize = 0;
+        var found = false;
+        var added_index = start;
+        while (added_index < end) : (added_index += 1) {
+            if (rows.items[added_index].kind != .added) continue;
+            const new_line = normalizedImportLine(rowText(rows.items[added_index], .new)) orelse continue;
+            if (!matched[added_seen] and std.mem.eql(u8, old_line, new_line)) {
+                matched[added_seen] = true;
+                found = true;
+                break;
+            }
+            added_seen += 1;
+        }
+        if (!found) return;
+    }
+
+    const group_id = try std.fmt.allocPrint(allocator, "semantic-{d}", .{group_index.*});
+    defer allocator.free(group_id);
+    group_index.* += 1;
+    const summary = "Imports were reordered without changing the imported modules";
+    var old_start_line: ?u32 = null;
+    var old_end_line: ?u32 = null;
+    var new_start_line: ?u32 = null;
+    var new_end_line: ?u32 = null;
+    index = start;
+    while (index < end) : (index += 1) {
+        if (rows.items[index].kind == .deleted and normalizedImportLine(rowText(rows.items[index], .old)) != null) {
+            try setRowGroupIfEmpty(allocator, &rows.items[index], group_id, "import-reorder", 0.9);
+            try appendRowSummary(allocator, &rows.items[index], summary);
+            if (rows.items[index].old_line) |line| {
+                if (old_start_line == null) old_start_line = line;
+                old_end_line = line;
+            }
+        }
+        if (rows.items[index].kind == .added and normalizedImportLine(rowText(rows.items[index], .new)) != null) {
+            try setRowGroupIfEmpty(allocator, &rows.items[index], group_id, "import-reorder", 0.9);
+            try appendRowSummary(allocator, &rows.items[index], summary);
+            if (rows.items[index].new_line) |line| {
+                if (new_start_line == null) new_start_line = line;
+                new_end_line = line;
+            }
+        }
+    }
+    try annotations.change_groups.append(allocator, .{
+        .id = try allocator.dupe(u8, group_id),
+        .kind = "import-reorder",
+        .oldStartLine = old_start_line,
+        .oldEndLine = old_end_line,
+        .newStartLine = new_start_line,
+        .newEndLine = new_end_line,
+        .confidence = 0.9,
+        .summary = try allocator.dupe(u8, summary),
+    });
+}
+
 fn annotateChangeBlock(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, block: ChangeBlock) !void {
     const deleted_count = block.deleted_end - block.deleted_start;
     const added_count = block.added_end - block.added_start;
@@ -560,6 +689,7 @@ fn annotateChangeBlock(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRo
                     .kind = "replacement",
                     .confidence = linePairConfidence(old_text, new_text),
                 });
+                try appendAnchorRemap(allocator, annotations, old_line, new_line, @intCast(old_index), @intCast(new_index), "replacement", linePairConfidence(old_text, new_text), "Changed line maps to paired replacement line");
             }
         }
     }
@@ -775,6 +905,41 @@ fn linePairConfidence(old_text: []const u8, new_text: []const u8) f32 {
     return @max(0.55, @min(0.92, ratio));
 }
 
+fn appendAnchorRemap(allocator: std.mem.Allocator, annotations: *DiffAnnotations, old_line: u32, new_line: u32, old_row: ?u32, new_row: ?u32, kind: []const u8, confidence: f32, summary: ?[]const u8) !void {
+    try appendAnchorRemapRelated(allocator, annotations, old_line, new_line, old_row, new_row, kind, confidence, summary, null);
+}
+
+fn appendAnchorRemapRelated(allocator: std.mem.Allocator, annotations: *DiffAnnotations, old_line: u32, new_line: u32, old_row: ?u32, new_row: ?u32, kind: []const u8, confidence: f32, summary: ?[]const u8, related_file: ?[]const u8) !void {
+    try annotations.anchor_remaps.append(allocator, .{
+        .oldLine = old_line,
+        .newLine = new_line,
+        .oldRow = old_row,
+        .newRow = new_row,
+        .kind = kind,
+        .confidence = confidence,
+        .summary = if (summary) |value| try allocator.dupe(u8, value) else null,
+        .relatedFile = if (related_file) |value| try allocator.dupe(u8, value) else null,
+    });
+}
+
+fn appendRowSummary(allocator: std.mem.Allocator, row: *DiffRow, summary: []const u8) !void {
+    if (summary.len == 0) return;
+    if (row.semantic_summary) |existing| {
+        if (std.mem.indexOf(u8, existing, summary) != null) return;
+        const combined = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ existing, summary });
+        allocator.free(existing);
+        row.semantic_summary = combined;
+        return;
+    }
+    row.semantic_summary = try allocator.dupe(u8, summary);
+}
+
+fn setRowGroupIfEmpty(allocator: std.mem.Allocator, row: *DiffRow, group_id: []const u8, role: []const u8, confidence: f32) !void {
+    if (row.change_group_id == null) row.change_group_id = try allocator.dupe(u8, group_id);
+    if (row.change_role == null) row.change_role = role;
+    if (row.change_confidence == null or confidence > row.change_confidence.?) row.change_confidence = confidence;
+}
+
 fn equalIgnoringAsciiWhitespace(left: []const u8, right: []const u8) bool {
     var left_index: usize = 0;
     var right_index: usize = 0;
@@ -838,6 +1003,11 @@ fn markMovedRun(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), ann
         rows.items[new_start + offset].change_group_id = try allocator.dupe(u8, group_id);
         rows.items[new_start + offset].change_role = "moved-to";
         rows.items[new_start + offset].change_confidence = confidence;
+        if (rows.items[old_start + offset].old_line) |old_line| {
+            if (rows.items[new_start + offset].new_line) |new_line| {
+                try appendAnchorRemap(allocator, annotations, old_line, new_line, @intCast(old_start + offset), @intCast(new_start + offset), "moved-block", confidence, "Moved line maps to its new location");
+            }
+        }
     }
 
     const old_start_line = rows.items[old_start].old_line;
@@ -854,6 +1024,678 @@ fn markMovedRun(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), ann
         .newEndLine = new_end_line,
         .confidence = confidence,
         .symbol = if (symbol) |value| try allocator.dupe(u8, value) else null,
+        .summary = try allocator.dupe(u8, "Moved block detected by normalized text match"),
+    });
+}
+
+fn addMovedAndEditedGroups(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations) !void {
+    var group_index: u32 = 1;
+    var old_index: usize = 0;
+    while (old_index < rows.items.len) : (old_index += 1) {
+        if (rows.items[old_index].kind != .deleted or rows.items[old_index].change_group_id != null) continue;
+
+        var best_new_index: ?usize = null;
+        var best_score: f32 = 0;
+        var new_index: usize = 0;
+        while (new_index < rows.items.len) : (new_index += 1) {
+            if (rows.items[new_index].kind != .added or rows.items[new_index].change_group_id != null) continue;
+            if (nearbyRows(old_index, new_index)) continue;
+            const score = try editedMoveSimilarity(allocator, rows.items[old_index].old_text orelse "", rows.items[new_index].new_text orelse "");
+            if (score > best_score) {
+                best_score = score;
+                best_new_index = new_index;
+            }
+        }
+
+        const matched_new_index = best_new_index orelse continue;
+        if (best_score < 0.62) continue;
+        const count = try movedEditedRunLength(allocator, rows.items, old_index, matched_new_index);
+        if (count == 0) continue;
+        try markMovedEditedRun(allocator, rows, annotations, old_index, matched_new_index, count, group_index, best_score);
+        group_index += 1;
+    }
+}
+
+fn movedEditedRunLength(allocator: std.mem.Allocator, rows: []const DiffRow, old_start: usize, new_start: usize) !usize {
+    var count: usize = 0;
+    while (old_start + count < rows.len and new_start + count < rows.len) : (count += 1) {
+        const old_row = rows[old_start + count];
+        const new_row = rows[new_start + count];
+        if (old_row.kind != .deleted or new_row.kind != .added) break;
+        if (old_row.change_group_id != null or new_row.change_group_id != null) break;
+        const score = try editedMoveSimilarity(allocator, old_row.old_text orelse "", new_row.new_text orelse "");
+        if (score < 0.54) break;
+    }
+    return count;
+}
+
+fn markMovedEditedRun(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, old_start: usize, new_start: usize, count: usize, group_index: u32, first_score: f32) !void {
+    const group_id = try std.fmt.allocPrint(allocator, "move-edit-{d}", .{group_index});
+    defer allocator.free(group_id);
+    const confidence: f32 = @max(0.58, @min(0.88, first_score));
+
+    var offset: usize = 0;
+    while (offset < count) : (offset += 1) {
+        try setRowGroupIfEmpty(allocator, &rows.items[old_start + offset], group_id, "moved-edited-from", confidence);
+        try setRowGroupIfEmpty(allocator, &rows.items[new_start + offset], group_id, "moved-edited-to", confidence);
+        try appendRowSummary(allocator, &rows.items[old_start + offset], "Moved and edited from this location");
+        try appendRowSummary(allocator, &rows.items[new_start + offset], "Moved here with token-level edits");
+        if (rows.items[old_start + offset].old_line) |old_line| {
+            if (rows.items[new_start + offset].new_line) |new_line| {
+                try appendAnchorRemap(allocator, annotations, old_line, new_line, @intCast(old_start + offset), @intCast(new_start + offset), "moved-and-edited-block", confidence, "Moved-and-edited line maps to similar new line");
+            }
+        }
+    }
+
+    const symbol = commonSymbol(rows.items[old_start].symbol, rows.items[new_start].symbol);
+    try annotations.change_groups.append(allocator, .{
+        .id = try allocator.dupe(u8, group_id),
+        .kind = "moved-and-edited-block",
+        .oldStartLine = rows.items[old_start].old_line,
+        .oldEndLine = rows.items[old_start + count - 1].old_line,
+        .newStartLine = rows.items[new_start].new_line,
+        .newEndLine = rows.items[new_start + count - 1].new_line,
+        .confidence = confidence,
+        .symbol = if (symbol) |value| try allocator.dupe(u8, value) else null,
+        .summary = try allocator.dupe(u8, "Block appears to have moved and changed in place"),
+    });
+}
+
+fn editedMoveSimilarity(allocator: std.mem.Allocator, old_text: []const u8, new_text: []const u8) !f32 {
+    if (!meaningfulChangedLine(old_text) or !meaningfulChangedLine(new_text)) return 0;
+    if (significantNormalizedEqual(old_text, new_text)) return 1;
+    const old_tokens = try semanticTokens(allocator, old_text);
+    defer allocator.free(old_tokens);
+    const new_tokens = try semanticTokens(allocator, new_text);
+    defer allocator.free(new_tokens);
+    if (old_tokens.len < 2 or new_tokens.len < 2) return 0;
+    const shared = try tokenLcsLength(allocator, old_text, old_tokens, new_text, new_tokens);
+    const denominator: f32 = @floatFromInt(old_tokens.len + new_tokens.len);
+    const numerator: f32 = @floatFromInt(shared * 2);
+    return numerator / denominator;
+}
+
+fn semanticTokens(allocator: std.mem.Allocator, text: []const u8) ![]Token {
+    const tokens = try tokenizeLine(allocator, text);
+    errdefer allocator.free(tokens);
+    var result: std.ArrayList(Token) = .empty;
+    errdefer result.deinit(allocator);
+    for (tokens) |token| {
+        if (token.class == .whitespace) continue;
+        try result.append(allocator, token);
+    }
+    allocator.free(tokens);
+    return result.toOwnedSlice(allocator);
+}
+
+fn tokenLcsLength(allocator: std.mem.Allocator, old_text: []const u8, old_tokens: []const Token, new_text: []const u8, new_tokens: []const Token) !usize {
+    if (old_tokens.len * new_tokens.len > 4096) return 0;
+    const width = new_tokens.len + 1;
+    var table = try allocator.alloc(u16, (old_tokens.len + 1) * (new_tokens.len + 1));
+    defer allocator.free(table);
+    @memset(table, 0);
+    var old_index: usize = 1;
+    while (old_index <= old_tokens.len) : (old_index += 1) {
+        var new_index: usize = 1;
+        while (new_index <= new_tokens.len) : (new_index += 1) {
+            const cell = old_index * width + new_index;
+            if (tokensEqual(old_text, old_tokens[old_index - 1], new_text, new_tokens[new_index - 1])) {
+                table[cell] = table[(old_index - 1) * width + (new_index - 1)] + 1;
+            } else {
+                table[cell] = @max(table[(old_index - 1) * width + new_index], table[old_index * width + (new_index - 1)]);
+            }
+        }
+    }
+    return table[old_tokens.len * width + new_tokens.len];
+}
+
+fn meaningfulChangedLine(text: []const u8) bool {
+    var alnum: u32 = 0;
+    for (text) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '_') alnum += 1;
+    }
+    return alnum >= 6 and std.mem.trim(u8, text, " \t\r").len >= 12;
+}
+
+fn addSemanticRelationshipGroups(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations) !void {
+    var group_index: u32 = 1;
+    var index: usize = 0;
+    while (index < rows.items.len) {
+        if (rows.items[index].kind == .deleted) {
+            const deleted_start = index;
+            while (index < rows.items.len and rows.items[index].kind == .deleted) : (index += 1) {}
+            const deleted_end = index;
+            const added_start = index;
+            while (index < rows.items.len and rows.items[index].kind == .added) : (index += 1) {}
+            const added_end = index;
+            try classifyChangeBlockSemantics(allocator, rows, annotations, .{ .deleted_start = deleted_start, .deleted_end = deleted_end, .added_start = added_start, .added_end = added_end }, &group_index);
+            continue;
+        }
+        if (rows.items[index].kind == .added) {
+            const added_start = index;
+            while (index < rows.items.len and rows.items[index].kind == .added) : (index += 1) {}
+            try classifyChangeBlockSemantics(allocator, rows, annotations, .{ .deleted_start = added_start, .deleted_end = added_start, .added_start = added_start, .added_end = index }, &group_index);
+            continue;
+        }
+        index += 1;
+    }
+    try addSeparatedImportReorderGroups(allocator, rows, annotations, &group_index);
+}
+
+fn classifyChangeBlockSemantics(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, block: ChangeBlock, group_index: *u32) !void {
+    const deleted_count = block.deleted_end - block.deleted_start;
+    const added_count = block.added_end - block.added_start;
+    if (deleted_count > 0 and added_count > 0) {
+        if (try formatterOnlyBlock(allocator, rows.items, block)) {
+            try appendSemanticGroup(allocator, rows, annotations, block, group_index, "formatter-only", "Only formatting changed; non-whitespace text is unchanged", 0.96, null, null, null);
+        } else if (try importReorderBlock(allocator, rows.items, block)) {
+            try appendSemanticGroup(allocator, rows, annotations, block, group_index, "import-reorder", "Imports were reordered without changing the imported modules", 0.94, null, null, null);
+        } else if (try wrapperAddedBlock(allocator, rows.items, block)) {
+            try appendSemanticGroup(allocator, rows, annotations, block, group_index, "wrapper-added", "Existing code is now wrapped in a new control-flow block", 0.82, null, null, null);
+        } else if (deleted_count >= 3 and added_count <= 2 and blockHasCall(rows.items, block.added_start, block.added_end, .new)) {
+            try appendSemanticGroup(allocator, rows, annotations, block, group_index, "extracted-function", "Several old statements were replaced by a smaller call site; likely extraction", 0.68, null, null, null);
+        } else if (added_count >= 3 and deleted_count <= 2 and blockHasCall(rows.items, block.deleted_start, block.deleted_end, .old)) {
+            try appendSemanticGroup(allocator, rows, annotations, block, group_index, "inlined-function", "A smaller old call site was replaced by expanded statements; likely inline", 0.68, null, null, null);
+        }
+    }
+
+    const pair_count = @min(deleted_count, added_count);
+    var offset: usize = 0;
+    while (offset < pair_count) : (offset += 1) {
+        try classifyLinePairSemantics(allocator, rows, annotations, block.deleted_start + offset, block.added_start + offset, group_index);
+    }
+    try classifyUnpairedControlFlow(allocator, rows, annotations, block, group_index);
+}
+
+fn appendSemanticGroup(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, block: ChangeBlock, group_index: *u32, kind: []const u8, summary: []const u8, confidence: f32, old_name: ?[]const u8, new_name: ?[]const u8, related_file: ?[]const u8) !void {
+    const group_id = try std.fmt.allocPrint(allocator, "semantic-{d}", .{group_index.*});
+    defer allocator.free(group_id);
+    group_index.* += 1;
+
+    var row_index = block.deleted_start;
+    while (row_index < block.deleted_end) : (row_index += 1) {
+        try setRowGroupIfEmpty(allocator, &rows.items[row_index], group_id, kind, confidence);
+        try appendRowSummary(allocator, &rows.items[row_index], summary);
+    }
+    row_index = block.added_start;
+    while (row_index < block.added_end) : (row_index += 1) {
+        try setRowGroupIfEmpty(allocator, &rows.items[row_index], group_id, kind, confidence);
+        try appendRowSummary(allocator, &rows.items[row_index], summary);
+    }
+
+    const symbol = commonSymbol(if (block.deleted_start < block.deleted_end) rows.items[block.deleted_start].symbol else null, if (block.added_start < block.added_end) rows.items[block.added_start].symbol else null);
+    try annotations.change_groups.append(allocator, .{
+        .id = try allocator.dupe(u8, group_id),
+        .kind = kind,
+        .oldStartLine = if (block.deleted_start < block.deleted_end) rows.items[block.deleted_start].old_line else null,
+        .oldEndLine = if (block.deleted_start < block.deleted_end) rows.items[block.deleted_end - 1].old_line else null,
+        .newStartLine = if (block.added_start < block.added_end) rows.items[block.added_start].new_line else null,
+        .newEndLine = if (block.added_start < block.added_end) rows.items[block.added_end - 1].new_line else null,
+        .confidence = confidence,
+        .symbol = if (symbol) |value| try allocator.dupe(u8, value) else null,
+        .summary = try allocator.dupe(u8, summary),
+        .relatedFile = if (related_file) |value| try allocator.dupe(u8, value) else null,
+        .oldName = if (old_name) |value| try allocator.dupe(u8, value) else null,
+        .newName = if (new_name) |value| try allocator.dupe(u8, value) else null,
+    });
+}
+
+fn formatterOnlyBlock(allocator: std.mem.Allocator, rows: []const DiffRow, block: ChangeBlock) !bool {
+    const old_text = try normalizedBlockNoWhitespace(allocator, rows, block.deleted_start, block.deleted_end, .old);
+    defer allocator.free(old_text);
+    const new_text = try normalizedBlockNoWhitespace(allocator, rows, block.added_start, block.added_end, .new);
+    defer allocator.free(new_text);
+    return old_text.len > 0 and std.mem.eql(u8, old_text, new_text);
+}
+
+fn normalizedBlockNoWhitespace(allocator: std.mem.Allocator, rows: []const DiffRow, start: usize, end: usize, side: SyntaxSide) ![]u8 {
+    var joined: std.ArrayList(u8) = .empty;
+    defer joined.deinit(allocator);
+    var index = start;
+    while (index < end) : (index += 1) {
+        try joined.appendSlice(allocator, rowText(rows[index], side));
+        try joined.append(allocator, '\n');
+    }
+    return normalizedFormattingText(allocator, joined.items);
+}
+
+fn importReorderBlock(allocator: std.mem.Allocator, rows: []const DiffRow, block: ChangeBlock) !bool {
+    const deleted_count = block.deleted_end - block.deleted_start;
+    const added_count = block.added_end - block.added_start;
+    if (deleted_count == 0 or deleted_count != added_count) return false;
+    var matched = try allocator.alloc(bool, added_count);
+    defer allocator.free(matched);
+    @memset(matched, false);
+
+    var old_index = block.deleted_start;
+    while (old_index < block.deleted_end) : (old_index += 1) {
+        const old_line = normalizedImportLine(rowText(rows[old_index], .old)) orelse return false;
+        var found = false;
+        var new_offset: usize = 0;
+        while (new_offset < added_count) : (new_offset += 1) {
+            if (matched[new_offset]) continue;
+            const new_line = normalizedImportLine(rowText(rows[block.added_start + new_offset], .new)) orelse return false;
+            if (std.mem.eql(u8, old_line, new_line)) {
+                matched[new_offset] = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+fn normalizedImportLine(text: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t\r;{}");
+    return if (std.mem.startsWith(u8, trimmed, "import ") or std.mem.startsWith(u8, trimmed, "from ") or std.mem.startsWith(u8, trimmed, "use ")) trimmed else null;
+}
+
+fn wrapperAddedBlock(allocator: std.mem.Allocator, rows: []const DiffRow, block: ChangeBlock) !bool {
+    if (block.added_end - block.added_start <= block.deleted_end - block.deleted_start) return false;
+    if (!blockHasWrapperLine(rows, block.added_start, block.added_end, .new)) return false;
+    return try oldLinesAreSubsequenceOfNew(allocator, rows, block);
+}
+
+fn oldLinesAreSubsequenceOfNew(allocator: std.mem.Allocator, rows: []const DiffRow, block: ChangeBlock) !bool {
+    var new_index = block.added_start;
+    var old_index = block.deleted_start;
+    while (old_index < block.deleted_end) : (old_index += 1) {
+        const old_norm = try normalizedLineNoWhitespace(allocator, rowText(rows[old_index], .old));
+        defer allocator.free(old_norm);
+        if (old_norm.len == 0) continue;
+        var matched = false;
+        while (new_index < block.added_end) : (new_index += 1) {
+            const new_norm = try normalizedLineNoWhitespace(allocator, rowText(rows[new_index], .new));
+            defer allocator.free(new_norm);
+            if (std.mem.eql(u8, old_norm, new_norm)) {
+                matched = true;
+                new_index += 1;
+                break;
+            }
+        }
+        if (!matched) return false;
+    }
+    return true;
+}
+
+fn normalizedLineNoWhitespace(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    return normalizedFormattingText(allocator, text);
+}
+
+fn normalizedFormattingText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+    for (text, 0..) |byte, index| {
+        if (!std.ascii.isWhitespace(byte)) try result.append(allocator, byte);
+        if (byte == ',') {
+            if (nextNonWhitespace(text, index + 1)) |next| {
+                if (next == '}' or next == ']' or next == ')') _ = result.pop();
+            }
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn nextNonWhitespace(text: []const u8, start: usize) ?u8 {
+    var index = start;
+    while (index < text.len) : (index += 1) {
+        if (!std.ascii.isWhitespace(text[index])) return text[index];
+    }
+    return null;
+}
+
+fn blockHasWrapperLine(rows: []const DiffRow, start: usize, end: usize, side: SyntaxSide) bool {
+    var index = start;
+    while (index < end) : (index += 1) {
+        if (isWrapperLine(rowText(rows[index], side))) return true;
+    }
+    return false;
+}
+
+fn isWrapperLine(text: []const u8) bool {
+    const trimmed = std.mem.trim(u8, text, " \t\r");
+    return (std.mem.startsWith(u8, trimmed, "if ") or std.mem.startsWith(u8, trimmed, "if(") or std.mem.startsWith(u8, trimmed, "for ") or std.mem.startsWith(u8, trimmed, "while ") or std.mem.startsWith(u8, trimmed, "try ") or std.mem.startsWith(u8, trimmed, "with ") or std.mem.eql(u8, trimmed, "}")) and (std.mem.indexOfScalar(u8, trimmed, '{') != null or std.mem.eql(u8, trimmed, "}"));
+}
+
+fn blockHasCall(rows: []const DiffRow, start: usize, end: usize, side: SyntaxSide) bool {
+    var index = start;
+    while (index < end) : (index += 1) {
+        if (callInfo(rowText(rows[index], side)) != null) return true;
+    }
+    return false;
+}
+
+fn classifyLinePairSemantics(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, old_index: usize, new_index: usize, group_index: *u32) !void {
+    const old_text = rows.items[old_index].old_text orelse "";
+    const new_text = rows.items[new_index].new_text orelse "";
+    const block: ChangeBlock = .{ .deleted_start = old_index, .deleted_end = old_index + 1, .added_start = new_index, .added_end = new_index + 1 };
+
+    if (try callSiteSummary(allocator, old_text, new_text)) |summary| {
+        defer allocator.free(summary);
+        try appendSemanticGroup(allocator, rows, annotations, block, group_index, "call-site-update", summary, 0.78, null, null, null);
+        return;
+    }
+
+    if (try conditionSummary(allocator, old_text, new_text)) |condition| {
+        defer allocator.free(condition.summary);
+        try appendSemanticGroup(allocator, rows, annotations, block, group_index, condition.kind, condition.summary, condition.confidence, null, null, null);
+        return;
+    }
+
+    if (try returnOrAssignmentSummary(allocator, old_text, new_text)) |impact| {
+        defer allocator.free(impact.summary);
+        try appendSemanticGroup(allocator, rows, annotations, block, group_index, impact.kind, impact.summary, impact.confidence, null, null, null);
+        return;
+    }
+
+    if (try identifierRename(allocator, old_text, new_text)) |rename| {
+        defer allocator.free(rename.old_name);
+        defer allocator.free(rename.new_name);
+        const summary = try std.fmt.allocPrint(allocator, "Identifier renamed from {s} to {s}", .{ rename.old_name, rename.new_name });
+        defer allocator.free(summary);
+        try appendSemanticGroup(allocator, rows, annotations, block, group_index, "identifier-rename", summary, 0.86, rename.old_name, rename.new_name, null);
+        if (rows.items[old_index].old_line) |old_line| {
+            if (rows.items[new_index].new_line) |new_line| try appendAnchorRemap(allocator, annotations, old_line, new_line, @intCast(old_index), @intCast(new_index), "identifier-rename", 0.86, summary);
+        }
+    }
+}
+
+const RenamePair = struct { old_name: []u8, new_name: []u8 };
+
+fn identifierRename(allocator: std.mem.Allocator, old_text: []const u8, new_text: []const u8) !?RenamePair {
+    const old_tokens = try semanticTokens(allocator, old_text);
+    defer allocator.free(old_tokens);
+    const new_tokens = try semanticTokens(allocator, new_text);
+    defer allocator.free(new_tokens);
+    if (old_tokens.len != new_tokens.len or old_tokens.len < 2) return null;
+    var changed: ?usize = null;
+    for (old_tokens, new_tokens, 0..) |old_token, new_token, index| {
+        if (tokensEqual(old_text, old_token, new_text, new_token)) continue;
+        if (changed != null) return null;
+        if (!isIdentifierToken(old_text, old_token) or !isIdentifierToken(new_text, new_token)) return null;
+        changed = index;
+    }
+    const changed_index = changed orelse return null;
+    const old_name = old_text[old_tokens[changed_index].byte_start..old_tokens[changed_index].byte_end];
+    const new_name = new_text[new_tokens[changed_index].byte_start..new_tokens[changed_index].byte_end];
+    if (std.mem.eql(u8, old_name, new_name)) return null;
+    return .{ .old_name = try allocator.dupe(u8, old_name), .new_name = try allocator.dupe(u8, new_name) };
+}
+
+fn isIdentifierToken(text: []const u8, token: Token) bool {
+    if (token.class != .word or token.byte_end <= token.byte_start) return false;
+    const value = text[token.byte_start..token.byte_end];
+    const first = value[0];
+    if (!(std.ascii.isAlphabetic(first) or first == '_' or first >= 0x80)) return false;
+    return !isKeyword(value);
+}
+
+fn isKeyword(value: []const u8) bool {
+    const keywords = [_][]const u8{ "if", "else", "for", "while", "switch", "case", "return", "throw", "try", "catch", "class", "struct", "enum", "function", "fn", "const", "let", "var", "import", "from", "use" };
+    for (keywords) |keyword| if (std.mem.eql(u8, value, keyword)) return true;
+    return false;
+}
+
+const CallInfo = struct { callee: []const u8, args: []const u8, arg_count: u32 };
+
+fn callInfo(text: []const u8) ?CallInfo {
+    const open = std.mem.indexOfScalar(u8, text, '(') orelse return null;
+    const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return null;
+    if (close <= open) return null;
+    var end = open;
+    while (end > 0 and std.ascii.isWhitespace(text[end - 1])) : (end -= 1) {}
+    var start = end;
+    while (start > 0 and (std.ascii.isAlphanumeric(text[start - 1]) or text[start - 1] == '_' or text[start - 1] == '.')) : (start -= 1) {}
+    if (start == end) return null;
+    const callee = text[start..end];
+    if (isKeyword(callee)) return null;
+    const args = text[open + 1 .. close];
+    return .{ .callee = callee, .args = args, .arg_count = argumentCount(args) };
+}
+
+fn argumentCount(args: []const u8) u32 {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) return 0;
+    var count: u32 = 1;
+    var depth: i32 = 0;
+    for (trimmed) |byte| {
+        if (byte == '(' or byte == '[' or byte == '{') depth += 1;
+        if ((byte == ')' or byte == ']' or byte == '}') and depth > 0) depth -= 1;
+        if (byte == ',' and depth == 0) count += 1;
+    }
+    return count;
+}
+
+fn callSiteSummary(allocator: std.mem.Allocator, old_text: []const u8, new_text: []const u8) !?[]u8 {
+    const old_call = callInfo(old_text) orelse return null;
+    const new_call = callInfo(new_text) orelse return null;
+    if (!std.mem.eql(u8, old_call.callee, new_call.callee)) return null;
+    if (std.mem.eql(u8, std.mem.trim(u8, old_call.args, " \t\r\n"), std.mem.trim(u8, new_call.args, " \t\r\n"))) return null;
+    if (old_call.arg_count < new_call.arg_count) return try std.fmt.allocPrint(allocator, "Argument added at call site {s}()", .{old_call.callee});
+    if (old_call.arg_count > new_call.arg_count) return try std.fmt.allocPrint(allocator, "Argument removed at call site {s}()", .{old_call.callee});
+    return try std.fmt.allocPrint(allocator, "Arguments changed at call site {s}()", .{old_call.callee});
+}
+
+const SemanticImpact = struct { kind: []const u8, summary: []u8, confidence: f32 };
+
+fn conditionSummary(allocator: std.mem.Allocator, old_text: []const u8, new_text: []const u8) !?SemanticImpact {
+    const old_condition = conditionSlice(old_text) orelse return null;
+    const new_condition = conditionSlice(new_text) orelse return null;
+    if (std.mem.eql(u8, std.mem.trim(u8, old_condition, " \t\r"), std.mem.trim(u8, new_condition, " \t\r"))) return null;
+    if (conditionsAreInverted(old_condition, new_condition)) {
+        return .{ .kind = "condition-inverted", .summary = try allocator.dupe(u8, "Condition appears inverted"), .confidence = 0.82 };
+    }
+    return .{ .kind = "condition-change", .summary = try allocator.dupe(u8, "Condition expression changed"), .confidence = 0.74 };
+}
+
+fn conditionSlice(text: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t\r");
+    if (!(std.mem.startsWith(u8, trimmed, "if") or std.mem.startsWith(u8, trimmed, "while") or std.mem.startsWith(u8, trimmed, "else if"))) return null;
+    const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    const close = std.mem.lastIndexOfScalar(u8, trimmed, ')') orelse return null;
+    if (close <= open) return null;
+    return trimmed[open + 1 .. close];
+}
+
+fn conditionsAreInverted(left: []const u8, right: []const u8) bool {
+    const left_trimmed = std.mem.trim(u8, left, " \t\r");
+    const right_trimmed = std.mem.trim(u8, right, " \t\r");
+    if (left_trimmed.len > 1 and left_trimmed[0] == '!' and std.mem.eql(u8, std.mem.trim(u8, left_trimmed[1..], " ()\t\r"), std.mem.trim(u8, right_trimmed, " ()\t\r"))) return true;
+    if (right_trimmed.len > 1 and right_trimmed[0] == '!' and std.mem.eql(u8, std.mem.trim(u8, right_trimmed[1..], " ()\t\r"), std.mem.trim(u8, left_trimmed, " ()\t\r"))) return true;
+    return false;
+}
+
+fn returnOrAssignmentSummary(allocator: std.mem.Allocator, old_text: []const u8, new_text: []const u8) !?SemanticImpact {
+    const old_trimmed = std.mem.trim(u8, old_text, " \t\r");
+    const new_trimmed = std.mem.trim(u8, new_text, " \t\r");
+    if (std.mem.startsWith(u8, old_trimmed, "return") and std.mem.startsWith(u8, new_trimmed, "return") and !std.mem.eql(u8, old_trimmed, new_trimmed)) {
+        return .{ .kind = "return-value-change", .summary = try allocator.dupe(u8, "Returned value changed"), .confidence = 0.78 };
+    }
+    if (std.mem.indexOfScalar(u8, old_trimmed, '=') != null and std.mem.indexOfScalar(u8, new_trimmed, '=') != null and sameAssignmentTarget(old_trimmed, new_trimmed)) {
+        return .{ .kind = "assignment-change", .summary = try allocator.dupe(u8, "Assigned value changed"), .confidence = 0.7 };
+    }
+    if (isControlFlowLine(old_trimmed) or isControlFlowLine(new_trimmed)) {
+        return .{ .kind = "control-flow-change", .summary = try allocator.dupe(u8, "Control-flow statement changed"), .confidence = 0.68 };
+    }
+    return null;
+}
+
+fn sameAssignmentTarget(left: []const u8, right: []const u8) bool {
+    const left_equal = std.mem.indexOfScalar(u8, left, '=') orelse return false;
+    const right_equal = std.mem.indexOfScalar(u8, right, '=') orelse return false;
+    return std.mem.eql(u8, std.mem.trim(u8, left[0..left_equal], " \t"), std.mem.trim(u8, right[0..right_equal], " \t"));
+}
+
+fn classifyUnpairedControlFlow(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, block: ChangeBlock, group_index: *u32) !void {
+    var row_index = block.deleted_start;
+    while (row_index < block.deleted_end) : (row_index += 1) {
+        const text = std.mem.trim(u8, rowText(rows.items[row_index], .old), " \t\r");
+        if (isControlFlowLine(text)) try appendSemanticGroup(allocator, rows, annotations, .{ .deleted_start = row_index, .deleted_end = row_index + 1, .added_start = block.added_start, .added_end = block.added_start }, group_index, "control-flow-change", "Control-flow statement removed", 0.7, null, null, null);
+    }
+    row_index = block.added_start;
+    while (row_index < block.added_end) : (row_index += 1) {
+        const text = std.mem.trim(u8, rowText(rows.items[row_index], .new), " \t\r");
+        if (isControlFlowLine(text)) try appendSemanticGroup(allocator, rows, annotations, .{ .deleted_start = block.deleted_start, .deleted_end = block.deleted_start, .added_start = row_index, .added_end = row_index + 1 }, group_index, "control-flow-change", "Control-flow statement added", 0.7, null, null, null);
+    }
+}
+
+fn isControlFlowLine(text: []const u8) bool {
+    return std.mem.startsWith(u8, text, "return") or std.mem.startsWith(u8, text, "throw") or std.mem.startsWith(u8, text, "break") or std.mem.startsWith(u8, text, "continue") or std.mem.startsWith(u8, text, "guard") or std.mem.startsWith(u8, text, "defer");
+}
+
+fn rowText(row: DiffRow, side: SyntaxSide) []const u8 {
+    return switch (side) {
+        .old => row.old_text orelse "",
+        .new => row.new_text orelse "",
+    };
+}
+
+const CrossFileChange = struct {
+    path: []u8,
+    side: SyntaxSide,
+    line: u32,
+    text: []u8,
+
+    fn deinit(self: *CrossFileChange, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.text);
+    }
+};
+
+fn addCrossFileGroups(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, options: DiffOptions, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations) !void {
+    var repo = repository.Repository{ .allocator = allocator, .io = io, .root = repo_root, .head = "" };
+    const output = try repo.gitDiff(options.target, &.{"--unified=0"}, null);
+    defer allocator.free(output);
+    const changes = try parseCrossFileChanges(allocator, output);
+    defer freeCrossFileChanges(allocator, changes);
+
+    var group_index: u32 = 1;
+    var row_index: usize = 0;
+    while (row_index < rows.items.len) : (row_index += 1) {
+        const row = rows.items[row_index];
+        if (row.kind == .deleted) {
+            const old_line = row.old_line orelse continue;
+            if (bestCrossFileMatch(allocator, changes, path, .new, row.old_text orelse "")) |match| {
+                try markCrossFileGroup(allocator, rows, annotations, row_index, old_line, match, true, &group_index);
+            }
+        } else if (row.kind == .added) {
+            const new_line = row.new_line orelse continue;
+            if (bestCrossFileMatch(allocator, changes, path, .old, row.new_text orelse "")) |match| {
+                try markCrossFileGroup(allocator, rows, annotations, row_index, new_line, match, false, &group_index);
+            }
+        }
+        if (group_index > 24) break;
+    }
+}
+
+fn parseCrossFileChanges(allocator: std.mem.Allocator, output: []const u8) ![]CrossFileChange {
+    var result: std.ArrayList(CrossFileChange) = .empty;
+    errdefer freeCrossFileChanges(allocator, result.items);
+    var old_path: []const u8 = "";
+    var new_path: []const u8 = "";
+    var old_line: u32 = 0;
+    var new_line: u32 = 0;
+
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        if (std.mem.startsWith(u8, line, "diff --git")) {
+            old_path = "";
+            new_path = "";
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "--- ")) {
+            old_path = diffHeaderPath(line[4..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "+++ ")) {
+            new_path = diffHeaderPath(line[4..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "@@")) {
+            const parsed = parseHunkHeader(line);
+            old_line = parsed.old_start;
+            new_line = parsed.new_start;
+            continue;
+        }
+        if (line.len == 0) continue;
+        switch (line[0]) {
+            '-' => {
+                if (old_path.len > 0 and meaningfulChangedLine(line[1..])) try result.append(allocator, .{ .path = try allocator.dupe(u8, old_path), .side = .old, .line = old_line, .text = try allocator.dupe(u8, line[1..]) });
+                old_line += 1;
+            },
+            '+' => {
+                if (new_path.len > 0 and meaningfulChangedLine(line[1..])) try result.append(allocator, .{ .path = try allocator.dupe(u8, new_path), .side = .new, .line = new_line, .text = try allocator.dupe(u8, line[1..]) });
+                new_line += 1;
+            },
+            ' ' => {
+                old_line += 1;
+                new_line += 1;
+            },
+            else => {},
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn diffHeaderPath(value: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, value, " \t\r");
+    if (std.mem.eql(u8, trimmed, "/dev/null")) return "";
+    if (trimmed.len > 2 and (std.mem.startsWith(u8, trimmed, "a/") or std.mem.startsWith(u8, trimmed, "b/"))) return trimmed[2..];
+    return trimmed;
+}
+
+fn freeCrossFileChanges(allocator: std.mem.Allocator, changes: []CrossFileChange) void {
+    for (changes) |*change| change.deinit(allocator);
+    allocator.free(changes);
+}
+
+fn bestCrossFileMatch(allocator: std.mem.Allocator, changes: []const CrossFileChange, current_path: []const u8, side: SyntaxSide, text: []const u8) ?CrossFileChange {
+    var best: ?CrossFileChange = null;
+    var best_score: f32 = 0;
+    for (changes) |change| {
+        if (change.side != side) continue;
+        if (std.mem.eql(u8, change.path, current_path)) continue;
+        const score = if (significantNormalizedEqual(text, change.text)) 0.94 else editedMoveSimilarity(allocator, text, change.text) catch 0;
+        if (score > best_score) {
+            best = change;
+            best_score = score;
+        }
+    }
+    return if (best_score >= 0.72) best else null;
+}
+
+fn markCrossFileGroup(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), annotations: *DiffAnnotations, row_index: usize, current_line: u32, match: CrossFileChange, current_is_old: bool, group_index: *u32) !void {
+    const group_id = try std.fmt.allocPrint(allocator, "cross-file-{d}", .{group_index.*});
+    defer allocator.free(group_id);
+    group_index.* += 1;
+    const role = if (current_is_old) "cross-file-move-from" else "cross-file-move-to";
+    const summary = if (current_is_old)
+        try std.fmt.allocPrint(allocator, "Similar code appears in {s}:{d}", .{ match.path, match.line })
+    else
+        try std.fmt.allocPrint(allocator, "Similar old code came from {s}:{d}", .{ match.path, match.line });
+    defer allocator.free(summary);
+
+    try setRowGroupIfEmpty(allocator, &rows.items[row_index], group_id, role, 0.74);
+    try appendRowSummary(allocator, &rows.items[row_index], summary);
+    if (current_is_old) {
+        try appendAnchorRemapRelated(allocator, annotations, current_line, match.line, @intCast(row_index), null, "cross-file-move", 0.74, summary, match.path);
+    } else {
+        try appendAnchorRemapRelated(allocator, annotations, match.line, current_line, null, @intCast(row_index), "cross-file-move", 0.74, summary, match.path);
+    }
+
+    try annotations.change_groups.append(allocator, .{
+        .id = try allocator.dupe(u8, group_id),
+        .kind = "cross-file-move",
+        .oldStartLine = if (current_is_old) current_line else match.line,
+        .oldEndLine = if (current_is_old) current_line else match.line,
+        .newStartLine = if (current_is_old) match.line else current_line,
+        .newEndLine = if (current_is_old) match.line else current_line,
+        .confidence = 0.74,
+        .symbol = if (rows.items[row_index].symbol) |symbol| try allocator.dupe(u8, symbol) else null,
+        .summary = try allocator.dupe(u8, summary),
+        .relatedFile = try allocator.dupe(u8, match.path),
     });
 }
 
@@ -991,6 +1833,7 @@ fn deinitRow(allocator: std.mem.Allocator, row: DiffRow) void {
     if (row.new_diff_spans) |spans| allocator.free(spans);
     if (row.change_group_id) |group_id| allocator.free(group_id);
     if (row.symbol) |value| allocator.free(value);
+    if (row.semantic_summary) |value| allocator.free(value);
 }
 
 test "diff token spans isolate replaced identifiers" {
@@ -1094,17 +1937,18 @@ test "structural symbols replace hunk context symbols" {
 test "diff intelligence benchmark fixtures parse and enrich" {
     const allocator = std.testing.allocator;
     const cases = [_]struct {
+        name: []const u8,
         input: []const u8,
         expected_group_kind: ?[]const u8 = null,
     }{
-        .{ .input = @embedFile("../testdata/diff-intelligence/renamed-identifier.diff") },
-        .{ .input = @embedFile("../testdata/diff-intelligence/moved-block.diff"), .expected_group_kind = "moved-block" },
-        .{ .input = @embedFile("../testdata/diff-intelligence/moved-and-edited-block.diff") },
-        .{ .input = @embedFile("../testdata/diff-intelligence/formatter-only.diff") },
-        .{ .input = @embedFile("../testdata/diff-intelligence/wrapper-added.diff") },
-        .{ .input = @embedFile("../testdata/diff-intelligence/import-reorder.diff") },
-        .{ .input = @embedFile("../testdata/diff-intelligence/non-ascii.diff") },
-        .{ .input = @embedFile("../testdata/diff-intelligence/large-rewrite.diff") },
+        .{ .name = "renamed-identifier", .input = @embedFile("../testdata/diff-intelligence/renamed-identifier.diff"), .expected_group_kind = "identifier-rename" },
+        .{ .name = "moved-block", .input = @embedFile("../testdata/diff-intelligence/moved-block.diff"), .expected_group_kind = "moved-block" },
+        .{ .name = "moved-and-edited-block", .input = @embedFile("../testdata/diff-intelligence/moved-and-edited-block.diff"), .expected_group_kind = "moved-and-edited-block" },
+        .{ .name = "formatter-only", .input = @embedFile("../testdata/diff-intelligence/formatter-only.diff"), .expected_group_kind = "formatter-only" },
+        .{ .name = "wrapper-added", .input = @embedFile("../testdata/diff-intelligence/wrapper-added.diff"), .expected_group_kind = "wrapper-added" },
+        .{ .name = "import-reorder", .input = @embedFile("../testdata/diff-intelligence/import-reorder.diff"), .expected_group_kind = "import-reorder" },
+        .{ .name = "non-ascii", .input = @embedFile("../testdata/diff-intelligence/non-ascii.diff") },
+        .{ .name = "large-rewrite", .input = @embedFile("../testdata/diff-intelligence/large-rewrite.diff") },
     };
 
     for (cases) |case| {
@@ -1120,8 +1964,70 @@ test "diff intelligence benchmark fixtures parse and enrich" {
         try enrichDiffRows(allocator, &rows, &annotations);
 
         try std.testing.expect(rows.items.len > 0);
-        if (case.expected_group_kind) |kind| try std.testing.expect(hasChangeGroupKind(annotations.change_groups.items, kind));
+        if (case.expected_group_kind) |kind| {
+            if (!hasChangeGroupKind(annotations.change_groups.items, kind)) {
+                std.debug.print("missing expected group {s} for {s}\n", .{ kind, case.name });
+                for (annotations.change_groups.items) |group| std.debug.print("  saw {s}\n", .{group.kind});
+                return error.TestUnexpectedResult;
+            }
+        }
     }
+}
+
+test "diff enrichment classifies semantic line relationships" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\diff --git a/demo.ts b/demo.ts
+        \\--- a/demo.ts
+        \\+++ b/demo.ts
+        \\@@ -1,6 +1,6 @@ function demo()
+        \\-if (enabled) {
+        \\+if (!enabled) {
+        \\-  publishMetric('total', total);
+        \\+  publishMetric('total', total, tags);
+        \\-  return oldValue;
+        \\+  return newValue;
+        \\ }
+        \\
+    ;
+
+    var rows: std.ArrayList(DiffRow) = .empty;
+    defer {
+        for (rows.items) |row| deinitRow(allocator, row);
+        rows.deinit(allocator);
+    }
+    var annotations: DiffAnnotations = .{};
+    defer annotations.deinit(allocator);
+
+    try parseUnifiedDiff(allocator, input, &rows);
+    try enrichDiffRows(allocator, &rows, &annotations);
+
+    try std.testing.expect(hasChangeGroupKind(annotations.change_groups.items, "condition-inverted"));
+    try std.testing.expect(hasChangeGroupKind(annotations.change_groups.items, "call-site-update"));
+    try std.testing.expect(hasChangeGroupKind(annotations.change_groups.items, "return-value-change"));
+}
+
+test "cross file matching finds related moved lines" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\diff --git a/src/source.ts b/src/source.ts
+        \\--- a/src/source.ts
+        \\+++ b/src/source.ts
+        \\@@ -4 +4,0 @@
+        \\-const movedValue = computeExpensiveResult(input);
+        \\diff --git a/src/target.ts b/src/target.ts
+        \\--- a/src/target.ts
+        \\+++ b/src/target.ts
+        \\@@ -8,0 +9 @@
+        \\+const movedValue = computeExpensiveResult(input);
+        \\
+    ;
+    const changes = try parseCrossFileChanges(allocator, input);
+    defer freeCrossFileChanges(allocator, changes);
+
+    const match = bestCrossFileMatch(allocator, changes, "src/source.ts", .new, "const movedValue = computeExpensiveResult(input);") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("src/target.ts", match.path);
+    try std.testing.expectEqual(@as(u32, 9), match.line);
 }
 
 fn hasChangeGroupKind(groups: []const DiffChangeGroup, kind: []const u8) bool {

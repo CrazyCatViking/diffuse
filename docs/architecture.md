@@ -220,11 +220,17 @@ Each row carries old/new line numbers and old/new text where applicable. After p
 - Adjacent deleted/added blocks are paired as replacement candidates in `annotations.linePairs`.
 - Paired replacement lines receive `oldDiffSpans` and `newDiffSpans` token ranges for inserted, deleted, replaced, or whitespace-only text.
 - Exact normalized deleted/added runs that are far enough apart are marked as `moved-block` groups in `annotations.changeGroups`; their rows receive `changeGroupId`, `changeRole`, and `changeConfidence`.
+- Similar far-apart deleted/added runs are marked as `moved-and-edited-block` when token LCS scoring shows enough shared structure but not exact normalized equality.
 - When an installed Tree-sitter grammar is available, the core parses old and new source text and annotates rows with the innermost structural symbol containing each changed line. Git hunk function context remains the fallback when parsing is unavailable, too large, or fails.
 - Rows sharing a symbol are grouped as `symbol-change` annotations where available.
+- Lightweight semantic classifiers add conservative groups for identifier renames, formatter-only changes, import reorders, wrapper additions, likely extract/inline operations, call-site argument changes, condition changes/inversions, return-value changes, assignment changes, and control-flow additions/removals.
+- A bounded target-wide diff scan adds `cross-file-move` hints when significant old/new lines match across different paths.
+- `annotations.anchorRemaps` contains advisory old-line to new-line mapping hints for replacements, moves, moved-and-edited lines, renames, and cross-file moves. These hints help future review/comment remapping, but they do not mutate persisted review anchors.
 - `annotations.columnUnit` is currently `utf16`; all diff token span columns are emitted as JavaScript string indexes rather than byte offsets so renderer slicing stays correct for non-ASCII text.
 
 Git remains the correctness and fallback layer. These annotations explain relationships for review UI rendering, but they do not replace Git patch semantics or review anchors. The renderer converts token spans into inline highlights, moved rows into side accents, and available group/token metadata into native line tooltips. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
+
+The renderer requests diff models in two phases so large files can show quickly. The first `getDiffRenderModel` call uses `options.intelligence = "basic"`, which returns parsed Git rows without semantic enrichment. A background call with `options.intelligence = "full"` computes token spans, move detection, structural symbols, semantic groups, cross-file hints, and anchor remaps, then replaces the displayed model if the user is still looking at the same file/target state. Single-file and folder views keep bounded in-memory caches of full models keyed by repository root/head, diff target, file id, file diff signature, view mode, and context mode. Cache hits render the enriched model immediately; signature or target changes naturally select a different key.
 
 Diff intelligence regression fixtures live under `core/src/testdata/diff-intelligence`. They cover renamed identifiers, moved blocks, moved-and-edited blocks, formatter-only changes, wrapper additions, import reorders, non-ASCII text, and larger rewrites. Core tests embed these fixtures so parsing and enrichment failures are caught by `zig build test`.
 
