@@ -247,7 +247,7 @@ const review = useReviewStore();
 const cursor = useCursorStore();
 const rootRef = ref<HTMLElement | null>(null);
 cursor.registerSurface<ReviewOverviewSurface>(
-  { id: reviewOverviewSurfaceId, type: 'review-overview', position: { section: 'summary' } },
+  { id: reviewOverviewSurfaceId, type: 'review-overview', position: {} },
   {
     id: reviewOverviewSurfaceId,
     getRect: () => rootRef.value?.getBoundingClientRect(),
@@ -560,6 +560,11 @@ onBeforeUnmount(() => {
   overflow: auto;
   color: var(--color-text-secondary);
   background: var(--color-bg-app);
+
+  &:focus,
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 .overview-hero,

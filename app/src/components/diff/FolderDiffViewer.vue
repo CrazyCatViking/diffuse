@@ -665,7 +665,7 @@ function registerFolderSurface() {
 
   activeFolderSurfaceId = nextSurfaceId;
   cursor.registerSurface<FolderDiffSurface>(
-    { id: nextSurfaceId, type: 'folder-diff', position: { folderPath: folderPath.value } },
+    { id: nextSurfaceId, type: 'folder-diff', position: {} },
     {
       id: nextSurfaceId,
       getRect: () => rootRef.value?.getBoundingClientRect(),
@@ -686,6 +686,11 @@ function activateFolderSurface() {
   min-width: 0;
   min-height: 0;
   background: var(--color-bg-app);
+
+  &:focus,
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 .folder-header {

@@ -65,12 +65,7 @@
 
         <RouterView />
 
-        <SearchResultsDrawer
-          v-if="repo.repository"
-          class="workspace-search-drawer"
-          @open="openSearchResult"
-          @preview="previewSearchResult"
-        />
+        <SearchResultsDrawer v-if="repo.repository" class="workspace-search-drawer" @open="openSearchResult" />
       </main>
     </template>
 

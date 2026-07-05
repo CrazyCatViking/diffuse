@@ -72,10 +72,6 @@ export const useSearchStore = defineStore('search', () => {
     if (selected && !pinnedRemovedResultIdSet.value.has(selected.id)) return selected;
     return pinnedResultEntries.value[0]?.result;
   });
-  const pinnedSelectedPosition = computed(() => {
-    const index = pinnedResultEntries.value.findIndex((entry) => entry.index === selectedIndex.value);
-    return index >= 0 ? index : 0;
-  });
   const contentSearchLoading = computed(() => searchLoading.value);
   const searchScopeKey = computed(() =>
     JSON.stringify({
@@ -115,7 +111,11 @@ export const useSearchStore = defineStore('search', () => {
       if (event.params.searchId !== activeSearchId.value) return;
       searchLoading.value = false;
       activeSearchId.value = undefined;
-      searchProgress.value = { ...searchProgress.value, scannedFiles: event.params.scannedFiles, emittedResults: event.params.totalResults };
+      searchProgress.value = {
+        ...searchProgress.value,
+        scannedFiles: event.params.scannedFiles,
+        emittedResults: event.params.totalResults,
+      };
       clampSelectedIndex();
       return;
     }
@@ -228,23 +228,6 @@ export const useSearchStore = defineStore('search', () => {
 
   const selectResult = (index: number) => {
     selectedIndex.value = Math.min(Math.max(index, 0), Math.max(0, results.value.length - 1));
-  };
-
-  const nextPinnedResult = () => {
-    const entries = pinnedResultEntries.value;
-    if (entries.length === 0) return;
-
-    const currentPosition = entries.findIndex((entry) => entry.index === selectedIndex.value);
-    selectedIndex.value = entries[(currentPosition + 1) % entries.length]?.index ?? entries[0].index;
-  };
-
-  const previousPinnedResult = () => {
-    const entries = pinnedResultEntries.value;
-    if (entries.length === 0) return;
-
-    const currentPosition = entries.findIndex((entry) => entry.index === selectedIndex.value);
-    const nextPosition = currentPosition === -1 ? entries.length - 1 : (currentPosition - 1 + entries.length) % entries.length;
-    selectedIndex.value = entries[nextPosition]?.index ?? entries[0].index;
   };
 
   const removePinnedResult = (resultId: string) => {
@@ -362,7 +345,6 @@ export const useSearchStore = defineStore('search', () => {
     pinnedResultEntries,
     pinnedResults,
     pinnedSelectedResult,
-    pinnedSelectedPosition,
     hasActiveSearch,
     treeHasActiveSearch,
     activeSearchId,
@@ -386,8 +368,6 @@ export const useSearchStore = defineStore('search', () => {
     nextResult,
     previousResult,
     selectResult,
-    nextPinnedResult,
-    previousPinnedResult,
     removePinnedResult,
     rememberQuery,
   };

@@ -2,13 +2,12 @@ import { defineStore } from 'pinia';
 import { type Ref, ref, toRaw } from 'vue';
 import type { RouteLocationRaw } from 'vue-router';
 import { diffKeyTokenForEvent, parseDiffKeybinding, type DiffKeybindingAction } from '../lib/diffKeybindings';
-import { diffRoute, folderDiffRoute, overviewRoute } from '../lib/workspaceRoutes';
+import { diffRoute } from '../lib/workspaceRoutes';
 import { useSettingsStore } from './settings';
 
 export type CursorMotion = DiffKeybindingAction;
 export type CursorCommand = DiffKeybindingAction | 'activate';
 export type CursorSurface = FileTreeSurface | DiffSurface | PinnedResultsSurface | ReviewOverviewSurface | FolderDiffSurface;
-export type CursorSurfaceType = CursorSurface['type'];
 export type DiffSurfacePane = 'old' | 'new' | 'inline';
 export type CursorDirection = 'left' | 'right' | 'up' | 'down';
 export type CursorActivationReason = 'default' | 'surface-move' | 'history';
@@ -55,19 +54,19 @@ export type DiffSurface = {
 export type PinnedResultsSurface = {
   id: typeof pinnedResultsSurfaceId;
   type: 'pinned-results';
-  position: { resultId?: string; selectedIndex: number };
+  position: Record<string, never>;
 };
 
 export type ReviewOverviewSurface = {
   id: typeof reviewOverviewSurfaceId;
   type: 'review-overview';
-  position: { section: 'summary' };
+  position: Record<string, never>;
 };
 
 export type FolderDiffSurface = {
   id: string;
   type: 'folder-diff';
-  position: { folderPath: string };
+  position: Record<string, never>;
 };
 
 type CursorHistoryEntry = {
@@ -118,7 +117,6 @@ export const useCursorStore = defineStore('cursor', () => {
     if (!activeSurfaceId.value && canDefaultToSurface(surface.id)) activeSurfaceId.value = surface.id;
     if (activeSurfaceId.value === surface.id) {
       const reason = pendingActivationReasons.get(surface.id) ?? 'default';
-      pendingActivationReasons.delete(surface.id);
       requestSurfaceActivation(surface.id, reason);
     }
 
@@ -139,7 +137,6 @@ export const useCursorStore = defineStore('cursor', () => {
   };
 
   const isActiveSurface = (surfaceId: string) => activeSurfaceId.value === surfaceId;
-  const isOpenSurface = (surfaceId: string) => openSurfaceIds.has(surfaceId);
 
   const setActiveSurface = (surfaceId: string, options: { activate?: boolean; reason?: CursorActivationReason } = {}) => {
     activeSurfaceId.value = surfaceId;
@@ -204,11 +201,6 @@ export const useCursorStore = defineStore('cursor', () => {
     return true;
   };
 
-  const recordCurrentSurfacePosition = () => {
-    const snapshot = activeSurfaceSnapshot();
-    if (snapshot) pushHistoryEntry(snapshot);
-  };
-
   const recordSurfacePosition = (surfaceId: string) => {
     const surfaceRef = surfaces.get(surfaceId);
     if (!surfaceRef || !shouldRecordSurface(surfaceRef.value)) return;
@@ -216,6 +208,8 @@ export const useCursorStore = defineStore('cursor', () => {
   };
 
   const moveHistory = (direction: -1 | 1) => {
+    if (direction < 0) recordCurrentHistoryPosition();
+
     const nextIndex = surfacePositionHistoryIndex + direction;
     const entry = surfacePositionHistory[nextIndex];
     if (!entry) return false;
@@ -274,7 +268,7 @@ export const useCursorStore = defineStore('cursor', () => {
     const mount = activeCommandMount();
     const before = activeSurfaceSnapshot();
     const result = mount?.onCommand?.(command, context);
-    return finishSurfaceAction(result, before, significantCommandActions.has(command));
+    return finishSurfaceAction(result, before, false);
   };
 
   const finishSurfaceAction = (result: CursorActionResult, before: CursorHistoryEntry | undefined, significantByAction: boolean) => {
@@ -340,6 +334,7 @@ export const useCursorStore = defineStore('cursor', () => {
 
     activeSurfaceId.value = entry.surfaceId;
     if (openSurfaceIds.has(entry.surfaceId)) {
+      pendingActivationReasons.set(entry.surfaceId, 'history');
       requestSurfaceActivation(entry.surfaceId, 'history');
       return;
     }
@@ -351,8 +346,17 @@ export const useCursorStore = defineStore('cursor', () => {
 
   const requestSurfaceActivation = (surfaceId: string, reason: CursorActivationReason) => {
     window.requestAnimationFrame(() => {
-      if (activeSurfaceId.value === surfaceId) surfaceMounts.get(surfaceId)?.activate?.(reason);
+      try {
+        if (activeSurfaceId.value === surfaceId) surfaceMounts.get(surfaceId)?.activate?.(reason);
+      } finally {
+        if (pendingActivationReasons.get(surfaceId) === reason) pendingActivationReasons.delete(surfaceId);
+      }
     });
+  };
+
+  const recordCurrentHistoryPosition = () => {
+    const snapshot = activeSurfaceSnapshot();
+    if (snapshot) pushHistoryEntry(snapshot);
   };
 
   const activateFirstOpenSurface = () => {
@@ -409,17 +413,12 @@ export const useCursorStore = defineStore('cursor', () => {
     activeSurfaceId,
     handleKeyDown,
     isActiveSurface,
-    isOpenSurface,
-    moveHistory,
-    moveSurface,
-    recordCurrentSurfacePosition,
     recordSurfacePosition,
     isRestoringHistory,
     registerSurface,
     setActiveSurface,
     setNavigator,
     surface,
-    surfacePositionHistory,
     unregisterSurface,
   };
 });
@@ -441,49 +440,11 @@ const significantMotionActions = new Set<DiffKeybindingAction>([
   'diffSideRight',
 ]);
 
-const significantCommandActions = new Set<CursorCommand>();
-
 const shouldRecordSurface = (surface: CursorSurface) => surface.type === 'diff';
 
 const cloneSurface = <T extends CursorSurface>(surface: T): T => {
   const raw = toRaw(surface);
-  if (raw.type === 'file-tree') {
-    return {
-      id: raw.id,
-      type: raw.type,
-      position: { ...toRaw(raw.position) },
-    } as T;
-  }
-
-  if (raw.type === 'diff') {
-    return {
-      id: raw.id,
-      type: raw.type,
-      position: { ...toRaw(raw.position) },
-    } as T;
-  }
-
-  if (raw.type === 'pinned-results') {
-    return {
-      id: raw.id,
-      type: raw.type,
-      position: { ...toRaw(raw.position) },
-    } as T;
-  }
-
-  if (raw.type === 'review-overview') {
-    return {
-      id: raw.id,
-      type: raw.type,
-      position: { ...toRaw(raw.position) },
-    } as T;
-  }
-
-  return {
-    id: raw.id,
-    type: raw.type,
-    position: { ...toRaw(raw.position) },
-  } as T;
+  return { ...raw, position: { ...toRaw(raw.position) } } as T;
 };
 
 const actionHandled = (result: CursorActionResult) => {
@@ -503,11 +464,8 @@ const sameHistoryEntry = (first: CursorHistoryEntry | undefined, second: CursorH
 };
 
 const routeForSurfaceId = (surfaceId: string): RouteLocationRaw | undefined => {
-  if (surfaceId === reviewOverviewSurfaceId) return overviewRoute();
   const diff = parseDiffSurfaceId(surfaceId);
-  if (diff) return diffRoute(diff.fileId);
-  const folderPath = parseFolderDiffSurfaceId(surfaceId);
-  return folderPath === undefined ? undefined : folderDiffRoute(folderPath);
+  return diff ? diffRoute(diff.fileId) : undefined;
 };
 
 const parseDiffSurfaceId = (surfaceId: string): { fileId: string; side: 'old' | 'new' } | undefined => {
@@ -520,11 +478,6 @@ const sameDiffSurfaceGroup = (firstSurfaceId: string, secondSurfaceId: string) =
   const first = parseDiffSurfaceId(firstSurfaceId);
   const second = parseDiffSurfaceId(secondSurfaceId);
   return Boolean(first && second && first.fileId === second.fileId);
-};
-
-const parseFolderDiffSurfaceId = (surfaceId: string) => {
-  const match = surfaceId.match(/^folder-diff:(.+)$/);
-  return match ? decodeSurfaceIdPart(match[1]) : undefined;
 };
 
 const decodeSurfaceIdPart = (value: string) => {

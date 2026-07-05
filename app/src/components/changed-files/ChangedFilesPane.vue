@@ -26,6 +26,7 @@
 
     <div v-if="files.length > 0" class="search-stack">
       <SearchInput
+        ref="treeSearchInputRef"
         :model-value="search.treeQuery"
         compact
         placeholder="Find files, comments, filters..."
@@ -144,7 +145,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { ChangedFile } from '../../lib/protocol';
 import type { FileSearchMetadata, SearchMatchRange } from '../../lib/search/searchTypes';
@@ -201,6 +202,7 @@ const search = useSearchStore();
 const cursor = useCursorStore();
 const collapsedFolders = ref(new Set<string>());
 const rootRef = ref<HTMLElement | null>(null);
+const treeSearchInputRef = ref<InstanceType<typeof SearchInput> | null>(null);
 const fileTreeSurface = cursor.registerSurface<FileTreeSurface>(
   { id: fileTreeSurfaceId, type: 'file-tree', position: { key: 'overview', target: 'overview' } },
   {
@@ -431,6 +433,22 @@ function handleSurfaceMotion(motion: CursorMotion, context: CursorActionContext)
     moveNavigationCursor(-context.count);
     return true;
   }
+  if (motion === 'pageDown') {
+    moveNavigationCursor(navigationPageSize() * context.count);
+    return true;
+  }
+  if (motion === 'pageUp') {
+    moveNavigationCursor(-navigationPageSize() * context.count);
+    return true;
+  }
+  if (motion === 'fileStart') {
+    moveNavigationCursorToBoundary('start');
+    return true;
+  }
+  if (motion === 'fileEnd') {
+    moveNavigationCursorToBoundary('end');
+    return true;
+  }
   if (motion === 'moveLeft') {
     collapseNavigationFolder();
     return true;
@@ -443,9 +461,15 @@ function handleSurfaceMotion(motion: CursorMotion, context: CursorActionContext)
 }
 
 function handleSurfaceCommand(command: CursorCommand) {
-  if (command !== 'activate') return false;
-  activateNavigationItem();
-  return true;
+  if (command === 'activate') {
+    activateNavigationItem();
+    return true;
+  }
+  if (command === 'openSearch') {
+    focusTreeSearch();
+    return true;
+  }
+  return false;
 }
 
 const moveNavigationCursor = (direction: number) => {
@@ -456,6 +480,14 @@ const moveNavigationCursor = (direction: number) => {
   const nextIndex = index === -1 ? 0 : Math.max(0, Math.min(items.length - 1, index + direction));
   setFileTreePosition(items[nextIndex].position);
 };
+
+const moveNavigationCursorToBoundary = (boundary: 'start' | 'end') => {
+  const items = visibleNavigationItems.value;
+  const item = boundary === 'start' ? items[0] : items[items.length - 1];
+  if (item) setFileTreePosition(item.position);
+};
+
+const navigationPageSize = () => Math.max(4, Math.floor((rootRef.value?.clientHeight ?? 320) / 32 / 2));
 
 const activateNavigationItem = () => {
   const item = visibleNavigationItems.value.find((candidate) => candidate.key === fileTreeSurface.value.position.key);
@@ -494,6 +526,18 @@ const expandOrActivateNavigationItem = () => {
 
 const setFileTreePosition = (position: FileTreeSurface['position']) => {
   fileTreeSurface.value.position = position;
+  void nextTick(() => revealFileTreeCursor());
+};
+
+const revealFileTreeCursor = () => {
+  rootRef.value
+    ?.querySelector<HTMLElement>('.overview-row.navigation-active, .tree-row.navigation-active')
+    ?.scrollIntoView({ block: 'nearest' });
+};
+
+const focusTreeSearch = () => {
+  treeSearchInputRef.value?.focus();
+  treeSearchInputRef.value?.select();
 };
 
 const nodeSurfacePosition = (node: TreeListNode<TreeNode>): FileTreeSurface['position'] => {
@@ -525,6 +569,11 @@ onBeforeUnmount(() => {
   overflow: auto;
   background: var(--color-bg-shell);
   border-right: 1px solid var(--color-border-subtle);
+
+  &:focus,
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 .pane-header {

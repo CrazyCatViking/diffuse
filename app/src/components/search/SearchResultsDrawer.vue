@@ -6,7 +6,6 @@
     padding="none"
     role="complementary"
     aria-label="Pinned search results"
-    :class="{ 'navigation-active': cursor.isActiveSurface(pinnedResultsSurfaceId) }"
     @pointerdown.capture="cursor.setActiveSurface(pinnedResultsSurfaceId)"
   >
     <header class="drawer-header">
@@ -20,9 +19,9 @@
     </header>
 
     <div class="drawer-controls">
-      <Button variant="secondary" size="sm" :disabled="displayedPinnedEntries.length === 0" @click="previousAndPreview">Previous</Button>
+      <Button variant="secondary" size="sm" :disabled="displayedPinnedEntries.length === 0" @click="previousSelection">Previous</Button>
 
-      <Button variant="secondary" size="sm" :disabled="displayedPinnedEntries.length === 0" @click="nextAndPreview">Next</Button>
+      <Button variant="secondary" size="sm" :disabled="displayedPinnedEntries.length === 0" @click="nextSelection">Next</Button>
 
       <Button variant="review" size="sm" :disabled="!search.pinnedSelectedResult" @click="openSelected">Open</Button>
     </div>
@@ -81,7 +80,7 @@
             class="entry-button"
             type="button"
             :title="entryTitle(node.data.entry)"
-            @click="selectAndPreview(node.data.entry.index)"
+            @click="selectEntry(node.data.entry.index)"
             @dblclick="openResult(node.data.entry.result)"
           >
             <span class="entry-anchor" :class="entryAnchorClass(node.data.entry)">{{ entryAnchor(node.data.entry) }}</span>
@@ -114,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
 import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
@@ -154,7 +153,6 @@ type PinnedTreeData =
 
 const emit = defineEmits<{
   open: [result: SearchResult];
-  preview: [result: SearchResult];
 }>();
 
 const search = useSearchStore();
@@ -162,8 +160,8 @@ const cursor = useCursorStore();
 const collapsedGroups = ref(new Set<string>());
 const drawerResultsRef = ref<HTMLElement | null>(null);
 const rootRef = ref<{ $el?: Element } | null>(null);
-const pinnedResultsSurface = cursor.registerSurface<PinnedResultsSurface>(
-  { id: pinnedResultsSurfaceId, type: 'pinned-results', position: { selectedIndex: 0 } },
+cursor.registerSurface<PinnedResultsSurface>(
+  { id: pinnedResultsSurfaceId, type: 'pinned-results', position: {} },
   {
     id: pinnedResultsSurfaceId,
     getRect: () => (rootRef.value?.$el instanceof HTMLElement ? rootRef.value.$el.getBoundingClientRect() : undefined),
@@ -206,27 +204,24 @@ const pinnedGroups = computed<PinnedGroup[]>(() => {
 
 const pinnedTreeNodes = computed<TreeListNode<PinnedTreeData>[]>(() => pinnedGroups.value.map(pinnedGroupToTreeNode));
 const displayedPinnedEntries = computed(() => pinnedGroups.value.flatMap(pinnedGroupEntries));
+const pinnedCursorActive = computed(() => cursor.isActiveSurface(pinnedResultsSurfaceId));
 const displayedSelectedPosition = computed(() => {
   const position = displayedPinnedEntries.value.findIndex((entry) => entry.index === search.selectedIndex);
   return position >= 0 ? position : 0;
 });
 
-const selectAndPreview = (index: number) => {
+const selectEntry = (index: number) => {
   search.selectResult(index);
-  syncPinnedSurfacePosition();
-  previewSelected();
   void revealSelectedPinnedResult('nearest');
 };
 
-const previousAndPreview = (count = 1) => {
+const previousSelection = (count = 1) => {
   moveDisplayedSelection(-1, count);
-  previewSelected();
   void revealSelectedPinnedResult('previous');
 };
 
-const nextAndPreview = (count = 1) => {
+const nextSelection = (count = 1) => {
   moveDisplayedSelection(1, count);
-  previewSelected();
   void revealSelectedPinnedResult('next');
 };
 
@@ -240,12 +235,15 @@ const moveDisplayedSelection = (direction: 1 | -1, count = 1) => {
       currentPosition === -1 ? (direction > 0 ? 0 : entries.length - 1) : (currentPosition + direction + entries.length) % entries.length;
     search.selectResult(entries[nextPosition]?.index ?? entries[0].index);
   }
-  syncPinnedSurfacePosition();
 };
 
-const previewSelected = () => {
-  if (search.pinnedSelectedResult) emit('preview', search.pinnedSelectedResult);
+const moveSelectionToBoundary = (boundary: 'start' | 'end') => {
+  const entries = displayedPinnedEntries.value;
+  const entry = boundary === 'start' ? entries[0] : entries[entries.length - 1];
+  if (entry) search.selectResult(entry.index);
 };
+
+const pinnedPageSize = () => Math.max(4, Math.floor((drawerResultsRef.value?.clientHeight ?? 240) / 32 / 2));
 
 const openSelected = () => {
   if (search.pinnedSelectedResult) openResult(search.pinnedSelectedResult);
@@ -352,7 +350,7 @@ const pinnedEntryToTreeNode = (entry: PinnedEntry): TreeListNode<PinnedTreeData>
   key: entry.result.id,
   label: entry.result.title,
   title: entry.result.subtitle ?? entry.result.title,
-  active: entry.index === search.selectedIndex,
+  active: pinnedCursorActive.value && entry.index === search.selectedIndex,
   rowClass: { 'entry-row': true },
   data: { type: 'entry', entry },
 });
@@ -407,11 +405,29 @@ const entryRanges = (entry: PinnedEntry): SearchMatchRange[] => {
 
 function handleSurfaceMotion(motion: CursorMotion, context: CursorActionContext) {
   if (motion === 'moveDown') {
-    nextAndPreview(context.count);
+    nextSelection(context.count);
     return true;
   }
   if (motion === 'moveUp') {
-    previousAndPreview(context.count);
+    previousSelection(context.count);
+    return true;
+  }
+  if (motion === 'pageDown') {
+    nextSelection(pinnedPageSize() * context.count);
+    return true;
+  }
+  if (motion === 'pageUp') {
+    previousSelection(pinnedPageSize() * context.count);
+    return true;
+  }
+  if (motion === 'fileStart') {
+    moveSelectionToBoundary('start');
+    void revealSelectedPinnedResult('nearest');
+    return true;
+  }
+  if (motion === 'fileEnd') {
+    moveSelectionToBoundary('end');
+    void revealSelectedPinnedResult('nearest');
     return true;
   }
   return false;
@@ -428,15 +444,6 @@ function handleSurfaceCommand(command: CursorCommand) {
   }
   return false;
 }
-
-const syncPinnedSurfacePosition = () => {
-  pinnedResultsSurface.value.position = {
-    resultId: search.pinnedSelectedResult?.id,
-    selectedIndex: search.selectedIndex,
-  };
-};
-
-watch(() => [search.selectedIndex, search.pinnedSelectedResult?.id] as const, syncPinnedSurfacePosition, { immediate: true });
 
 onBeforeUnmount(() => {
   cursor.unregisterSurface(pinnedResultsSurfaceId);
@@ -455,12 +462,6 @@ onBeforeUnmount(() => {
   border-width: 0 0 0 1px;
   border-radius: 0;
   box-shadow: var(--shadow-inset-highlight);
-
-  &.navigation-active {
-    box-shadow:
-      inset 3px 0 0 var(--color-border-focus),
-      var(--shadow-inset-highlight);
-  }
 }
 
 .drawer-header,
@@ -661,6 +662,10 @@ h2 {
 .code-excerpt {
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
+}
+
+.pinned-tree :deep(.tree-row.entry-row.active) {
+  box-shadow: inset 3px 0 0 var(--color-border-focus);
 }
 
 .remove-result {

@@ -1,5 +1,5 @@
 import { computed, ref, watch } from 'vue';
-import { diffKeyTokenForEvent, parseDiffKeybinding, type DiffKeybindingAction, type DiffKeybindingMap } from '../../lib/diffKeybindings';
+import type { DiffKeybindingAction } from '../../lib/diffKeybindings';
 import type { DiffRenderModel, DiffRow, DiffViewMode, LspDiagnostic, ReviewAnchor, SyntaxSide } from '../../lib/protocol';
 import type { DiffSurface } from '../../stores/cursor';
 import type { CodeLineModel, CodeTextHighlight } from '../code/codeModels';
@@ -33,23 +33,14 @@ export type DiffCursorSearchMatch = {
 
 type DiffCursorLine = DiffCursorPosition;
 
-type ParsedBinding = {
-  action: DiffKeybindingAction;
-  tokens: string[];
-};
-
 export const useDiffCursor = (options: {
   model: () => DiffRenderModel | undefined;
   viewMode: () => DiffViewMode;
   syncScroll: () => boolean;
-  keybindings: () => DiffKeybindingMap;
   displayRows: (side?: SyntaxSide) => DisplayRow[];
   diagnostics: () => LspDiagnostic[];
   diffTargetFingerprint: () => string;
   halfPageLines: () => number;
-  shouldRestoreStoredPosition?: () => boolean;
-  onOpenFile?: (fileId: string) => void;
-  onMoveSurface?: (direction: -1 | 1) => void;
   onOpenSearch: () => void;
   onMoveSearch: (direction: number) => void;
   onHover: (position: DiffCursorPosition) => void;
@@ -62,13 +53,6 @@ export const useDiffCursor = (options: {
   const desiredColumn = ref(0);
   const mode = ref<DiffCursorMode>('normal');
   const visualStart = ref<DiffCursorPosition>();
-  const pendingTokens = ref<string[]>([]);
-  const countDigits = ref('');
-  const savedPositions = new Map<string, DiffCursorPosition>();
-  const jumpHistory = ref<DiffCursorPosition[]>([]);
-  const jumpHistoryIndex = ref(-1);
-  const pendingHistoryPosition = ref<DiffCursorPosition>();
-  let restoringHistory = false;
 
   const visualAnchor = computed<ReviewAnchor | undefined>(() => {
     if (
@@ -93,35 +77,10 @@ export const useDiffCursor = (options: {
     }
 
     const current = cursor.value;
-    const openingDifferentFile = current?.fileId !== model.fileId;
-    if (current && current.fileId !== model.fileId && !restoringHistory) pushJumpHistory(current);
-
     if (current?.fileId === model.fileId) {
       const refreshed = refreshPosition(current);
       if (refreshed) {
         cursor.value = refreshed;
-        savedPositions.set(model.fileId, refreshed);
-        return;
-      }
-    }
-
-    const pending = pendingHistoryPosition.value;
-    if (pending?.fileId === model.fileId) {
-      const refreshed = refreshPosition(pending);
-      pendingHistoryPosition.value = undefined;
-      restoringHistory = false;
-      if (refreshed) {
-        setCursor(refreshed, refreshed.column, true, refreshed.column, { history: false });
-        return;
-      }
-    }
-
-    const stored = options.shouldRestoreStoredPosition?.() === false ? undefined : savedPositions.get(model.fileId);
-    if (stored) {
-      const refreshed = refreshPosition(stored);
-      if (refreshed) {
-        setCursor(refreshed, refreshed.column, false, refreshed.column, { history: false });
-        if (openingDifferentFile) pushJumpHistory(refreshed);
         return;
       }
     }
@@ -132,31 +91,7 @@ export const useDiffCursor = (options: {
       return;
     }
 
-    setCursor(first, Math.min(desiredColumn.value, maxCursorColumn(first.text)), true, undefined, { history: false });
-    if (openingDifferentFile) pushJumpHistory(first);
-  };
-
-  const handleKeyDown = (event: KeyboardEvent) => {
-    const token = diffKeyTokenForEvent(event);
-    if (!token) return false;
-
-    if (token === '<Esc>') {
-      return executeBindingToken(token, event);
-    }
-
-    if (pendingTokens.value.length === 0 && /^[1-9]$/.test(token)) {
-      countDigits.value += token;
-      event.preventDefault();
-      return true;
-    }
-
-    if (pendingTokens.value.length === 0 && token === '0' && countDigits.value.length > 0) {
-      countDigits.value += token;
-      event.preventDefault();
-      return true;
-    }
-
-    return executeBindingToken(token, event);
+    setCursor(first, Math.min(desiredColumn.value, maxCursorColumn(first.text)), true);
   };
 
   const moveCursorToSearchMatch = (match: DiffCursorSearchMatch | undefined) => {
@@ -264,36 +199,6 @@ export const useDiffCursor = (options: {
     visualStart.value = undefined;
   };
 
-  const clearPending = () => {
-    pendingTokens.value = [];
-    countDigits.value = '';
-  };
-
-  const executeBindingToken = (token: string, event: KeyboardEvent) => {
-    const nextTokens = [...pendingTokens.value, token];
-    const bindings = parsedBindings(options.keybindings());
-    const exact = bindings.find((binding) => sameTokens(binding.tokens, nextTokens));
-    const hasPrefix = bindings.some((binding) => isTokenPrefix(nextTokens, binding.tokens));
-
-    if (exact) {
-      const count = countDigits.value ? Number(countDigits.value) : 1;
-      const hasCount = countDigits.value.length > 0;
-      clearPending();
-      runAction(exact.action, Math.max(1, count), hasCount);
-      event.preventDefault();
-      return true;
-    }
-
-    if (hasPrefix) {
-      pendingTokens.value = nextTokens;
-      event.preventDefault();
-      return true;
-    }
-
-    clearPending();
-    return false;
-  };
-
   const handleAction = (action: DiffKeybindingAction, count = 1, hasCount = false) => runAction(action, Math.max(1, count), hasCount);
 
   const runAction = (action: DiffKeybindingAction, count: number, hasCount: boolean) => {
@@ -330,10 +235,6 @@ export const useDiffCursor = (options: {
     else if (action === 'nextDiagnostic') moveToDiagnostic(count);
     else if (action === 'previousReview') moveToReview(-count);
     else if (action === 'nextReview') moveToReview(count);
-    else if (action === 'previousCursorPosition') moveThroughHistory(-1);
-    else if (action === 'nextCursorPosition') moveThroughHistory(1);
-    else if (action === 'splitLeft') moveToSplitSide('old', -1);
-    else if (action === 'splitRight') moveToSplitSide('new', 1);
     else if (action === 'diffSideLeft') moveToDiffSide('old');
     else if (action === 'diffSideRight') moveToDiffSide('new');
     else if (action === 'visualChar') toggleVisualMode('visual-char');
@@ -358,11 +259,7 @@ export const useDiffCursor = (options: {
     const active = cursor.value;
     if (!active || delta === 0) return;
 
-    const lines = navigationEntriesForCursor(true);
-    const index = lineIndex(lines, active);
-    if (index === -1) return;
-
-    const target = lines[Math.max(0, Math.min(lines.length - 1, index + delta))];
+    const target = relativeNavigationEntry(active, delta, true);
     if (!target) return;
 
     setCursor(target, Math.min(desiredColumn.value, maxCursorColumn(target.text)), true, desiredColumn.value);
@@ -493,25 +390,6 @@ export const useDiffCursor = (options: {
     moveToRelativeTarget(reviewEntries(), active, delta);
   };
 
-  const moveToSplitSide = (side: SyntaxSide, surfaceDirection: -1 | 1) => {
-    const active = cursor.value;
-    if (!active || options.viewMode() !== 'split') {
-      options.onMoveSurface?.(surfaceDirection);
-      return;
-    }
-
-    if (active.side === side) {
-      options.onMoveSurface?.(surfaceDirection);
-      return;
-    }
-
-    clearVisual();
-    const target = nearestLineForSide(side, active.rowIndex);
-    if (!target) return;
-
-    setCursor(target, Math.min(desiredColumn.value, maxCursorColumn(target.text)), true, desiredColumn.value);
-  };
-
   const moveToDiffSide = (side: SyntaxSide) => {
     const active = cursor.value;
     if (!active || options.viewMode() !== 'split' || active.side === side) return;
@@ -568,17 +446,10 @@ export const useDiffCursor = (options: {
     setCursor(target, Math.min(desiredColumn.value, maxCursorColumn(target.text)), true, desiredColumn.value);
   };
 
-  const setCursor = (
-    line: DiffCursorLine,
-    column: number,
-    notify: boolean,
-    desired = column,
-    cursorOptions: { history?: boolean } = {},
-  ) => {
+  const setCursor = (line: DiffCursorLine, column: number, notify: boolean, desired = column) => {
     const next = { ...line, column: line.target === 'code' ? clampColumn(column, line.text) : 0 };
     cursor.value = next;
     desiredColumn.value = Math.max(0, desired);
-    savedPositions.set(next.fileId, next);
     if (notify) options.onMove?.(next);
   };
 
@@ -610,6 +481,35 @@ export const useDiffCursor = (options: {
 
     if (options.viewMode() === 'inline' && mode.value === 'normal') return inlineLines(includeReviews);
     return sideLines(active.side, undefined, includeReviews);
+  };
+
+  const relativeNavigationEntry = (active: DiffCursorPosition, delta: number, includeReviews: boolean) => {
+    const model = options.model();
+    if (!model) return undefined;
+
+    const direction = delta < 0 ? -1 : 1;
+    let remaining = Math.abs(delta);
+    let displayIndex = active.displayIndex;
+    let fallback: DiffCursorLine | undefined;
+    const { rows, side } = displayRowsForCursor(active);
+
+    while (displayIndex + direction >= 0 && displayIndex + direction < rows.length) {
+      displayIndex += direction;
+      const entry = entryForDisplayRow(rows[displayIndex], displayIndex, model, side, includeReviews);
+      if (!entry) continue;
+
+      fallback = entry;
+      remaining -= 1;
+      if (remaining === 0) return entry;
+    }
+
+    return fallback;
+  };
+
+  const displayRowsForCursor = (active: DiffCursorPosition): { rows: DisplayRow[]; side: SyntaxSide | undefined } => {
+    const side = options.viewMode() === 'inline' && mode.value === 'normal' ? undefined : active.side;
+    const rows = side && options.viewMode() === 'split' && !options.syncScroll() ? options.displayRows(side) : options.displayRows();
+    return { rows, side };
   };
 
   const codeLinesForCursor = () => {
@@ -648,18 +548,27 @@ export const useDiffCursor = (options: {
   ): DiffCursorLine[] => {
     if (!model) return [];
     return displayRows
-      .map((item, displayIndex) => {
-        if (item.kind === 'diff') {
-          const rowIndex = rowIndexFromDisplayKey(item.key);
-          if (rowIndex === undefined) return undefined;
-          return side
-            ? sideLineForRow(model.fileId, item.row, rowIndex, displayIndex, side)
-            : inlineLineForRow(model.fileId, item.row, rowIndex, displayIndex);
-        }
-        if (!includeReviews || (side && item.anchor.side !== side)) return undefined;
-        return reviewEntryForRow(model.fileId, item, displayIndex);
-      })
+      .map((item, displayIndex) => entryForDisplayRow(item, displayIndex, model, side, includeReviews))
       .filter((line): line is DiffCursorLine => Boolean(line));
+  };
+
+  const entryForDisplayRow = (
+    item: DisplayRow | undefined,
+    displayIndex: number,
+    model: DiffRenderModel,
+    side: SyntaxSide | undefined,
+    includeReviews: boolean,
+  ): DiffCursorLine | undefined => {
+    if (!item) return undefined;
+    if (item.kind === 'diff') {
+      const rowIndex = rowIndexFromDisplayKey(item.key);
+      if (rowIndex === undefined) return undefined;
+      return side
+        ? sideLineForRow(model.fileId, item.row, rowIndex, displayIndex, side)
+        : inlineLineForRow(model.fileId, item.row, rowIndex, displayIndex);
+    }
+    if (!includeReviews || (side && item.anchor.side !== side)) return undefined;
+    return reviewEntryForRow(model.fileId, item, displayIndex);
   };
 
   const inlineLineForRow = (fileId: string, row: DiffRow, rowIndex: number, displayIndex: number): DiffCursorLine | undefined => {
@@ -738,39 +647,6 @@ export const useDiffCursor = (options: {
     return sideLines(match.side).find((line) => line.target === 'code' && line.line === match.line && line.rowIndex === match.rowIndex);
   };
 
-  const moveThroughHistory = (direction: -1 | 1) => {
-    const active = cursor.value;
-    if (!active) return;
-
-    if (jumpHistoryIndex.value === jumpHistory.value.length - 1 && !sameCursorPosition(jumpHistory.value[jumpHistoryIndex.value], active)) {
-      pushJumpHistory(active);
-    }
-
-    const nextIndex = jumpHistoryIndex.value + direction;
-    const target = jumpHistory.value[nextIndex];
-    if (!target) return;
-
-    jumpHistoryIndex.value = nextIndex;
-    pendingHistoryPosition.value = target;
-    restoringHistory = target.fileId !== active.fileId;
-    if (target.fileId !== active.fileId) {
-      options.onOpenFile?.(target.fileId);
-      return;
-    }
-
-    const refreshed = refreshPosition(target);
-    if (refreshed) setCursor(refreshed, refreshed.column, true, refreshed.column, { history: false });
-  };
-
-  const pushJumpHistory = (position: DiffCursorPosition) => {
-    const current = jumpHistory.value[jumpHistoryIndex.value];
-    if (sameCursorPosition(current, position)) return;
-    const next = jumpHistory.value.slice(0, jumpHistoryIndex.value + 1);
-    next.push({ ...position });
-    jumpHistory.value = next;
-    jumpHistoryIndex.value = next.length - 1;
-  };
-
   const lineAtOrAfter = (lines: DiffCursorLine[], lineNumber: number) => {
     return lines.find((line) => line.line >= lineNumber) ?? lines[lines.length - 1];
   };
@@ -828,7 +704,6 @@ export const useDiffCursor = (options: {
     visualAnchor,
     ensureCursor,
     handleAction,
-    handleKeyDown,
     currentSurfacePosition,
     moveCursorToSearchMatch,
     moveCursorToLine,
@@ -839,24 +714,7 @@ export const useDiffCursor = (options: {
     isReviewFocused,
     currentLineAnchor,
     clearVisual,
-    clearPending,
   };
-};
-
-const parsedBindings = (keybindings: DiffKeybindingMap): ParsedBinding[] => {
-  return Object.entries(keybindings).flatMap(([action, bindings]) => {
-    return bindings
-      .map((binding) => parseDiffKeybinding(binding))
-      .filter((tokens): tokens is string[] => Boolean(tokens && tokens.length > 0))
-      .map((tokens) => ({ action: action as DiffKeybindingAction, tokens }));
-  });
-};
-
-const sameTokens = (first: string[], second: string[]) =>
-  first.length === second.length && first.every((token, index) => token === second[index]);
-
-const isTokenPrefix = (prefix: string[], tokens: string[]) => {
-  return prefix.length < tokens.length && prefix.every((token, index) => token === tokens[index]);
 };
 
 const lineIndex = (lines: DiffCursorLine[], position: Pick<DiffCursorPosition, 'side' | 'line' | 'rowIndex'>) => {
@@ -866,18 +724,6 @@ const lineIndex = (lines: DiffCursorLine[], position: Pick<DiffCursorPosition, '
 const rowIndexFromDisplayKey = (key: string) => {
   const value = Number(key.slice('diff:'.length));
   return Number.isInteger(value) ? value : undefined;
-};
-
-const sameCursorPosition = (first: DiffCursorPosition | undefined, second: DiffCursorPosition | undefined) => {
-  if (!first || !second) return false;
-  return (
-    first.target === second.target &&
-    first.fileId === second.fileId &&
-    first.side === second.side &&
-    first.line === second.line &&
-    first.column === second.column &&
-    first.reviewKey === second.reviewKey
-  );
 };
 
 const clampColumn = (column: number, text: string) => Math.max(0, Math.min(maxCursorColumn(text), column));

@@ -95,10 +95,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import { useClient } from '../../lib/useClient';
 import type { DiffContextMode, LspDiagnostic, LspStatus, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
-import { diffRoute, routeParamString } from '../../lib/workspaceRoutes';
+import { routeParamString } from '../../lib/workspaceRoutes';
 import {
   diffSurfaceId,
   type CursorActivationReason,
@@ -112,7 +112,6 @@ import {
 import { useDiffStore } from '../../stores/diff';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
-import { useSettingsStore } from '../../stores/settings';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
 import Button from '../Button.vue';
@@ -158,12 +157,10 @@ const leftRef = ref<HTMLElement | null>(null);
 const rightRef = ref<HTMLElement | null>(null);
 const inlineRef = ref<HTMLElement | null>(null);
 const route = useRoute();
-const router = useRouter();
 const client = useClient();
 const diff = useDiffStore();
 const repo = useRepoStore();
 const review = useReviewStore();
-const settings = useSettingsStore();
 const cursor = useCursorStore();
 const draftBody = ref('');
 const flashingThreadId = ref<string>();
@@ -193,6 +190,7 @@ let handledThreadRevealRequestId = 0;
 let handledFileSearchRequestId = 0;
 let diffCursor: ReturnType<typeof useDiffCursor> | undefined;
 let suppressCursorAutoScroll = false;
+let activeCursorMotion: CursorMotion | undefined;
 let pendingDiffActivation: { surfaceId: string; side: SyntaxSide; reason: CursorActivationReason; hadStoredSurface: boolean } | undefined;
 let pendingFileOpenHistoryFileId: string | undefined;
 const diffSurfaceRefs = new Map<string, Ref<DiffSurface>>();
@@ -201,6 +199,13 @@ const registeredDiffSurfaceIds = new Set<string>();
 const routeFileId = computed(() => routeParamString(route.params.fileId));
 const model = computed(() => diff.current);
 const rows = computed(() => model.value?.rows ?? []);
+const navigableDiffSides = computed<SyntaxSide[]>(() => {
+  if (!model.value || rows.value.length === 0) return [];
+  const sides: SyntaxSide[] = [];
+  if (hasNavigableSide('old')) sides.push('old');
+  if (hasNavigableSide('new')) sides.push('new');
+  return sides;
+});
 const loading = computed(() => diff.loading);
 const error = computed(() => diff.error);
 const viewMode = computed(() => diff.viewMode);
@@ -251,6 +256,16 @@ const virtualRowOverscan = 40;
 const maxConcurrentSyntaxRequests = 2;
 const initialSyntaxGateMs = 80;
 const threadFlashDurationMs = 1800;
+const columnScrollMotions = new Set<CursorMotion>([
+  'moveLeft',
+  'moveRight',
+  'nextWord',
+  'previousWord',
+  'endWord',
+  'lineStart',
+  'firstNonBlank',
+  'lineEnd',
+]);
 const scrollbars = useDiffScrollbar({ left: leftRef, right: rightRef, syncedSplit: syncedSplitRef, inline: inlineRef });
 const hasLeftScroll = scrollbars.panes.left.hasScroll;
 const hasRightScroll = scrollbars.panes.right.hasScroll;
@@ -275,6 +290,11 @@ type SyntaxPageRequest = {
 type PaneKey = 'left' | 'right' | 'syncedSplit' | 'inline';
 
 type VirtualRow = DiffRenderedEntry['virtualRow'];
+
+type CursorScrollVirtualizer = {
+  getVirtualItems: () => Array<{ index: number; start: number; end?: number; size?: number }>;
+  scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void;
+};
 
 type RenderedRow = DiffRenderedEntry;
 
@@ -653,6 +673,7 @@ const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
 
 const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[]): RenderedRow[] => {
   syntaxVersion.value;
+  const diffSurfaceActive = activeDiffSurface();
   return virtualRows.map((virtualRow) => {
     const item = displayRows[virtualRow.index];
     const fields = buildRenderedDiffRowFields(item, {
@@ -663,14 +684,14 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
       reviewHighlightsForLine,
       searchHighlightsForLine,
       cursorStateForLine: (side, line, textLength) =>
-        activeDiffSurface() ? (diffCursor?.lineStateForLine(side, line, textLength) ?? {}) : {},
+        diffSurfaceActive ? (diffCursor?.lineStateForLine(side, line, textLength) ?? {}) : {},
       diagnosticsForLine,
     });
     return {
       virtualRow,
       ...fields,
       reviewRow: item && item.kind !== 'diff' ? item : undefined,
-      reviewFocused: item && item.kind !== 'diff' ? activeDiffSurface() && diffCursor?.isReviewFocused(item.key) : false,
+      reviewFocused: item && item.kind !== 'diff' ? diffSurfaceActive && diffCursor?.isReviewFocused(item.key) : false,
     };
   });
 };
@@ -1138,35 +1159,42 @@ const scrollVirtualizerToMatch = (
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
 
-const scrollToCursorPosition = (position: DiffCursorPosition) => {
+const scrollToCursorPosition = (position: DiffCursorPosition, motion?: CursorMotion) => {
   if (suppressCursorAutoScroll) {
     scrollbars.updateAfterRender();
     return;
   }
 
-  if (viewMode.value === 'split' && syncScroll.value) {
-    scrollVirtualizerToDisplayIndex(syncedSplitVirtualizer.value, position.displayIndex);
-  } else if (viewMode.value === 'split' && position.side === 'old') {
-    scrollVirtualizerToDisplayIndex(leftVirtualizer.value, position.displayIndex);
-  } else if (viewMode.value === 'split') {
-    scrollVirtualizerToDisplayIndex(rightVirtualizer.value, position.displayIndex);
-  } else {
-    scrollVirtualizerToDisplayIndex(inlineVirtualizer.value, position.displayIndex);
-  }
+  const target = cursorScrollTarget(position);
+  const needsVerticalScroll = !target.element || !displayIndexFullyVisible(target.virtualizer, target.element, position.displayIndex);
+  if (needsVerticalScroll) target.virtualizer.scrollToIndex(position.displayIndex, { align: 'auto' });
 
-  void nextTick(() => {
-    requestAnimationFrame(() => {
-      rootRef.value?.querySelector<HTMLElement>('[data-diff-cursor="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      scrollbars.updateAfterRender();
+  if (needsVerticalScroll || (motion && columnScrollMotions.has(motion))) {
+    void nextTick(() => {
+      requestAnimationFrame(() => {
+        rootRef.value?.querySelector<HTMLElement>('[data-diff-cursor="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        scrollbars.updateAfterRender();
+      });
     });
-  });
+    return;
+  }
 };
 
-const scrollVirtualizerToDisplayIndex = (
-  virtualizer: { scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void },
-  displayIndex: number,
-) => {
-  virtualizer.scrollToIndex(displayIndex, { align: 'auto' });
+const cursorScrollTarget = (position: DiffCursorPosition): { virtualizer: CursorScrollVirtualizer; element: HTMLElement | null } => {
+  if (viewMode.value === 'split' && syncScroll.value) return { virtualizer: syncedSplitVirtualizer.value, element: syncedSplitRef.value };
+  if (viewMode.value === 'split' && position.side === 'old') return { virtualizer: leftVirtualizer.value, element: leftRef.value };
+  if (viewMode.value === 'split') return { virtualizer: rightVirtualizer.value, element: rightRef.value };
+  return { virtualizer: inlineVirtualizer.value, element: inlineRef.value };
+};
+
+const displayIndexFullyVisible = (virtualizer: CursorScrollVirtualizer, element: HTMLElement, displayIndex: number) => {
+  const item = virtualizer.getVirtualItems().find((virtualRow) => virtualRow.index === displayIndex);
+  if (!item) return false;
+
+  const itemEnd = item.end ?? item.start + (item.size ?? 24);
+  const viewportStart = element.scrollTop;
+  const viewportEnd = viewportStart + element.clientHeight;
+  return item.start >= viewportStart && itemEnd <= viewportEnd;
 };
 
 const cursorHalfPageLines = () => {
@@ -1176,11 +1204,7 @@ const cursorHalfPageLines = () => {
 };
 
 const currentDiffSurfaceSides = (): SyntaxSide[] => {
-  if (!model.value || rows.value.length === 0) return [];
-  const sides: SyntaxSide[] = [];
-  if (hasNavigableSide('old')) sides.push('old');
-  if (hasNavigableSide('new')) sides.push('new');
-  return sides;
+  return navigableDiffSides.value;
 };
 
 const currentDiffSurfaceIds = () => currentDiffSurfaceSides().map((side) => diffSurfaceId(model.value?.fileId ?? '', side));
@@ -1276,21 +1300,24 @@ const activateDiffSurface = (surfaceId: string, side: SyntaxSide, reason: Cursor
   }
 
   if (reason === 'surface-move') {
-    if (restored && diffSurfacePositionVisible(restored)) restoreCursorWithoutAutoScroll(restored);
+    const currentPosition = diffCursor?.currentSurfacePosition();
+    if (currentPosition && currentPosition.fileId === model.value?.fileId && diffSurfacePositionVisible(currentPosition)) {
+      restoreCursorWithoutAutoScroll(currentPosition);
+    } else if (restored && diffSurfacePositionVisible(restored)) restoreCursorWithoutAutoScroll(restored);
     else moveCursorToFirstVisibleDiffLine(restored?.side);
-    syncActiveDiffSurfacePosition({ force: true });
+    syncActiveDiffSurfacePosition();
     return;
   }
 
   if (reason === 'history' || hadStoredSurface) {
     const restoredCursor = restored ? diffCursor?.moveCursorToSurfacePosition(restored) : false;
     if (!restoredCursor) moveCursorToInitialDiffPosition();
-    recordPendingFileOpenHistory(surfaceId);
+    recordPendingFileOpenHistory();
   } else {
     moveCursorToInitialDiffPosition();
-    recordPendingFileOpenHistory(surfaceId);
+    recordPendingFileOpenHistory();
   }
-  syncActiveDiffSurfacePosition({ force: true });
+  syncActiveDiffSurfacePosition();
 };
 
 const flushPendingDiffActivation = () => {
@@ -1323,7 +1350,13 @@ const handleDiffSurfaceMotion = (surfaceId: string, motion: CursorMotion, contex
   cursor.setActiveSurface(surfaceId, { activate: false });
   ensureDiffSurfaceCursor(surfaceId);
   const before = diffCursor?.currentSurfacePosition();
-  const handled = diffCursor?.handleAction(motion, context.count, context.hasCount) ?? false;
+  activeCursorMotion = motion;
+  let handled = false;
+  try {
+    handled = diffCursor?.handleAction(motion, context.count, context.hasCount) ?? false;
+  } finally {
+    activeCursorMotion = undefined;
+  }
   const after = diffCursor?.currentSurfacePosition();
   syncActiveDiffSurfacePosition();
   return {
@@ -1355,7 +1388,7 @@ const currentDiffCursorSurfaceId = () => {
   return position ? diffSurfaceId(position.fileId, position.side) : undefined;
 };
 
-const syncActiveDiffSurfacePosition = (options: { force?: boolean } = {}) => {
+const syncActiveDiffSurfacePosition = () => {
   const position = diffCursor?.currentSurfacePosition();
   if (!position) return;
 
@@ -1368,10 +1401,10 @@ const syncActiveDiffSurfacePosition = (options: { force?: boolean } = {}) => {
     cursor.setActiveSurface(surfaceId, { activate: false });
 };
 
-const recordPendingFileOpenHistory = (surfaceId: string) => {
+const recordPendingFileOpenHistory = () => {
   const position = diffCursor?.currentSurfacePosition();
   if (!position || pendingFileOpenHistoryFileId !== position.fileId || cursor.isRestoringHistory()) return;
-  syncActiveDiffSurfacePosition({ force: true });
+  syncActiveDiffSurfacePosition();
   cursor.recordSurfacePosition(diffSurfaceId(position.fileId, position.side));
   pendingFileOpenHistoryFileId = undefined;
 };
@@ -1669,7 +1702,6 @@ diffCursor = useDiffCursor({
   model: () => model.value,
   viewMode: () => viewMode.value,
   syncScroll: () => syncScroll.value,
-  keybindings: () => settings.diffKeybindings,
   displayRows: (side) => {
     if (viewMode.value === 'inline') return inlineDisplayRows.value;
     if (syncScroll.value) return syncedSplitDisplayRows.value;
@@ -1678,11 +1710,6 @@ diffCursor = useDiffCursor({
   diagnostics: () => lspDiagnostics.value,
   diffTargetFingerprint,
   halfPageLines: cursorHalfPageLines,
-  shouldRestoreStoredPosition: () => threadRevealRequest.value?.fileId !== model.value?.fileId,
-  onOpenFile: (fileId) => {
-    void router.push(diffRoute(fileId));
-  },
-  onMoveSurface: (direction) => cursor.moveSurface(direction < 0 ? 'left' : 'right'),
   onOpenSearch: openSearch,
   onMoveSearch: moveSearch,
   onHover: showCursorHover,
@@ -1691,7 +1718,7 @@ diffCursor = useDiffCursor({
   onClear: clearCursorTransientState,
   onMove: (position) => {
     syncActiveDiffSurfacePosition();
-    scrollToCursorPosition(position);
+    scrollToCursorPosition(position, activeCursorMotion);
   },
 });
 
@@ -2035,26 +2062,22 @@ const syncScrollPosition = (source: HTMLElement, target: HTMLElement | null) => 
 
 const onLeftScroll = (event: Event) => {
   scrollbars.schedule();
-  syncActiveDiffSurfacePosition();
   if (isSyncingScroll) return;
   syncScrollPosition(event.currentTarget as HTMLElement, rightRef.value);
 };
 
 const onRightScroll = (event: Event) => {
   scrollbars.schedule();
-  syncActiveDiffSurfacePosition();
   if (isSyncingScroll) return;
   syncScrollPosition(event.currentTarget as HTMLElement, leftRef.value);
 };
 
 const onSyncedSplitScroll = () => {
   scrollbars.schedule();
-  syncActiveDiffSurfacePosition();
 };
 
 const onInlineScroll = () => {
   scrollbars.schedule();
-  syncActiveDiffSurfacePosition();
 };
 
 const onPaneMouseUp = (event: MouseEvent) => {
@@ -2252,11 +2275,6 @@ watch(
 
   &:focus {
     outline: none;
-  }
-
-  &:focus-visible {
-    outline: 1px solid var(--color-border-focus);
-    outline-offset: -1px;
   }
 }
 
