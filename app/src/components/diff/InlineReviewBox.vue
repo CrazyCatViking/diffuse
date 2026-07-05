@@ -6,6 +6,7 @@
       chat: entry.kind === 'chat' || (entry.kind === 'draft' && entry.mode === 'chat'),
       flashing,
     }"
+    @keyup.esc="emit('cancel')"
   >
     <div v-if="entry.kind === 'thread'" class="review-box-header">
       <div class="thread-heading">
@@ -41,10 +42,12 @@
       </div>
 
       <textarea
+        ref="draftTextareaRef"
         :value="draftBody"
         :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
         :aria-label="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
         @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)"
+        @keydown.ctrl.enter.prevent="submitDraft"
       />
 
       <div class="composer-actions">
@@ -99,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { ReviewAnchor, ReviewChatMessage, ReviewThread } from '../../lib/protocol';
 
 export type InlineReviewEntry =
@@ -144,11 +147,13 @@ const emit = defineEmits<{
 }>();
 
 const replyBody = ref('');
+const draftTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const replyTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const agentResponding = computed(() => props.agentResponding ?? false);
 
 const submitDraft = () => {
   if (props.entry.kind !== 'draft') return;
+  if (props.draftBody.trim().length === 0 || agentResponding.value) return;
   if (props.entry.mode === 'chat') emit('submitChatDraft');
   else emit('submit');
 };
@@ -218,6 +223,24 @@ const anchorLabel = (anchor: ReviewAnchor) => {
   const range = anchor.startLine === anchor.endLine ? `${anchor.startLine}` : `${anchor.startLine}-${anchor.endLine}`;
   return `${anchor.side}:${range}`;
 };
+
+const focusDraftTextarea = async () => {
+  if (props.entry.kind !== 'draft') return;
+
+  await nextTick();
+  draftTextareaRef.value?.focus();
+};
+
+onMounted(() => {
+  void focusDraftTextarea();
+});
+
+watch(
+  () => (props.entry.kind === 'draft' ? props.entry.key : undefined),
+  () => {
+    void focusDraftTextarea();
+  },
+);
 </script>
 
 <style scoped lang="scss">

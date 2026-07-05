@@ -1,5 +1,12 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
+import {
+  cloneDefaultDiffKeybindings,
+  mergeDiffKeybindings,
+  validateDiffKeybindingMap,
+  type DiffKeybindingMap,
+  type DiffKeybindingValidation,
+} from '../lib/diffKeybindings';
 
 export type SyntaxThemeId = 'github-dark' | 'solarized-dark' | 'nord' | 'high-contrast' | 'custom';
 
@@ -30,6 +37,7 @@ export type SyntaxTheme = {
 
 const syntaxThemeStorageKey = 'diffuse.syntaxTheme';
 const customSyntaxThemeStorageKey = 'diffuse.customSyntaxTheme';
+const diffKeybindingsStorageKey = 'diffuse.diffKeybindings.v1';
 
 export const builtInSyntaxThemes: SyntaxTheme[] = [
   {
@@ -99,6 +107,7 @@ const defaultCustomTheme: SyntaxThemeColors = { ...builtInSyntaxThemes[0].colors
 export const useSettingsStore = defineStore('settings', () => {
   const selectedSyntaxThemeId = ref<SyntaxThemeId>(loadThemeId());
   const customSyntaxTheme = ref<SyntaxThemeColors>(loadCustomTheme());
+  const diffKeybindings = ref<DiffKeybindingMap>(loadDiffKeybindings());
 
   const syntaxTheme = computed<SyntaxTheme>(() => {
     if (selectedSyntaxThemeId.value === 'custom') return { id: 'custom', name: 'Custom', colors: customSyntaxTheme.value };
@@ -115,12 +124,29 @@ export const useSettingsStore = defineStore('settings', () => {
     window.localStorage.setItem(customSyntaxThemeStorageKey, JSON.stringify(customSyntaxTheme.value));
   };
 
+  const setDiffKeybindings = (keybindings: DiffKeybindingMap): DiffKeybindingValidation => {
+    const validation = validateDiffKeybindingMap(keybindings);
+    if (!validation.valid) return validation;
+
+    diffKeybindings.value = cloneDiffKeybindings(keybindings);
+    window.localStorage.setItem(diffKeybindingsStorageKey, JSON.stringify(diffKeybindings.value));
+    return validation;
+  };
+
+  const resetDiffKeybindings = () => {
+    diffKeybindings.value = cloneDefaultDiffKeybindings();
+    window.localStorage.setItem(diffKeybindingsStorageKey, JSON.stringify(diffKeybindings.value));
+  };
+
   return {
     selectedSyntaxThemeId,
     customSyntaxTheme,
+    diffKeybindings,
     syntaxTheme,
     setSyntaxTheme,
     setCustomSyntaxColor,
+    setDiffKeybindings,
+    resetDiffKeybindings,
   };
 });
 
@@ -141,4 +167,19 @@ const loadCustomTheme = (): SyntaxThemeColors => {
   } catch {
     return defaultCustomTheme;
   }
+};
+
+const loadDiffKeybindings = (): DiffKeybindingMap => {
+  const raw = window.localStorage.getItem(diffKeybindingsStorageKey);
+  if (!raw) return cloneDefaultDiffKeybindings();
+
+  try {
+    return mergeDiffKeybindings(JSON.parse(raw));
+  } catch {
+    return cloneDefaultDiffKeybindings();
+  }
+};
+
+const cloneDiffKeybindings = (keybindings: DiffKeybindingMap): DiffKeybindingMap => {
+  return Object.fromEntries(Object.entries(keybindings).map(([action, bindings]) => [action, [...bindings]])) as DiffKeybindingMap;
 };

@@ -1,5 +1,5 @@
 <template>
-  <section ref="rootRef" class="folder-diff-viewer">
+  <section ref="rootRef" class="folder-diff-viewer" tabindex="-1" @pointerdown.capture="activateFolderSurface">
     <div class="folder-header">
       <div class="folder-meta">
         <span class="folder-kicker">Folder review</span>
@@ -12,8 +12,8 @@
       <DiffViewControls
         :view-mode="viewMode"
         :context-mode="contextMode"
-        @update:view-mode="emit('update:viewMode', $event)"
-        @update:context-mode="emit('update:contextMode', $event)"
+        @update:view-mode="diff.setViewMode($event)"
+        @update:context-mode="diff.setContextMode($event)"
       />
     </div>
 
@@ -53,21 +53,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import type {
-  ChangedFile,
-  DiffContextMode,
-  DiffRenderModel,
-  DiffRow,
-  DiffTarget,
-  DiffViewMode,
-  LspDiagnostic,
-  ReviewAnchor,
-  SyntaxSide,
-  SyntaxSpan,
-} from '../../lib/protocol';
+import { useRoute, useRouter } from 'vue-router';
+import type { DiffRenderModel, DiffRow, LspDiagnostic, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
+import { filesForFolderPath, overviewRoute, routeParamString } from '../../lib/workspaceRoutes';
+import { folderDiffSurfaceId, type FolderDiffSurface, useCursorStore } from '../../stores/cursor';
+import { useDiffStore } from '../../stores/diff';
+import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
 import type { ReviewTextHighlight } from './HighlightedCode.vue';
@@ -91,30 +85,23 @@ import { useDiffSelection } from './useDiffSelection';
 import { buildRenderedDiffRowFields } from './diffRenderedRows';
 import FolderDiffStream from './FolderDiffStream.vue';
 
-const props = defineProps<{
-  folderPath: string;
-  files: ChangedFile[];
-  target: DiffTarget;
-  viewMode: DiffViewMode;
-  contextMode: DiffContextMode;
-}>();
-
-const emit = defineEmits<{
-  'update:viewMode': [mode: DiffViewMode];
-  'update:contextMode': [mode: DiffContextMode];
-}>();
-
 const client = useClient();
+const route = useRoute();
+const router = useRouter();
+const repo = useRepoStore();
+const diff = useDiffStore();
 const review = useReviewStore();
-const models = ref<DiffRenderModel[]>([]);
+const cursor = useCursorStore();
+const models = shallowRef<DiffRenderModel[]>([]);
 const loading = ref(false);
 const error = ref<string>();
-const syntaxSpans = ref<Record<string, SyntaxSpan[]>>({});
-const diagnosticsByFile = ref<Record<string, LspDiagnostic[]>>({});
+const syntaxSpans = shallowRef<Record<string, SyntaxSpan[]>>({});
+const diagnosticsByFile = shallowRef<Record<string, LspDiagnostic[]>>({});
 const draftBody = ref('');
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
 let loadGeneration = 0;
+let activeFolderSurfaceId: string | undefined;
 
 type FolderVirtualItem = {
   kind: 'file' | 'empty' | 'row';
@@ -143,15 +130,20 @@ type FolderRenderedRow = {
 
 const rootRef = ref<HTMLElement | null>(null);
 const folderScrollRef = ref<HTMLElement | null>(null);
+const folderPath = computed(() => routeParamString(route.params.folderPath));
+const files = computed(() => filesForFolderPath(repo.changedFiles, folderPath.value));
+const target = computed(() => repo.diffTarget);
+const viewMode = computed(() => diff.viewMode);
+const contextMode = computed(() => diff.contextMode);
 const scrollbars = useDiffScrollbar({ folder: folderScrollRef });
 const hasFolderScroll = scrollbars.panes.folder.hasScroll;
 const folderThumbStyle = scrollbars.panes.folder.thumbStyle;
 const diffTargetFingerprint = () =>
   JSON.stringify({
-    base: props.target.base,
-    compare: props.target.compare,
-    includeStaged: props.target.includeStaged,
-    includeUnstaged: props.target.includeUnstaged,
+    base: target.value.base,
+    compare: target.value.compare,
+    includeStaged: target.value.includeStaged,
+    includeUnstaged: target.value.includeUnstaged,
   });
 const {
   selectionDraft,
@@ -165,7 +157,7 @@ const {
   rootRef,
   scrollContainerRef: folderScrollRef,
   selector: '[data-review-side][data-review-line][data-review-file-id]',
-  fileForElement: (element) => props.files.find((item) => item.id === element.dataset.reviewFileId),
+  fileForElement: (element) => files.value.find((item) => item.id === element.dataset.reviewFileId),
   diffTargetFingerprint,
   requireSameFile: true,
 });
@@ -193,7 +185,7 @@ const folderVirtualizer = useVirtualizer(
     getScrollElement: () => folderScrollRef.value,
     getItemKey: (index) => folderVirtualItems.value[index]?.key ?? index,
     estimateSize: (index: number) => estimateFolderItemSize(folderVirtualItems.value[index]),
-    overscan: 40,
+    overscan: 20,
     useAnimationFrameWithResizeObserver: true,
   })),
 );
@@ -310,6 +302,7 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
       commentsExpandedForLine: (side, line) => expandedCommentStarts.value.has(fileCommentStartKey(fileId, side, line)),
       reviewHighlightsForLine: (side, line, textLength) => reviewHighlightsForLine(fileId, side, line, textLength),
       diagnosticsForLine: (_side, line) => diagnosticsForLine(fileId, line),
+      renderTarget: viewMode.value === 'split' ? 'split' : 'inline',
     });
     const reviewRow = displayReviewRow(item.item);
     return {
@@ -360,8 +353,8 @@ const reviewSummary = (fileId: string) => {
 
 const emptyModel = (): DiffRenderModel => ({
   fileId: '',
-  mode: props.viewMode,
-  context: props.contextMode,
+  mode: viewMode.value,
+  context: contextMode.value,
   syntax: { grammarInstalled: false, highlightsInstalled: false },
   rows: [],
 });
@@ -390,10 +383,10 @@ const loadFolderDiff = async () => {
 
   try {
     const loaded: DiffRenderModel[] = [];
-    for (const file of props.files) {
-      const model = await client.getDiffRenderModel(file.id, { mode: props.viewMode, context: props.contextMode }, props.target);
+    for (const file of files.value) {
+      const model = await client.getDiffRenderModel(file.id, { mode: viewMode.value, context: contextMode.value }, target.value);
       if (generation !== loadGeneration) return;
-      loaded.push(model);
+      loaded.push(markRaw(model));
       models.value = [...loaded];
       void loadSyntaxForModel(model, generation);
       void loadDiagnosticsForModel(model, generation);
@@ -409,7 +402,7 @@ const loadDiagnosticsForModel = async (model: DiffRenderModel, generation: numbe
   if (!supportsLspFile(model.fileId)) return;
 
   try {
-    const diagnostics = await client.getLspDiagnostics(model.fileId, 'new', props.target);
+    const diagnostics = await client.getLspDiagnostics(model.fileId, 'new', target.value);
     if (generation !== loadGeneration) return;
 
     diagnosticsByFile.value = {
@@ -438,7 +431,7 @@ const loadSyntaxSide = async (model: DiffRenderModel, side: SyntaxSide, maxLine:
   if (maxLine === 0) return;
 
   try {
-    const lines = await client.getSyntaxSpans(model.fileId, side, 1, maxLine, { context: props.contextMode }, props.target);
+    const lines = await client.getSyntaxSpans(model.fileId, side, 1, maxLine, { context: contextMode.value }, target.value);
     if (generation !== loadGeneration) return;
 
     const next = { ...syntaxSpans.value };
@@ -563,7 +556,7 @@ const reviewHighlightForLine = (anchor: ReviewAnchor, line: number, textLength: 
 };
 
 const startLineComment = (fileId: string, payload: { side: 'old' | 'new'; line: number; text: string }) => {
-  const file = props.files.find((item) => item.id === fileId);
+  const file = files.value.find((item) => item.id === fileId);
   if (!file) return;
   selectionDraft.value = undefined;
   draftBody.value = '';
@@ -627,7 +620,7 @@ const {
   cleanup: cleanupLspHover,
 } = useLspHover({
   client,
-  target: () => props.target,
+  target: () => target.value,
   diffTargetFingerprint,
   reviewElementForNode,
   textOffsetWithinElement,
@@ -635,14 +628,24 @@ const {
 });
 
 watch(
-  () => [props.folderPath, props.files.map((file) => file.id).join('\n'), props.contextMode, JSON.stringify(props.target)],
+  () => [folderPath.value, files.value.map((file) => file.id).join('\n'), contextMode.value, JSON.stringify(target.value)],
   () => {
     void loadFolderDiff();
   },
   { immediate: true },
 );
 
-watch([folderTotalSize, () => props.viewMode, () => loading.value], scrollbars.updateAfterRender, { immediate: true, flush: 'post' });
+watch([folderTotalSize, viewMode, () => loading.value], scrollbars.updateAfterRender, { immediate: true, flush: 'post' });
+
+watch(
+  () => [folderPath.value, files.value.length] as const,
+  ([path, count]) => {
+    if (!path || count > 0) return;
+    void router.replace(overviewRoute());
+  },
+);
+
+watch(folderPath, () => registerFolderSurface(), { immediate: true });
 
 onMounted(() => {
   document.addEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
@@ -651,9 +654,30 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', clearSelectionDraftWhenSelectionEnds);
+  if (activeFolderSurfaceId) cursor.unregisterSurface(activeFolderSurfaceId);
   cleanupLspHover();
   scrollbars.cleanup();
 });
+
+function registerFolderSurface() {
+  const nextSurfaceId = folderDiffSurfaceId(folderPath.value);
+  if (activeFolderSurfaceId === nextSurfaceId) return;
+  if (activeFolderSurfaceId) cursor.unregisterSurface(activeFolderSurfaceId);
+
+  activeFolderSurfaceId = nextSurfaceId;
+  cursor.registerSurface<FolderDiffSurface>(
+    { id: nextSurfaceId, type: 'folder-diff', position: {} },
+    {
+      id: nextSurfaceId,
+      getRect: () => rootRef.value?.getBoundingClientRect(),
+      activate: () => rootRef.value?.focus({ preventScroll: true }),
+    },
+  );
+}
+
+function activateFolderSurface() {
+  if (activeFolderSurfaceId) cursor.setActiveSurface(activeFolderSurfaceId);
+}
 </script>
 
 <style scoped lang="scss">
@@ -663,6 +687,11 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   background: var(--color-bg-app);
+
+  &:focus,
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 .folder-header {

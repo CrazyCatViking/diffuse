@@ -1,5 +1,11 @@
 <template>
-  <section class="review-overview" aria-label="Review overview">
+  <section
+    ref="rootRef"
+    class="review-overview"
+    tabindex="-1"
+    aria-label="Review overview"
+    @pointerdown.capture="cursor.setActiveSurface(reviewOverviewSurfaceId)"
+  >
     <header class="overview-hero">
       <div class="hero-copy">
         <Badge tone="review">Review overview</Badge>
@@ -10,11 +16,11 @@
       </div>
 
       <div class="hero-actions">
-        <Button variant="secondary" size="sm" :disabled="loading" @click="emit('newSession')">New session</Button>
+        <Button variant="secondary" size="sm" :disabled="loading" @click="review.startNewSession()">New session</Button>
 
-        <Button v-if="activeRun" variant="danger" size="sm" :disabled="loading" @click="emit('stopReview')">Stop AI review</Button>
+        <Button v-if="activeRun" variant="danger" size="sm" :disabled="loading" @click="review.stopAgentReview()">Stop AI review</Button>
 
-        <Button v-else variant="ai" size="sm" :disabled="loading || changedFiles.length === 0" @click="emit('startReview')">
+        <Button v-else variant="ai" size="sm" :disabled="loading || changedFiles.length === 0" @click="review.startAgentReview()">
           Start AI review
         </Button>
       </div>
@@ -99,7 +105,7 @@
 
         <div v-else class="file-overview-list">
           <article v-for="item in fileSummaries" :key="item.file.id" class="file-card" :class="{ reviewed: item.reviewed }">
-            <button class="file-target" type="button" @click="emit('selectFile', item.file.id)">
+            <button class="file-target" type="button" @click="openFile(item.file.id)">
               <span class="file-status" :class="`status-${item.file.status}`">{{ statusLabel(item.file.status) }}</span>
 
               <span class="file-copy">
@@ -167,7 +173,7 @@
 
         <div v-else class="thread-list">
           <article v-for="thread in filteredThreads" :key="thread.id" class="thread-card" :class="thread.status">
-            <button class="thread-target" type="button" @click="emit('selectThread', thread)">
+            <button class="thread-target" type="button" @click="openThread(thread)">
               <span class="thread-file">{{ threadPath(thread) }}</span>
 
               <span class="thread-line">{{ anchorLabel(thread) }}</span>
@@ -184,9 +190,9 @@
 
               <span>{{ formatDate(thread.updatedAt) }}</span>
 
-              <Button v-if="thread.status === 'open'" variant="ghost" size="sm" @click="emit('resolveThread', thread)">Resolve</Button>
+              <Button v-if="thread.status === 'open'" variant="ghost" size="sm" @click="review.resolveThread(thread)">Resolve</Button>
 
-              <Button v-else variant="ghost" size="sm" @click="emit('reopenThread', thread)">Reopen</Button>
+              <Button v-else variant="ghost" size="sm" @click="review.reopenThread(thread)">Reopen</Button>
             </div>
           </article>
         </div>
@@ -197,17 +203,13 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import type {
-  ChangedFile,
-  DiffTarget,
-  LspDiagnostic,
-  ReviewAgentState,
-  ReviewProgress,
-  ReviewRun,
-  ReviewSession,
-  ReviewThread,
-} from '../../lib/protocol';
+import { useRouter } from 'vue-router';
+import type { ChangedFile, LspDiagnostic, ReviewThread } from '../../lib/protocol';
 import { useClient } from '../../lib/useClient';
+import { changedFilePath, diffRoute, threadDiffRoute } from '../../lib/workspaceRoutes';
+import { reviewOverviewSurfaceId, type ReviewOverviewSurface, useCursorStore } from '../../stores/cursor';
+import { useRepoStore } from '../../stores/repo';
+import { useReviewStore } from '../../stores/review';
 import Button from '../Button.vue';
 import { supportsLspFile } from '../diff/useLspHover';
 import Badge from '../ui/Badge.vue';
@@ -238,30 +240,20 @@ type DiagnosticScan = {
   error?: string;
 };
 
-const props = defineProps<{
-  changedFiles: ChangedFile[];
-  target: DiffTarget;
-  reviewedFileIds: string[];
-  session: ReviewSession | null;
-  progress: ReviewProgress | null;
-  activeRun: ReviewRun | null;
-  activeAgentState: ReviewAgentState | null;
-  threads: ReviewThread[];
-  loading: boolean;
-  error?: string;
-}>();
-
-const emit = defineEmits<{
-  selectFile: [fileId: string];
-  newSession: [];
-  startReview: [];
-  stopReview: [];
-  selectThread: [thread: ReviewThread];
-  resolveThread: [thread: ReviewThread];
-  reopenThread: [thread: ReviewThread];
-}>();
-
 const client = useClient();
+const router = useRouter();
+const repo = useRepoStore();
+const review = useReviewStore();
+const cursor = useCursorStore();
+const rootRef = ref<HTMLElement | null>(null);
+cursor.registerSurface<ReviewOverviewSurface>(
+  { id: reviewOverviewSurfaceId, type: 'review-overview', position: {} },
+  {
+    id: reviewOverviewSurfaceId,
+    getRect: () => rootRef.value?.getBoundingClientRect(),
+    activate: () => rootRef.value?.focus({ preventScroll: true }),
+  },
+);
 const diagnosticProgressBatchSize = 12;
 const threadFilters: { value: ThreadFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -275,24 +267,34 @@ const diagnosticStateByFile = ref<Record<string, DiagnosticFileState>>({});
 const diagnosticScan = ref<DiagnosticScan>({ running: false, checked: 0, total: 0 });
 let diagnosticGeneration = 0;
 
-const totalFiles = computed(() => props.changedFiles.length);
-const reviewedFileIdSet = computed(() => new Set(props.reviewedFileIds));
-const reviewedCount = computed(() => props.changedFiles.filter((file) => reviewedFileIdSet.value.has(file.id)).length);
+const changedFiles = computed(() => repo.changedFiles);
+const target = computed(() => repo.diffTarget);
+const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
+const session = computed(() => review.session);
+const progress = computed(() => review.progress);
+const activeRun = computed(() => review.activeRun);
+const activeAgentState = computed(() => review.activeAgentState);
+const threads = computed(() => review.threads);
+const loading = computed(() => review.loading);
+const error = computed(() => review.error);
+const totalFiles = computed(() => changedFiles.value.length);
+const reviewedFileIdSet = computed(() => new Set(reviewedFileIds.value));
+const reviewedCount = computed(() => changedFiles.value.filter((file) => reviewedFileIdSet.value.has(file.id)).length);
 const reviewedPercent = computed(() => (totalFiles.value === 0 ? 0 : Math.round((reviewedCount.value / totalFiles.value) * 100)));
-const additionsTotal = computed(() => props.changedFiles.reduce((total, file) => total + file.additions, 0));
-const deletionsTotal = computed(() => props.changedFiles.reduce((total, file) => total + file.deletions, 0));
-const openThreads = computed(() => props.threads.filter((thread) => thread.status === 'open'));
-const resolvedThreads = computed(() => props.threads.filter((thread) => thread.status === 'resolved'));
+const additionsTotal = computed(() => changedFiles.value.reduce((total, file) => total + file.additions, 0));
+const deletionsTotal = computed(() => changedFiles.value.reduce((total, file) => total + file.deletions, 0));
+const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
+const resolvedThreads = computed(() => threads.value.filter((thread) => thread.status === 'resolved'));
 const threadsByFile = computed(() => {
   const byFile = new Map<string, ReviewThread[]>();
-  for (const thread of props.threads) {
+  for (const thread of threads.value) {
     const current = byFile.get(thread.fileId) ?? [];
     current.push(thread);
     byFile.set(thread.fileId, current);
   }
   return byFile;
 });
-const orderedThreads = computed(() => [...props.threads].sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)));
+const orderedThreads = computed(() => [...threads.value].sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)));
 const filteredThreads = computed(() => {
   return orderedThreads.value.filter((thread) => {
     if (threadFilter.value === 'open') return thread.status === 'open';
@@ -315,7 +317,7 @@ const diagnosticSummary = computed(() => {
     failed: Object.values(diagnosticStateByFile.value).filter((state) => state.status === 'failed').length,
   };
 });
-const diagnosticEligibleFiles = computed(() => props.changedFiles.filter(shouldCheckDiagnostics));
+const diagnosticEligibleFiles = computed(() => changedFiles.value.filter(shouldCheckDiagnostics));
 const diagnosticsTone = computed<BadgeTone>(() => {
   if (diagnosticScan.value.running) return 'info';
   if (diagnosticSummary.value.errors > 0 || diagnosticSummary.value.failed > 0) return 'danger';
@@ -345,23 +347,23 @@ const diagnosticsDetail = computed(() => {
   if (parts.length === 0) return 'No diagnostics reported for supported changed files.';
   return parts.join(', ');
 });
-const agentStatus = computed(() => props.activeRun?.status ?? props.progress?.status ?? 'idle');
+const agentStatus = computed(() => activeRun.value?.status ?? progress.value?.status ?? 'idle');
 const progressText = computed(() => {
-  if (!props.progress || props.progress.totalFiles === undefined || props.progress.reviewedFiles === undefined) return undefined;
-  return `${props.progress.reviewedFiles}/${props.progress.totalFiles} files`;
+  if (!progress.value || progress.value.totalFiles === undefined || progress.value.reviewedFiles === undefined) return undefined;
+  return `${progress.value.reviewedFiles}/${progress.value.totalFiles} files`;
 });
 const activityMessage = computed(() => {
-  if (props.activeAgentState?.currentFile && props.activeAgentState.lastThoughtSummary) {
-    return `${props.activeAgentState.currentFile}: ${props.activeAgentState.lastThoughtSummary}`;
+  if (activeAgentState.value?.currentFile && activeAgentState.value.lastThoughtSummary) {
+    return `${activeAgentState.value.currentFile}: ${activeAgentState.value.lastThoughtSummary}`;
   }
-  if (props.activeAgentState?.lastThoughtSummary) return props.activeAgentState.lastThoughtSummary;
-  if (props.activeRun?.message) return props.activeRun.message;
-  if (props.progress?.message) return props.progress.message;
-  if (props.activeRun) return 'Review agent is running.';
+  if (activeAgentState.value?.lastThoughtSummary) return activeAgentState.value.lastThoughtSummary;
+  if (activeRun.value?.message) return activeRun.value.message;
+  if (progress.value?.message) return progress.value.message;
+  if (activeRun.value) return 'Review agent is running.';
   return 'Start an AI review to populate findings and progress here.';
 });
 const overviewSubtitle = computed(() => {
-  if (!props.session) return 'Preparing the local review session.';
+  if (!session.value) return 'Preparing the local review session.';
   return `${totalFiles.value} changed ${totalFiles.value === 1 ? 'file' : 'files'}, ${openThreads.value.length} open ${openThreads.value.length === 1 ? 'thread' : 'threads'}.`;
 });
 const changeStatusText = computed(() => {
@@ -376,7 +378,7 @@ const changeStatusText = computed(() => {
 });
 const statusCounts = computed<Record<ChangedFile['status'], number>>(() => {
   const counts: Record<ChangedFile['status'], number> = { added: 0, modified: 0, deleted: 0, renamed: 0 };
-  for (const file of props.changedFiles) counts[file.status] += 1;
+  for (const file of changedFiles.value) counts[file.status] += 1;
   return counts;
 });
 const filePanelSubtitle = computed(() => {
@@ -384,10 +386,10 @@ const filePanelSubtitle = computed(() => {
   return `${reviewedCount.value} reviewed, ${totalFiles.value - reviewedCount.value} open.`;
 });
 const threadPanelSubtitle = computed(() => {
-  return `${props.threads.length} total, ${resolvedThreads.value.length} resolved.`;
+  return `${threads.value.length} total, ${resolvedThreads.value.length} resolved.`;
 });
 const fileSummaries = computed<FileSummary[]>(() => {
-  return props.changedFiles.map((file) => {
+  return changedFiles.value.map((file) => {
     const threads = threadsByFile.value.get(file.id) ?? [];
     const openThreadCount = threads.filter((thread) => thread.status === 'open').length;
     const diagnostics = diagnosticsByFile.value[file.id] ?? [];
@@ -407,12 +409,11 @@ const fileSummaries = computed<FileSummary[]>(() => {
 });
 const diagnosticScanKey = computed(() =>
   JSON.stringify({
-    target: props.target,
-    files: props.changedFiles.map((file) => `${file.id}:${file.signature}`).join('\n'),
+    target: target.value,
+    files: changedFiles.value.map((file) => `${file.id}:${file.signature}`).join('\n'),
   }),
 );
 
-const changedFilePath = (file: ChangedFile) => file.newPath ?? file.oldPath ?? file.id;
 const shouldCheckDiagnostics = (file: ChangedFile) => file.status !== 'deleted' && supportsLspFile(changedFilePath(file));
 const statusLabel = (status: ChangedFile['status']) => {
   return {
@@ -494,7 +495,7 @@ const diagnosticParts = (summary: {
 
 const loadDiagnostics = async () => {
   const generation = ++diagnosticGeneration;
-  const files = props.changedFiles.filter(shouldCheckDiagnostics);
+  const files = changedFiles.value.filter(shouldCheckDiagnostics);
   const nextDiagnosticsByFile: Record<string, LspDiagnostic[]> = {};
   const nextDiagnosticStateByFile: Record<string, DiagnosticFileState> = {};
   let checked = 0;
@@ -512,7 +513,7 @@ const loadDiagnostics = async () => {
 
   for (const file of files) {
     try {
-      const diagnostics = await client.getLspDiagnostics(file.id, 'new', props.target);
+      const diagnostics = await client.getLspDiagnostics(file.id, 'new', target.value);
       if (generation !== diagnosticGeneration) return;
 
       nextDiagnosticsByFile[file.id] = diagnostics.status === 'ok' ? diagnostics.diagnostics : [];
@@ -532,9 +533,18 @@ const loadDiagnostics = async () => {
   if (generation === diagnosticGeneration) flushDiagnostics(false);
 };
 
+const openFile = async (fileId: string) => {
+  await router.push(diffRoute(fileId));
+};
+
+const openThread = async (thread: ReviewThread) => {
+  await router.push(threadDiffRoute(thread));
+};
+
 watch(diagnosticScanKey, () => void loadDiagnostics(), { immediate: true });
 
 onBeforeUnmount(() => {
+  cursor.unregisterSurface(reviewOverviewSurfaceId);
   diagnosticGeneration += 1;
 });
 </script>
@@ -550,6 +560,11 @@ onBeforeUnmount(() => {
   overflow: auto;
   color: var(--color-text-secondary);
   background: var(--color-bg-app);
+
+  &:focus,
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 .overview-hero,

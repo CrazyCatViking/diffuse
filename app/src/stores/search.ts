@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { defineStore } from 'pinia';
 import { useClient } from '../lib/useClient';
 import { useRepoStore } from './repo';
@@ -28,11 +28,14 @@ export const useSearchStore = defineStore('search', () => {
   const overlayOpen = ref(false);
   const drawerOpen = ref(false);
   const selectedIndex = ref(0);
+  const pinnedSelectedIndex = ref(0);
   const activeFilters = ref<SearchFilterKind[]>([]);
   const treeActiveFilters = ref<SearchFilterKind[]>([]);
   const pinnedRemovedResultIds = ref<string[]>([]);
+  const pinnedSnapshotResults = shallowRef<SearchResult[]>([]);
+  const pinnedQuery = ref('');
   const history = ref(loadHistory());
-  const coreResults = ref<SearchResult[]>([]);
+  const coreResults = shallowRef<SearchResult[]>([]);
   const activeSearchId = ref<string>();
   const searchLoading = ref(false);
   const error = ref<string>();
@@ -62,19 +65,17 @@ export const useSearchStore = defineStore('search', () => {
   const selectedResult = computed<SearchResult | undefined>(() => results.value[selectedIndex.value]);
   const pinnedRemovedResultIdSet = computed(() => new Set(pinnedRemovedResultIds.value));
   const pinnedResultEntries = computed(() => {
-    return results.value
+    return pinnedSnapshotResults.value
       .map((result, index) => ({ result, index }))
       .filter((entry) => !pinnedRemovedResultIdSet.value.has(entry.result.id));
   });
   const pinnedResults = computed(() => pinnedResultEntries.value.map((entry) => entry.result));
+  const pinnedResultCount = computed(() => pinnedResultEntries.value.length);
+  const hasPinnedSnapshot = computed(() => pinnedSnapshotResults.value.length > 0);
   const pinnedSelectedResult = computed(() => {
-    const selected = selectedResult.value;
+    const selected = pinnedSnapshotResults.value[pinnedSelectedIndex.value];
     if (selected && !pinnedRemovedResultIdSet.value.has(selected.id)) return selected;
     return pinnedResultEntries.value[0]?.result;
-  });
-  const pinnedSelectedPosition = computed(() => {
-    const index = pinnedResultEntries.value.findIndex((entry) => entry.index === selectedIndex.value);
-    return index >= 0 ? index : 0;
   });
   const contentSearchLoading = computed(() => searchLoading.value);
   const searchScopeKey = computed(() =>
@@ -96,8 +97,7 @@ export const useSearchStore = defineStore('search', () => {
 
     if (event.method === 'search/results') {
       if (event.params.searchId !== activeSearchId.value) return;
-      coreResults.value = [...coreResults.value, ...event.params.results];
-      clampSelectedIndex();
+      queueCoreResults(event.params.results);
       return;
     }
 
@@ -115,7 +115,12 @@ export const useSearchStore = defineStore('search', () => {
       if (event.params.searchId !== activeSearchId.value) return;
       searchLoading.value = false;
       activeSearchId.value = undefined;
-      searchProgress.value = { ...searchProgress.value, scannedFiles: event.params.scannedFiles, emittedResults: event.params.totalResults };
+      flushCoreResults();
+      searchProgress.value = {
+        ...searchProgress.value,
+        scannedFiles: event.params.scannedFiles,
+        emittedResults: event.params.totalResults,
+      };
       clampSelectedIndex();
       return;
     }
@@ -138,8 +143,7 @@ export const useSearchStore = defineStore('search', () => {
   const setQuery = (value: string) => {
     query.value = value;
     selectedIndex.value = 0;
-    pinnedRemovedResultIds.value = [];
-    coreResults.value = [];
+    resetCoreResults();
   };
 
   const setTreeQuery = (value: string) => {
@@ -149,7 +153,7 @@ export const useSearchStore = defineStore('search', () => {
   const setMode = (value: SearchMode) => {
     mode.value = value;
     selectedIndex.value = 0;
-    coreResults.value = [];
+    resetCoreResults();
   };
 
   const openOverlay = (nextMode: SearchMode = 'all') => {
@@ -173,6 +177,9 @@ export const useSearchStore = defineStore('search', () => {
   };
 
   const pinResults = () => {
+    pinnedSnapshotResults.value = [...results.value];
+    pinnedSelectedIndex.value = Math.min(selectedIndex.value, Math.max(0, pinnedSnapshotResults.value.length - 1));
+    pinnedQuery.value = query.value.trim();
     pinnedRemovedResultIds.value = [];
     drawerOpen.value = true;
     overlayOpen.value = false;
@@ -180,11 +187,15 @@ export const useSearchStore = defineStore('search', () => {
   };
 
   const pinTreeResults = () => {
+    const snapshot = treeResults.value;
     query.value = treeQuery.value;
     activeFilters.value = [...treeActiveFilters.value];
     selectedIndex.value = 0;
+    pinnedSelectedIndex.value = 0;
+    pinnedSnapshotResults.value = [...snapshot];
+    pinnedQuery.value = treeQuery.value.trim();
     pinnedRemovedResultIds.value = [];
-    coreResults.value = [];
+    resetCoreResults();
     drawerOpen.value = true;
     overlayOpen.value = false;
     rememberQuery();
@@ -194,7 +205,7 @@ export const useSearchStore = defineStore('search', () => {
     query.value = '';
     activeFilters.value = [];
     selectedIndex.value = 0;
-    coreResults.value = [];
+    resetCoreResults();
   };
 
   const clearTreeQuery = () => {
@@ -207,7 +218,7 @@ export const useSearchStore = defineStore('search', () => {
       ? activeFilters.value.filter((item) => item !== filter)
       : [...activeFilters.value, filter];
     selectedIndex.value = 0;
-    coreResults.value = [];
+    resetCoreResults();
   };
 
   const toggleTreeFilter = (filter: SearchFilterKind) => {
@@ -230,21 +241,8 @@ export const useSearchStore = defineStore('search', () => {
     selectedIndex.value = Math.min(Math.max(index, 0), Math.max(0, results.value.length - 1));
   };
 
-  const nextPinnedResult = () => {
-    const entries = pinnedResultEntries.value;
-    if (entries.length === 0) return;
-
-    const currentPosition = entries.findIndex((entry) => entry.index === selectedIndex.value);
-    selectedIndex.value = entries[(currentPosition + 1) % entries.length]?.index ?? entries[0].index;
-  };
-
-  const previousPinnedResult = () => {
-    const entries = pinnedResultEntries.value;
-    if (entries.length === 0) return;
-
-    const currentPosition = entries.findIndex((entry) => entry.index === selectedIndex.value);
-    const nextPosition = currentPosition === -1 ? entries.length - 1 : (currentPosition - 1 + entries.length) % entries.length;
-    selectedIndex.value = entries[nextPosition]?.index ?? entries[0].index;
+  const selectPinnedResult = (index: number) => {
+    pinnedSelectedIndex.value = Math.min(Math.max(index, 0), Math.max(0, pinnedSnapshotResults.value.length - 1));
   };
 
   const removePinnedResult = (resultId: string) => {
@@ -252,18 +250,18 @@ export const useSearchStore = defineStore('search', () => {
 
     const nextRemovedResultIds = [...pinnedRemovedResultIds.value, resultId];
     pinnedRemovedResultIds.value = nextRemovedResultIds;
-    if (selectedResult.value?.id !== resultId) return;
+    if (pinnedSnapshotResults.value[pinnedSelectedIndex.value]?.id !== resultId) return;
 
     const removed = new Set(nextRemovedResultIds);
-    const nextEntry = results.value
+    const nextEntry = pinnedSnapshotResults.value
       .map((result, index) => ({ result, index }))
       .filter((entry) => !removed.has(entry.result.id))
-      .find((entry) => entry.index >= selectedIndex.value);
-    const fallbackEntry = results.value
+      .find((entry) => entry.index >= pinnedSelectedIndex.value);
+    const fallbackEntry = pinnedSnapshotResults.value
       .map((result, index) => ({ result, index }))
       .filter((entry) => !removed.has(entry.result.id))
       .at(-1);
-    selectedIndex.value = nextEntry?.index ?? fallbackEntry?.index ?? 0;
+    pinnedSelectedIndex.value = nextEntry?.index ?? fallbackEntry?.index ?? 0;
   };
 
   const rememberQuery = () => {
@@ -277,7 +275,7 @@ export const useSearchStore = defineStore('search', () => {
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
 
     if (!repo.repository || !hasActiveSearch.value) {
-      coreResults.value = [];
+      resetCoreResults();
       searchLoading.value = false;
       error.value = undefined;
       searchProgress.value = { scannedFiles: 0, totalFiles: 0, emittedResults: 0 };
@@ -299,7 +297,7 @@ export const useSearchStore = defineStore('search', () => {
     const searchId = createSearchId();
     await cancelActiveSearch();
     activeSearchId.value = searchId;
-    coreResults.value = [];
+    resetCoreResults();
     searchLoading.value = true;
     error.value = undefined;
     searchProgress.value = { scannedFiles: 0, totalFiles: repo.changedFiles.length, emittedResults: 0 };
@@ -337,6 +335,36 @@ export const useSearchStore = defineStore('search', () => {
     selectedIndex.value = Math.min(selectedIndex.value, Math.max(0, results.value.length - 1));
   };
 
+  let pendingCoreResults: SearchResult[] = [];
+  let coreResultsFrame: number | undefined;
+
+  const queueCoreResults = (items: SearchResult[]) => {
+    pendingCoreResults.push(...items);
+    if (coreResultsFrame !== undefined) return;
+    coreResultsFrame = window.requestAnimationFrame(flushCoreResults);
+  };
+
+  const flushCoreResults = () => {
+    if (coreResultsFrame !== undefined) {
+      window.cancelAnimationFrame(coreResultsFrame);
+      coreResultsFrame = undefined;
+    }
+    if (pendingCoreResults.length === 0) return;
+
+    coreResults.value = [...coreResults.value, ...pendingCoreResults];
+    pendingCoreResults = [];
+    clampSelectedIndex();
+  };
+
+  const resetCoreResults = () => {
+    if (coreResultsFrame !== undefined) {
+      window.cancelAnimationFrame(coreResultsFrame);
+      coreResultsFrame = undefined;
+    }
+    pendingCoreResults = [];
+    coreResults.value = [];
+  };
+
   watch([() => query.value, () => mode.value, () => activeFilters.value, searchScopeKey], scheduleCoreSearch);
   watch(
     () => results.value.length,
@@ -350,6 +378,7 @@ export const useSearchStore = defineStore('search', () => {
     overlayOpen,
     drawerOpen,
     selectedIndex,
+    pinnedSelectedIndex,
     activeFilters,
     treeActiveFilters,
     history,
@@ -361,8 +390,10 @@ export const useSearchStore = defineStore('search', () => {
     selectedResult,
     pinnedResultEntries,
     pinnedResults,
+    pinnedResultCount,
+    hasPinnedSnapshot,
     pinnedSelectedResult,
-    pinnedSelectedPosition,
+    pinnedQuery,
     hasActiveSearch,
     treeHasActiveSearch,
     activeSearchId,
@@ -386,8 +417,7 @@ export const useSearchStore = defineStore('search', () => {
     nextResult,
     previousResult,
     selectResult,
-    nextPinnedResult,
-    previousPinnedResult,
+    selectPinnedResult,
     removePinnedResult,
     rememberQuery,
   };

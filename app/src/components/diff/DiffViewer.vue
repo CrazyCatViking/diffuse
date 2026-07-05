@@ -1,5 +1,12 @@
 <template>
-  <section ref="rootRef" class="diff-viewer" :class="selectionSideClass" @pointerdown.capture="lockSelectionSide">
+  <section
+    ref="rootRef"
+    class="diff-viewer"
+    :class="selectionSideClass"
+    tabindex="0"
+    aria-label="Diff viewer"
+    @pointerdown.capture="onRootPointerDown"
+  >
     <div class="diff-header">
       <div class="file-meta">
         <span class="file-name">{{ model?.fileId ?? 'No file selected' }}</span>
@@ -9,13 +16,13 @@
         <span v-if="hasNewChanges" class="update-status">
           New changes available
 
-          <button class="load-latest" type="button" :disabled="loading" @click="emit('loadLatest')">Load latest</button>
+          <button class="load-latest" type="button" :disabled="loading" @click="loadLatest">Load latest</button>
         </span>
 
         <span v-if="syntaxMessage" class="syntax-status" :class="{ loading: installingGrammar }">
           {{ syntaxMessage }}
 
-          <button class="install-grammar" type="button" :disabled="installingGrammar" @click="emit('installGrammar')">
+          <button class="install-grammar" type="button" :disabled="installingGrammar" @click="diff.installMissingGrammar()">
             {{ installingGrammar ? 'Installing...' : 'Install' }}
           </button>
 
@@ -36,9 +43,9 @@
         :view-mode="viewMode"
         :context-mode="contextMode"
         :sync-scroll="syncScroll"
-        @update:view-mode="emit('update:viewMode', $event)"
-        @update:context-mode="emit('update:contextMode', $event)"
-        @update:sync-scroll="emit('update:syncScroll', $event)"
+        @update:view-mode="diff.setViewMode($event)"
+        @update:context-mode="diff.setContextMode($event)"
+        @update:sync-scroll="diff.setSyncScroll($event)"
       />
     </div>
 
@@ -79,29 +86,30 @@
       :selection-style="selectionBubbleStyle"
       :lsp-hover="lspHover"
       :lsp-hover-style="lspHoverStyle"
-      @comment-selection="startSelectionComment"
-      @chat-selection="startSelectionChat"
+      @comment-selection="startToolbarSelectionComment"
+      @chat-selection="startToolbarSelectionChat"
     />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
+import { useRoute } from 'vue-router';
 import { useClient } from '../../lib/useClient';
-import type {
-  DiffContextMode,
-  DiffRenderModel,
-  DiffRow,
-  DiffTarget,
-  DiffViewMode,
-  LspDiagnostic,
-  LspStatus,
-  ReviewAnchor,
-  ReviewThread,
-  SyntaxSide,
-  SyntaxSpan,
-} from '../../lib/protocol';
+import type { DiffContextMode, LspDiagnostic, LspStatus, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import { routeParamString } from '../../lib/workspaceRoutes';
+import {
+  diffSurfaceId,
+  type CursorActivationReason,
+  type CursorActionContext,
+  type CursorCommand,
+  type CursorMotion,
+  type DiffSurface,
+  type DiffSurfacePane,
+  useCursorStore,
+} from '../../stores/cursor';
+import { useDiffStore } from '../../stores/diff';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
@@ -123,7 +131,8 @@ import { buildDiffScrollMarkers } from './diffScrollMarkers';
 import { useDiffScrollbar } from './useDiffScrollbar';
 import { supportsLspFile, useLspHover } from './useLspHover';
 import { useDiffSelection } from './useDiffSelection';
-import { buildRenderedDiffRowFields } from './diffRenderedRows';
+import { useDiffCursor, type DiffCursorPane, type DiffCursorPosition } from './useDiffCursor';
+import { buildRenderedDiffRowFields, type DiffRowRenderTarget } from './diffRenderedRows';
 import SingleFileDiffPanes from './SingleFileDiffPanes.vue';
 import type { DiffPaneActions, DiffPaneModel, DiffRenderedEntry, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 
@@ -141,41 +150,18 @@ type FileSearchRequest = {
   requestId: number;
 };
 
-const props = defineProps<{
-  model?: DiffRenderModel;
-  loading: boolean;
-  error?: string;
-  viewMode: DiffViewMode;
-  contextMode: DiffContextMode;
-  target: DiffTarget;
-  syncScroll: boolean;
-  installingGrammar: boolean;
-  grammarInstallStep?: string;
-  hasNewChanges: boolean;
-  threadRevealRequest?: ThreadRevealRequest;
-  fileSearchRequest?: FileSearchRequest;
-}>();
-
-const emit = defineEmits<{
-  'update:viewMode': [mode: DiffViewMode];
-  'update:contextMode': [mode: DiffContextMode];
-  'update:syncScroll': [enabled: boolean];
-  installGrammar: [];
-  loadLatest: [];
-  threadRevealHandled: [requestId: number];
-  fileSearchHandled: [requestId: number];
-}>();
-
 const rootRef = ref<HTMLElement | null>(null);
 const searchInputRef = ref<InstanceType<typeof SearchInput> | null>(null);
 const syncedSplitRef = ref<HTMLElement | null>(null);
 const leftRef = ref<HTMLElement | null>(null);
 const rightRef = ref<HTMLElement | null>(null);
 const inlineRef = ref<HTMLElement | null>(null);
-const rows = computed(() => props.model?.rows ?? []);
+const route = useRoute();
 const client = useClient();
+const diff = useDiffStore();
 const repo = useRepoStore();
 const review = useReviewStore();
+const cursor = useCursorStore();
 const draftBody = ref('');
 const flashingThreadId = ref<string>();
 const searchOpen = ref(false);
@@ -191,7 +177,9 @@ const highPrioritySyntaxQueue: SyntaxPageRequest[] = [];
 const lowPrioritySyntaxQueue: SyntaxPageRequest[] = [];
 const syntaxVersion = ref(0);
 const initialSyntaxGateActive = ref(false);
+
 let activeSyntaxRequests = 0;
+let syntaxVersionFrame: number | undefined;
 let isSyncingScroll = false;
 let syncScrollFrame: number | undefined;
 let pendingScrollSync: { target: HTMLElement; top: number; left: number } | undefined;
@@ -201,13 +189,86 @@ let initialSyntaxGeneration = 0;
 let syntaxRequestGeneration = 0;
 let handledThreadRevealRequestId = 0;
 let handledFileSearchRequestId = 0;
+let diffCursor: ReturnType<typeof useDiffCursor> | undefined;
+let suppressCursorAutoScroll = false;
+let activeCursorMotion: CursorMotion | undefined;
+let cursorScrollFrame: number | undefined;
+let pendingCursorRevealInline = false;
+let pendingDiffActivation: { surfaceId: string; side: SyntaxSide; reason: CursorActivationReason; hadStoredSurface: boolean } | undefined;
+let pendingFileOpenHistoryFileId: string | undefined;
+const diffSurfaceRefs = new Map<string, Ref<DiffSurface>>();
+const registeredDiffSurfaceIds = new Set<string>();
+
+const routeFileId = computed(() => routeParamString(route.params.fileId));
+const model = computed(() => diff.current);
+const rows = computed(() => model.value?.rows ?? []);
+const navigableDiffSides = computed<SyntaxSide[]>(() => {
+  if (!model.value || rows.value.length === 0) return [];
+  const sides: SyntaxSide[] = [];
+  if (hasNavigableSide('old')) sides.push('old');
+  if (hasNavigableSide('new')) sides.push('new');
+  return sides;
+});
+const loading = computed(() => diff.loading);
+const error = computed(() => diff.error);
+const viewMode = computed(() => diff.viewMode);
+const contextMode = computed(() => diff.contextMode);
+const target = computed(() => repo.diffTarget);
+const syncScroll = computed(() => diff.syncScroll);
+const installingGrammar = computed(() => diff.installingGrammar);
+const grammarInstallStep = computed(() => diff.grammarInstallStep);
+const hasNewChanges = computed(() => diff.hasNewChanges);
+
+const threadRevealRequest = computed<ThreadRevealRequest | undefined>(() => {
+  const threadId = queryString(route.query.threadId);
+  const requestId = queryNumber(route.query.requestId);
+  if (!threadId || !routeFileId.value || requestId === undefined) return undefined;
+  return { threadId, fileId: routeFileId.value, requestId };
+});
+
+const fileSearchRequest = computed<FileSearchRequest | undefined>(() => {
+  const query = queryString(route.query.search);
+  const requestId = queryNumber(route.query.requestId);
+  if (!query || !routeFileId.value || requestId === undefined) return undefined;
+  const side = queryString(route.query.side);
+  return {
+    fileId: routeFileId.value,
+    query,
+    line: queryNumber(route.query.line),
+    side: side === 'old' || side === 'new' ? side : undefined,
+    requestId,
+  };
+});
+
+const queryString = (value: unknown) => {
+  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined;
+  return typeof value === 'string' ? value : undefined;
+};
+
+const queryNumber = (value: unknown) => {
+  const text = queryString(value);
+  if (!text) return undefined;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : undefined;
+};
+
 const syntaxPageSize = 256;
 const syntaxPageLookaround = 1;
 const maxSyntaxCachePages = 32;
-const virtualRowOverscan = 40;
+const virtualRowOverscan = 20;
 const maxConcurrentSyntaxRequests = 2;
 const initialSyntaxGateMs = 80;
 const threadFlashDurationMs = 1800;
+const columnScrollMotions = new Set<CursorMotion>([
+  'moveLeft',
+  'moveRight',
+  'nextWord',
+  'previousWord',
+  'endWord',
+  'lineStart',
+  'firstNonBlank',
+  'lineEnd',
+]);
 const scrollbars = useDiffScrollbar({ left: leftRef, right: rightRef, syncedSplit: syncedSplitRef, inline: inlineRef });
 const hasLeftScroll = scrollbars.panes.left.hasScroll;
 const hasRightScroll = scrollbars.panes.right.hasScroll;
@@ -233,6 +294,11 @@ type PaneKey = 'left' | 'right' | 'syncedSplit' | 'inline';
 
 type VirtualRow = DiffRenderedEntry['virtualRow'];
 
+type CursorScrollVirtualizer = {
+  getVirtualItems: () => Array<{ index: number; start: number; end?: number; size?: number }>;
+  scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void;
+};
+
 type RenderedRow = DiffRenderedEntry;
 
 type SearchMatch = {
@@ -243,8 +309,14 @@ type SearchMatch = {
   endColumn: number;
 };
 
+type PointerTextPosition = {
+  side: SyntaxSide;
+  line: number;
+  column: number;
+};
+
 const syntaxMessage = computed(() => {
-  const syntax = props.model?.syntax;
+  const syntax = model.value?.syntax;
   if (!syntax?.language) return undefined;
   if (syntax.grammarInstalled) {
     if (syntax.missingReason === 'highlights-query-not-installed') return `No ${syntax.language} highlights query installed`;
@@ -254,16 +326,17 @@ const syntaxMessage = computed(() => {
   return `No ${syntax.language} grammar installed`;
 });
 
-const activeFile = computed(() => repo.changedFiles.find((file) => file.id === props.model?.fileId));
+const activeFile = computed(() => repo.changedFiles.find((file) => file.id === model.value?.fileId));
 const diffTargetFingerprint = () =>
   JSON.stringify({
-    base: props.target.base,
-    compare: props.target.compare,
-    includeStaged: props.target.includeStaged,
-    includeUnstaged: props.target.includeUnstaged,
+    base: target.value.base,
+    compare: target.value.compare,
+    includeStaged: target.value.includeStaged,
+    includeUnstaged: target.value.includeUnstaged,
     head: repo.repository?.head,
   });
 const {
+  selectionBubblePosition,
   selectionDraft,
   selectionBubbleStyle,
   selectionSideClass,
@@ -280,11 +353,16 @@ const {
   diffTargetFingerprint,
   lockSide: true,
 });
-const fileThreads = computed(() => review.threads.filter((thread) => thread.fileId === props.model?.fileId));
+const fileThreads = computed(() => review.threads.filter((thread) => thread.fileId === model.value?.fileId));
 const leftDisplayRows = computed(() => buildDisplayRows('old'));
 const rightDisplayRows = computed(() => buildDisplayRows('new'));
 const syncedSplitDisplayRows = computed(() => buildDisplayRows());
 const inlineDisplayRows = computed(() => buildDisplayRows());
+const activeDisplayRows = computed(() => {
+  if (viewMode.value === 'split' && syncScroll.value) return [syncedSplitDisplayRows.value];
+  if (viewMode.value === 'split') return [leftDisplayRows.value, rightDisplayRows.value];
+  return [inlineDisplayRows.value];
+});
 const leftMarkers = computed(() => scrollMarkersForRows(leftDisplayRows.value, 'old'));
 const rightMarkers = computed(() => scrollMarkersForRows(rightDisplayRows.value, 'new'));
 const syncedSplitMarkers = computed(() => scrollMarkersForRows(syncedSplitDisplayRows.value));
@@ -296,7 +374,7 @@ const searchMatches = computed<SearchMatch[]>(() => {
 
   const matches: SearchMatch[] = [];
   rows.value.forEach((row, rowIndex) => {
-    if (props.viewMode === 'inline') {
+    if (viewMode.value === 'inline') {
       const side = row.kind === 'deleted' ? 'old' : 'new';
       collectSearchMatches(
         matches,
@@ -382,25 +460,16 @@ const reviewHighlightAnchorsBySide = computed(() => {
   }
   if (
     review.draftAnchor &&
-    review.draftFile?.id === props.model?.fileId &&
+    review.draftFile?.id === model.value?.fileId &&
     review.draftAnchor.startColumn !== undefined &&
     review.draftAnchor.endColumn !== undefined
   ) {
     anchors.get(review.draftAnchor.side)?.push(review.draftAnchor);
   }
-  const pendingSelection = selectionDraft.value;
-  if (
-    pendingSelection &&
-    pendingSelection.file.id === props.model?.fileId &&
-    pendingSelection.anchor.startColumn !== undefined &&
-    pendingSelection.anchor.endColumn !== undefined
-  ) {
-    anchors.get(pendingSelection.anchor.side)?.push(pendingSelection.anchor);
-  }
   return anchors;
 });
 const lspStatusMessage = computed(() => {
-  if (!props.model) return undefined;
+  if (!model.value) return undefined;
   if (lspStatusLoading.value) return 'LSP: checking';
   const status = lspStatus.value;
   if (!status) return undefined;
@@ -441,7 +510,7 @@ const lspDiagnosticsSummary = computed(() => {
   };
 });
 const lspDiagnosticsMessage = computed(() => {
-  if (!props.model) return undefined;
+  if (!model.value) return undefined;
   if (lspDiagnosticsLoading.value) return 'Diagnostics: checking';
   const summary = lspDiagnosticsSummary.value;
   if (summary.total === 0) return undefined;
@@ -459,9 +528,9 @@ const lspDiagnosticsClass = computed(() => ({
 }));
 
 const loadLspStatus = async () => {
-  const model = props.model;
+  const currentModel = model.value;
   const generation = ++lspStatusGeneration;
-  if (!model || !supportsLspFile(model.fileId)) {
+  if (!currentModel || !supportsLspFile(currentModel.fileId)) {
     lspStatus.value = undefined;
     lspStatusLoading.value = false;
     return;
@@ -469,7 +538,7 @@ const loadLspStatus = async () => {
 
   lspStatusLoading.value = true;
   try {
-    const status = await client.getLspStatus(model.fileId, lspStatusSide(), props.target);
+    const status = await client.getLspStatus(currentModel.fileId, lspStatusSide(), target.value);
     if (generation !== lspStatusGeneration) return;
     lspStatus.value = status;
   } catch (error) {
@@ -485,17 +554,17 @@ const loadLspStatus = async () => {
 };
 
 const loadLspDiagnostics = async () => {
-  const model = props.model;
+  const currentModel = model.value;
   const generation = ++lspDiagnosticsGeneration;
   lspDiagnostics.value = [];
-  if (!model || !supportsLspFile(model.fileId)) {
+  if (!currentModel || !supportsLspFile(currentModel.fileId)) {
     lspDiagnosticsLoading.value = false;
     return;
   }
 
   lspDiagnosticsLoading.value = true;
   try {
-    const diagnostics = await client.getLspDiagnostics(model.fileId, 'new', props.target);
+    const diagnostics = await client.getLspDiagnostics(currentModel.fileId, 'new', target.value);
     if (generation !== lspDiagnosticsGeneration) return;
     lspDiagnostics.value = diagnostics.status === 'ok' ? diagnostics.diagnostics : [];
   } catch {
@@ -591,7 +660,7 @@ const sameSearchMatch = (first: SearchMatch, second: SearchMatch) => {
 };
 
 const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
-  const fileId = props.model?.fileId;
+  const fileId = model.value?.fileId;
   if (!fileId) return buildReviewDisplayRows(rows.value, new Map());
   return buildReviewDisplayRows(
     rows.value,
@@ -610,34 +679,39 @@ const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
   );
 };
 
-const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[]): RenderedRow[] => {
+const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[], renderTarget: DiffRowRenderTarget): RenderedRow[] => {
   syntaxVersion.value;
+  const diffSurfaceActive = activeDiffSurface();
   return virtualRows.map((virtualRow) => {
     const item = displayRows[virtualRow.index];
     const fields = buildRenderedDiffRowFields(item, {
-      fileId: props.model?.fileId,
+      fileId: model.value?.fileId,
       syntaxSpansForLine: (side, line) => syntaxCache.get(syntaxKey(side, line)),
       commentCountForLine: (side, line) => commentCountByStart.value.get(commentStartKey(side, line)) ?? 0,
       commentsExpandedForLine: commentsExpandedForStart,
       reviewHighlightsForLine,
       searchHighlightsForLine,
+      cursorStateForLine: (side, line, textLength) =>
+        diffSurfaceActive ? (diffCursor?.lineStateForLine(side, line, textLength) ?? {}) : {},
       diagnosticsForLine,
+      renderTarget,
     });
     return {
       virtualRow,
       ...fields,
       reviewRow: item && item.kind !== 'diff' ? item : undefined,
+      reviewFocused: item && item.kind !== 'diff' ? diffSurfaceActive && diffCursor?.isReviewFocused(item.key) : false,
     };
   });
 };
 
 const selectionChatEntries = computed<InlineReviewEntry[]>(() => {
-  if (!props.model?.fileId) return [];
-  return buildSelectionChatEntries(props.model.fileId, review.chatMessages);
+  if (!model.value?.fileId) return [];
+  return buildSelectionChatEntries(model.value.fileId, review.chatMessages);
 });
 
 const startLineComment = (payload: { side: 'old' | 'new'; line: number; text: string; clientX: number; clientY: number }) => {
-  if (!props.model || !activeFile.value) return;
+  if (!model.value || !activeFile.value) return;
   selectionDraft.value = undefined;
   draftBody.value = '';
   review.startDraft(activeFile.value, {
@@ -670,6 +744,16 @@ const {
   selectionDraft,
   clearNativeSelection,
 });
+
+const startToolbarSelectionComment = () => {
+  startSelectionComment();
+  diffCursor?.clearVisual();
+};
+
+const startToolbarSelectionChat = () => {
+  startSelectionChat();
+  diffCursor?.clearVisual();
+};
 
 const reviewUi = computed<DiffReviewUi>(() => ({
   draftBody: draftBody.value,
@@ -706,31 +790,60 @@ const closeSearch = () => {
 const moveSearch = (direction: number) => {
   if (searchMatches.value.length === 0) return;
   const step = direction < 0 ? -1 : 1;
-  activeSearchIndex.value = (activeSearchIndex.value + step + searchMatches.value.length) % searchMatches.value.length;
+  const steps = Math.max(1, Math.abs(direction));
+  for (let index = 0; index < steps; index += 1) {
+    activeSearchIndex.value = (activeSearchIndex.value + step + searchMatches.value.length) % searchMatches.value.length;
+  }
   scrollToActiveSearchMatch();
 };
 
-const onDocumentKeyDown = (event: KeyboardEvent) => {
+const onRootPointerDown = (event: PointerEvent) => {
+  lockSelectionSide(event);
   const target = event.target instanceof HTMLElement ? event.target : undefined;
-  const isTextInput = Boolean(target?.closest('input, textarea, [contenteditable="true"]'));
+  if (target?.closest('.review-box')) {
+    return;
+  }
+  if (target?.closest('.diff-scrollbar')) return;
+  if (isInteractiveTarget(event.target)) return;
+  const surfaceId = diffSurfaceIdForPointer(event) ?? activeDiffSurfaceId();
+  if (surfaceId) {
+    cursor.setActiveSurface(surfaceId, { activate: false });
+    const side = diffSurfaceSideFromId(surfaceId);
+    if (side) activateDiffSurface(surfaceId, side, 'default', Boolean(cursor.surface<DiffSurface>(surfaceId)));
+  }
+  rootRef.value?.focus({ preventScroll: true });
+  diffCursor?.clearVisual();
+  selectionDraft.value = undefined;
+  clearNativeSelection();
+};
+
+const isTextInputTarget = (target: EventTarget | null) => {
+  return target instanceof HTMLElement && Boolean(target.closest('input, textarea, [contenteditable="true"]'));
+};
+
+const isInteractiveTarget = (target: EventTarget | null) => {
+  return target instanceof HTMLElement && Boolean(target.closest('button, input, textarea, select, a, [contenteditable="true"]'));
+};
+
+const clearCursorTransientState = () => {
+  clearLspHover();
+  selectionDraft.value = undefined;
+  clearNativeSelection();
+};
+
+const onDocumentKeyDown = (event: KeyboardEvent) => {
+  if (event.defaultPrevented) return;
+  const isTextInput = isTextInputTarget(event.target);
+  if (!isTextInput && event.key === 'Escape' && selectionDraft.value) {
+    event.preventDefault();
+    diffCursor?.clearVisual();
+    clearCursorTransientState();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
     event.preventDefault();
     openSearch();
     return;
-  }
-  if (!isTextInput && event.key === '/') {
-    event.preventDefault();
-    openSearch();
-    return;
-  }
-  if (!isTextInput && searchMatches.value.length > 0 && event.key === 'n') {
-    event.preventDefault();
-    moveSearch(1);
-    return;
-  }
-  if (!isTextInput && searchMatches.value.length > 0 && event.key === 'N') {
-    event.preventDefault();
-    moveSearch(-1);
   }
 };
 
@@ -752,25 +865,82 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(syncScrollFrame);
     syncScrollFrame = undefined;
   }
+  if (syntaxVersionFrame !== undefined) {
+    cancelAnimationFrame(syntaxVersionFrame);
+    syntaxVersionFrame = undefined;
+  }
+  if (cursorScrollFrame !== undefined) {
+    cancelAnimationFrame(cursorScrollFrame);
+    cursorScrollFrame = undefined;
+  }
   cleanupLspHover();
   scrollbars.cleanup();
+  for (const surfaceId of registeredDiffSurfaceIds) cursor.unregisterSurface(surfaceId);
+  registeredDiffSurfaceIds.clear();
+  diffSurfaceRefs.clear();
+  diff.clear();
 });
+
+const loadLatest = () => {
+  if (routeFileId.value) void diff.loadDiff(routeFileId.value);
+};
+
+watch(
+  routeFileId,
+  (fileId) => {
+    if (!fileId) {
+      diff.clear();
+      return;
+    }
+
+    const previousFileId = model.value?.fileId;
+    if (cursor.isRestoringHistory()) pendingFileOpenHistoryFileId = undefined;
+    if (previousFileId && previousFileId !== fileId && !cursor.isRestoringHistory()) {
+      syncActiveDiffSurfacePosition();
+      const previousPosition = diffCursor?.currentSurfacePosition();
+      cursor.recordSurfacePosition(diffSurfaceId(previousFileId, previousPosition?.side ?? 'new'));
+      pendingFileOpenHistoryFileId = fileId;
+    }
+
+    repo.selectFile(fileId);
+    void diff.loadDiff(fileId, { silent: diff.current?.fileId === fileId });
+  },
+  { immediate: true },
+);
+
+watch(
+  () => repo.diffTarget,
+  () => {
+    if (routeFileId.value) void diff.loadDiff(routeFileId.value);
+  },
+  { deep: true },
+);
+
+watch(
+  () => repo.changeRevision,
+  () => {
+    const fileId = routeFileId.value;
+    if (!fileId) return;
+    if (diff.current?.fileId === fileId && repo.changedFileIds.includes(fileId)) diff.markNewChanges();
+  },
+);
 
 const {
   hover: lspHover,
   hoverStyle: lspHoverStyle,
   queue: queueLspHover,
+  showAt: showLspHoverAt,
   clear: clearLspHover,
   clearCache: clearLspHoverCache,
   cleanup: cleanupLspHover,
 } = useLspHover({
   client,
-  target: () => props.target,
+  target: () => target.value,
   diffTargetFingerprint,
   reviewElementForNode,
   textOffsetWithinElement,
-  fileIdForElement: (element) => element.dataset.reviewFileId ?? props.model?.fileId,
-  canQueue: () => Boolean(props.model && lspStatus.value?.running && !commentHoverDisabled.value),
+  fileIdForElement: (element) => element.dataset.reviewFileId ?? model.value?.fileId,
+  canQueue: () => Boolean(model.value && lspStatus.value?.running && !commentHoverDisabled.value),
   afterHoverRequest: () => {
     void loadLspStatus();
   },
@@ -880,28 +1050,43 @@ const leftVirtualRows = computed(() => leftVirtualizer.value.getVirtualItems());
 const rightVirtualRows = computed(() => rightVirtualizer.value.getVirtualItems());
 const syncedSplitVirtualRows = computed(() => syncedSplitVirtualizer.value.getVirtualItems());
 const inlineVirtualRows = computed(() => inlineVirtualizer.value.getVirtualItems());
-const leftRenderedRows = computed(() => buildRenderedRows(leftVirtualRows.value, leftDisplayRows.value));
-const rightRenderedRows = computed(() => buildRenderedRows(rightVirtualRows.value, rightDisplayRows.value));
-const syncedSplitRenderedRows = computed(() => buildRenderedRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value));
-const inlineRenderedRows = computed(() => buildRenderedRows(inlineVirtualRows.value, inlineDisplayRows.value));
+const leftRenderedRows = computed(() => buildRenderedRows(leftVirtualRows.value, leftDisplayRows.value, 'old'));
+const rightRenderedRows = computed(() => buildRenderedRows(rightVirtualRows.value, rightDisplayRows.value, 'new'));
+const syncedSplitRenderedRows = computed(() => buildRenderedRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'split'));
+const inlineRenderedRows = computed(() => buildRenderedRows(inlineVirtualRows.value, inlineDisplayRows.value, 'inline'));
+const activeSyntaxRowRequests = computed(() => {
+  if (viewMode.value === 'split' && syncScroll.value) {
+    return [
+      { virtualRows: syncedSplitVirtualRows.value, displayRows: syncedSplitDisplayRows.value, sides: ['old', 'new'] as SyntaxSide[] },
+    ];
+  }
+  if (viewMode.value === 'split') {
+    return [
+      { virtualRows: leftVirtualRows.value, displayRows: leftDisplayRows.value, sides: ['old'] as SyntaxSide[] },
+      { virtualRows: rightVirtualRows.value, displayRows: rightDisplayRows.value, sides: ['new'] as SyntaxSide[] },
+    ];
+  }
+  return [{ virtualRows: inlineVirtualRows.value, displayRows: inlineDisplayRows.value, sides: ['old', 'new'] as SyntaxSide[] }];
+});
 const leftTotalSize = computed(() => leftVirtualizer.value.getTotalSize());
 const rightTotalSize = computed(() => rightVirtualizer.value.getTotalSize());
 const syncedSplitTotalSize = computed(() => syncedSplitVirtualizer.value.getTotalSize());
 const inlineTotalSize = computed(() => inlineVirtualizer.value.getTotalSize());
+const activePaneTotalSizes = computed(() => {
+  if (viewMode.value === 'split' && syncScroll.value) return [syncedSplitTotalSize.value];
+  if (viewMode.value === 'split') return [leftTotalSize.value, rightTotalSize.value];
+  return [inlineTotalSize.value];
+});
 const commentHoverDisabled = computed(() => {
-  return (
-    leftVirtualizer.value.isScrolling ||
-    rightVirtualizer.value.isScrolling ||
-    syncedSplitVirtualizer.value.isScrolling ||
-    inlineVirtualizer.value.isScrolling
-  );
+  if (viewMode.value === 'split' && syncScroll.value) return syncedSplitVirtualizer.value.isScrolling;
+  if (viewMode.value === 'split') return leftVirtualizer.value.isScrolling || rightVirtualizer.value.isScrolling;
+  return inlineVirtualizer.value.isScrolling;
 });
 
-watch(
-  [leftTotalSize, rightTotalSize, syncedSplitTotalSize, inlineTotalSize, () => props.viewMode, () => props.syncScroll],
-  scrollbars.updateAfterRender,
-  { immediate: true, flush: 'post' },
-);
+watch([activePaneTotalSizes, viewMode, syncScroll], scrollbars.updateAfterRender, {
+  immediate: true,
+  flush: 'post',
+});
 
 const measureLeftElement = (element: unknown) => {
   leftVirtualizer.value.measureElement(element instanceof Element ? element : null);
@@ -920,54 +1105,83 @@ const measureInlineElement = (element: unknown) => {
 };
 
 const paneStatus = computed(() => ({
-  loading: props.loading,
-  error: props.error,
-  hasModel: Boolean(props.model),
+  loading: loading.value,
+  error: error.value,
+  hasModel: Boolean(model.value),
   rowsLength: rows.value.length,
   initialSyntaxGateActive: initialSyntaxGateActive.value,
 }));
 
-const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => ({
-  left: {
-    key: 'left',
-    compositionMode: 'pane',
-    paneSide: 'old',
-    rows: leftRenderedRows.value,
-    totalSize: leftTotalSize.value,
-    hasScroll: hasLeftScroll.value,
-    markers: leftMarkers.value,
-    thumbStyle: leftThumbStyle.value,
-    shellClass: 'old-pane-shell',
-    paneClass: 'old-pane',
-    keyPrefix: 'old-',
-    measureElement: measureLeftElement,
-  },
-  right: {
-    key: 'right',
-    compositionMode: 'pane',
-    paneSide: 'new',
-    rows: rightRenderedRows.value,
-    totalSize: rightTotalSize.value,
-    hasScroll: hasRightScroll.value,
-    markers: rightMarkers.value,
-    thumbStyle: rightThumbStyle.value,
-    paneClass: 'new-pane',
-    keyPrefix: 'new-',
-    measureElement: measureRightElement,
-  },
-  syncedSplit: {
-    key: 'syncedSplit',
-    compositionMode: 'split',
-    rows: syncedSplitRenderedRows.value,
-    totalSize: syncedSplitTotalSize.value,
-    hasScroll: hasSyncedSplitScroll.value,
-    markers: syncedSplitMarkers.value,
-    thumbStyle: syncedSplitThumbStyle.value,
-    paneClass: 'synced-split-view',
-    spacerClass: 'synced-split-spacer',
-    measureElement: measureSyncedSplitElement,
-  },
-  inline: {
+const noopMeasureElement = () => {};
+
+const inactivePaneModel = (key: PaneKey): DiffPaneModel => ({
+  key,
+  compositionMode: key === 'syncedSplit' ? 'split' : key === 'inline' ? 'inline' : 'pane',
+  paneSide: key === 'left' ? 'old' : key === 'right' ? 'new' : undefined,
+  rows: [],
+  totalSize: 0,
+  hasScroll: false,
+  markers: [],
+  thumbStyle: {},
+  measureElement: noopMeasureElement,
+});
+
+const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => {
+  const panes: Record<PaneKey, DiffPaneModel> = {
+    left: inactivePaneModel('left'),
+    right: inactivePaneModel('right'),
+    syncedSplit: inactivePaneModel('syncedSplit'),
+    inline: inactivePaneModel('inline'),
+  };
+
+  if (viewMode.value === 'split' && syncScroll.value) {
+    panes.syncedSplit = {
+      key: 'syncedSplit',
+      compositionMode: 'split',
+      rows: syncedSplitRenderedRows.value,
+      totalSize: syncedSplitTotalSize.value,
+      hasScroll: hasSyncedSplitScroll.value,
+      markers: syncedSplitMarkers.value,
+      thumbStyle: syncedSplitThumbStyle.value,
+      paneClass: 'synced-split-view',
+      spacerClass: 'synced-split-spacer',
+      measureElement: measureSyncedSplitElement,
+    };
+    return panes;
+  }
+
+  if (viewMode.value === 'split') {
+    panes.left = {
+      key: 'left',
+      compositionMode: 'pane',
+      paneSide: 'old',
+      rows: leftRenderedRows.value,
+      totalSize: leftTotalSize.value,
+      hasScroll: hasLeftScroll.value,
+      markers: leftMarkers.value,
+      thumbStyle: leftThumbStyle.value,
+      shellClass: 'old-pane-shell',
+      paneClass: 'old-pane',
+      keyPrefix: 'old-',
+      measureElement: measureLeftElement,
+    };
+    panes.right = {
+      key: 'right',
+      compositionMode: 'pane',
+      paneSide: 'new',
+      rows: rightRenderedRows.value,
+      totalSize: rightTotalSize.value,
+      hasScroll: hasRightScroll.value,
+      markers: rightMarkers.value,
+      thumbStyle: rightThumbStyle.value,
+      paneClass: 'new-pane',
+      keyPrefix: 'new-',
+      measureElement: measureRightElement,
+    };
+    return panes;
+  }
+
+  panes.inline = {
     key: 'inline',
     compositionMode: 'inline',
     rows: inlineRenderedRows.value,
@@ -978,17 +1192,19 @@ const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => ({
     paneClass: 'inline-view',
     spacerClass: 'inline-spacer',
     measureElement: measureInlineElement,
-  },
-}));
+  };
+  return panes;
+});
 
 const scrollToActiveSearchMatch = () => {
   const match = activeSearchMatch.value;
   if (!match) return;
-  if (props.viewMode === 'split' && props.syncScroll) {
+  diffCursor?.moveCursorToSearchMatch(match);
+  if (viewMode.value === 'split' && syncScroll.value) {
     scrollVirtualizerToMatch(syncedSplitVirtualizer.value, syncedSplitDisplayRows.value, match);
-  } else if (props.viewMode === 'split' && match.side === 'old') {
+  } else if (viewMode.value === 'split' && match.side === 'old') {
     scrollVirtualizerToMatch(leftVirtualizer.value, leftDisplayRows.value, match);
-  } else if (props.viewMode === 'split') {
+  } else if (viewMode.value === 'split') {
     scrollVirtualizerToMatch(rightVirtualizer.value, rightDisplayRows.value, match);
   } else {
     scrollVirtualizerToMatch(inlineVirtualizer.value, inlineDisplayRows.value, match);
@@ -1006,9 +1222,601 @@ const scrollVirtualizerToMatch = (
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
 
+const scrollToCursorPosition = (position: DiffCursorPosition, motion?: CursorMotion) => {
+  if (suppressCursorAutoScroll) {
+    scrollbars.updateAfterRender();
+    return;
+  }
+
+  const target = cursorScrollTarget(position);
+  const needsVerticalScroll = !target.element || !displayIndexFullyVisible(target.virtualizer, target.element, position.displayIndex);
+  if (needsVerticalScroll) target.virtualizer.scrollToIndex(position.displayIndex, { align: 'auto' });
+
+  if (needsVerticalScroll || (motion && columnScrollMotions.has(motion)))
+    scheduleCursorPostScroll(Boolean(motion && columnScrollMotions.has(motion)));
+};
+
+const scheduleCursorPostScroll = (revealInline: boolean) => {
+  pendingCursorRevealInline = pendingCursorRevealInline || revealInline;
+  void nextTick(() => {
+    if (cursorScrollFrame !== undefined) return;
+    cursorScrollFrame = requestAnimationFrame(() => {
+      cursorScrollFrame = undefined;
+      const shouldRevealInline = pendingCursorRevealInline;
+      pendingCursorRevealInline = false;
+      if (shouldRevealInline) {
+        cursorScrollElement()
+          ?.querySelector<HTMLElement>('[data-diff-cursor="true"]')
+          ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+      scrollbars.updateAfterRender();
+    });
+  });
+};
+
+const cursorScrollTarget = (position: DiffCursorPosition): { virtualizer: CursorScrollVirtualizer; element: HTMLElement | null } => {
+  if (viewMode.value === 'split' && syncScroll.value) return { virtualizer: syncedSplitVirtualizer.value, element: syncedSplitRef.value };
+  if (viewMode.value === 'split' && position.side === 'old') return { virtualizer: leftVirtualizer.value, element: leftRef.value };
+  if (viewMode.value === 'split') return { virtualizer: rightVirtualizer.value, element: rightRef.value };
+  return { virtualizer: inlineVirtualizer.value, element: inlineRef.value };
+};
+
+const displayIndexFullyVisible = (virtualizer: CursorScrollVirtualizer, element: HTMLElement, displayIndex: number) => {
+  const item = virtualizer.getVirtualItems().find((virtualRow) => virtualRow.index === displayIndex);
+  if (!item) return false;
+
+  const itemEnd = item.end ?? item.start + (item.size ?? 24);
+  const viewportStart = element.scrollTop;
+  const viewportEnd = viewportStart + element.clientHeight;
+  return item.start >= viewportStart && itemEnd <= viewportEnd;
+};
+
+const cursorHalfPageLines = () => {
+  const pane = cursorScrollElement();
+  const height = pane?.clientHeight ?? 240;
+  return Math.max(4, Math.floor(height / 2 / 24));
+};
+
+const currentDiffSurfaceSides = (): SyntaxSide[] => {
+  return navigableDiffSides.value;
+};
+
+const currentDiffSurfaceIds = () => currentDiffSurfaceSides().map((side) => diffSurfaceId(model.value?.fileId ?? '', side));
+
+const activeDiffSurface = () => Boolean(cursor.activeSurfaceId && currentDiffSurfaceIds().includes(cursor.activeSurfaceId));
+
+const activeDiffSurfaceId = () => {
+  const currentModel = model.value;
+  if (!currentModel) return undefined;
+
+  const surfaceIds = currentDiffSurfaceIds();
+  if (cursor.activeSurfaceId && surfaceIds.includes(cursor.activeSurfaceId)) return cursor.activeSurfaceId;
+
+  const currentPosition = diffCursor?.currentSurfacePosition();
+  const sides = currentDiffSurfaceSides();
+  const side = currentPosition && sides.includes(currentPosition.side) ? currentPosition.side : sides.includes('new') ? 'new' : sides[0];
+  return side ? diffSurfaceId(currentModel.fileId, side) : undefined;
+};
+
+const syncRegisteredDiffSurfaces = () => {
+  const currentModel = model.value;
+  const sides = currentDiffSurfaceSides();
+  const nextSurfaceIds = new Set(currentModel ? sides.map((side) => diffSurfaceId(currentModel.fileId, side)) : []);
+
+  for (const side of sides) {
+    if (!currentModel) continue;
+    const surfaceId = diffSurfaceId(currentModel.fileId, side);
+    if (registeredDiffSurfaceIds.has(surfaceId)) continue;
+
+    const hadStoredSurface = Boolean(cursor.surface<DiffSurface>(surfaceId));
+    const surfaceRef = cursor.registerSurface<DiffSurface>(defaultDiffSurface(currentModel.fileId, side), {
+      id: surfaceId,
+      getRect: () => diffSurfaceRect(side),
+      isEligible: () => currentDiffSurfaceIds().includes(surfaceId),
+      activate: (reason) => activateDiffSurface(surfaceId, side, reason, hadStoredSurface),
+      onMotion: (motion, context) => handleDiffSurfaceMotion(surfaceId, motion, context),
+      onCommand: (command, context) => handleDiffSurfaceCommand(surfaceId, command, context),
+    });
+    diffSurfaceRefs.set(surfaceId, surfaceRef);
+    registeredDiffSurfaceIds.add(surfaceId);
+  }
+
+  for (const surfaceId of [...registeredDiffSurfaceIds]) {
+    if (nextSurfaceIds.has(surfaceId)) continue;
+    cursor.unregisterSurface(surfaceId);
+    registeredDiffSurfaceIds.delete(surfaceId);
+    diffSurfaceRefs.delete(surfaceId);
+  }
+
+  const nextActiveSurfaceId = activeDiffSurfaceId();
+  if (nextActiveSurfaceId && !activeDiffSurface()) {
+    cursor.setActiveSurface(nextActiveSurfaceId, { activate: false });
+    const side = diffSurfaceSideFromId(nextActiveSurfaceId);
+    if (side) activateDiffSurface(nextActiveSurfaceId, side, 'default', Boolean(cursor.surface<DiffSurface>(nextActiveSurfaceId)));
+  }
+};
+
+const defaultDiffSurface = (fileId: string, side: SyntaxSide): DiffSurface => {
+  const currentPosition = diffCursor?.currentSurfacePosition();
+  if (currentPosition?.fileId === fileId && currentPosition.side === side) {
+    return { id: diffSurfaceId(fileId, side), type: 'diff', position: currentPosition };
+  }
+
+  const pane: DiffSurfacePane = viewMode.value === 'split' ? side : 'inline';
+  return {
+    id: diffSurfaceId(fileId, side),
+    type: 'diff',
+    position: {
+      fileId,
+      pane,
+      side,
+      line: 1,
+      column: 0,
+      rowIndex: 0,
+      displayIndex: 0,
+      target: 'code',
+    },
+  };
+};
+
+const diffSurfaceRect = (side: SyntaxSide) => {
+  if (viewMode.value !== 'split') return inlineRef.value?.getBoundingClientRect() ?? rootRef.value?.getBoundingClientRect();
+  if (syncScroll.value) return syncedSplitRef.value?.getBoundingClientRect() ?? rootRef.value?.getBoundingClientRect();
+  return (side === 'old' ? leftRef.value : rightRef.value)?.getBoundingClientRect() ?? rootRef.value?.getBoundingClientRect();
+};
+
+const activateDiffSurface = (surfaceId: string, side: SyntaxSide, reason: CursorActivationReason = 'default', hadStoredSurface = true) => {
+  rootRef.value?.focus({ preventScroll: true });
+  const restored = diffSurfaceRefs.get(surfaceId)?.value.position;
+  if (!diffActivationReady(restored, side, reason, hadStoredSurface)) {
+    pendingDiffActivation = { surfaceId, side, reason, hadStoredSurface };
+    return;
+  }
+
+  if (reason === 'surface-move') {
+    const currentPosition = diffCursor?.currentSurfacePosition();
+    if (currentPosition && currentPosition.fileId === model.value?.fileId && diffSurfacePositionVisible(currentPosition)) {
+      restoreCursorWithoutAutoScroll(currentPosition);
+    } else if (restored && diffSurfacePositionVisible(restored)) restoreCursorWithoutAutoScroll(restored);
+    else moveCursorToFirstVisibleDiffLine(restored?.side);
+    syncActiveDiffSurfacePosition();
+    return;
+  }
+
+  if (reason === 'history' || hadStoredSurface) {
+    const restoredCursor = restored ? diffCursor?.moveCursorToSurfacePosition(restored) : false;
+    if (!restoredCursor) moveCursorToInitialDiffPosition();
+    recordPendingFileOpenHistory();
+  } else {
+    moveCursorToInitialDiffPosition();
+    recordPendingFileOpenHistory();
+  }
+  syncActiveDiffSurfacePosition();
+};
+
+const flushPendingDiffActivation = () => {
+  const pending = pendingDiffActivation;
+  if (!pending) return;
+  if (!diffSurfaceRefs.has(pending.surfaceId)) {
+    pendingDiffActivation = undefined;
+    return;
+  }
+
+  const restored = diffSurfaceRefs.get(pending.surfaceId)?.value.position;
+  if (!diffActivationReady(restored, pending.side, pending.reason, pending.hadStoredSurface)) return;
+
+  pendingDiffActivation = undefined;
+  activateDiffSurface(pending.surfaceId, pending.side, pending.reason, pending.hadStoredSurface);
+};
+
+const diffActivationReady = (
+  restored: DiffSurface['position'] | undefined,
+  side: SyntaxSide,
+  reason: CursorActivationReason,
+  hadStoredSurface: boolean,
+) => {
+  if (reason === 'surface-move') return true;
+  if ((reason === 'history' || hadStoredSurface) && restored) return Boolean(scrollElementForSide(restored.side));
+  return Boolean(scrollElementForSide(side));
+};
+
+const handleDiffSurfaceMotion = (surfaceId: string, motion: CursorMotion, context: CursorActionContext) => {
+  cursor.setActiveSurface(surfaceId, { activate: false });
+  ensureDiffSurfaceCursor(surfaceId);
+  const before = diffCursor?.currentSurfacePosition();
+  activeCursorMotion = motion;
+  let handled = false;
+  try {
+    handled = diffCursor?.handleAction(motion, context.count, context.hasCount) ?? false;
+  } finally {
+    activeCursorMotion = undefined;
+  }
+  const after = diffCursor?.currentSurfacePosition();
+  syncActiveDiffSurfacePosition();
+  return {
+    handled,
+    significant: Boolean(
+      handled && (motion === 'diffSideLeft' || motion === 'diffSideRight') && before && after && before.pane !== after.pane,
+    ),
+  };
+};
+
+const handleDiffSurfaceCommand = (surfaceId: string, command: CursorCommand, context: CursorActionContext) => {
+  if (command === 'activate') return false;
+  cursor.setActiveSurface(surfaceId, { activate: false });
+  ensureDiffSurfaceCursor(surfaceId);
+  const handled = diffCursor?.handleAction(command, context.count, context.hasCount) ?? false;
+  syncActiveDiffSurfacePosition();
+  return handled;
+};
+
+const ensureDiffSurfaceCursor = (surfaceId: string) => {
+  rootRef.value?.focus({ preventScroll: true });
+  if (currentDiffCursorSurfaceId() === surfaceId) return;
+  const side = diffSurfaceSideFromId(surfaceId);
+  if (side) activateDiffSurface(surfaceId, side, 'default', Boolean(cursor.surface<DiffSurface>(surfaceId)));
+};
+
+const currentDiffCursorSurfaceId = () => {
+  const position = diffCursor?.currentSurfacePosition();
+  return position ? diffSurfaceId(position.fileId, position.side) : undefined;
+};
+
+const syncActiveDiffSurfacePosition = () => {
+  const position = diffCursor?.currentSurfacePosition();
+  if (!position) return;
+
+  const surfaceId = diffSurfaceId(position.fileId, position.side);
+  const surfaceRef = diffSurfaceRefs.get(surfaceId) ?? cursor.surface<DiffSurface>(surfaceId);
+  if (!surfaceRef) return;
+
+  surfaceRef.value.position = position;
+  if (currentDiffSurfaceIds().includes(surfaceId) && cursor.activeSurfaceId !== surfaceId)
+    cursor.setActiveSurface(surfaceId, { activate: false });
+};
+
+const recordPendingFileOpenHistory = () => {
+  const position = diffCursor?.currentSurfacePosition();
+  if (!position || pendingFileOpenHistoryFileId !== position.fileId || cursor.isRestoringHistory()) return;
+  syncActiveDiffSurfacePosition();
+  cursor.recordSurfacePosition(diffSurfaceId(position.fileId, position.side));
+  pendingFileOpenHistoryFileId = undefined;
+};
+
+const diffSurfaceSideFromId = (surfaceId: string): SyntaxSide | undefined => {
+  if (surfaceId.endsWith(':old')) return 'old';
+  if (surfaceId.endsWith(':new')) return 'new';
+  return undefined;
+};
+
+const cursorPaneForDiffSurfacePane = (pane: DiffSurfacePane): DiffCursorPane => {
+  if (pane === 'inline' || viewMode.value !== 'split') return 'inline';
+  return pane === 'old' ? 'left' : 'right';
+};
+
+const diffSurfacePositionVisible = (position: DiffSurface['position']) => {
+  const element = reviewElementForLine(position.side, position.line);
+  const scrollElement = scrollElementForSide(position.side);
+  if (!element || !scrollElement) return false;
+
+  const elementRect = element.getBoundingClientRect();
+  const scrollRect = scrollElement.getBoundingClientRect();
+  return elementRect.top >= scrollRect.top && elementRect.bottom <= scrollRect.bottom;
+};
+
+const moveCursorToFirstVisibleDiffLine = (preferredSide?: SyntaxSide) => {
+  const side = preferredSide && hasNavigableSide(preferredSide) ? preferredSide : hasNavigableSide('new') ? 'new' : 'old';
+  const scrollElement = scrollElementForSide(side);
+  if (!scrollElement) {
+    diffCursor?.moveCursorToPane(cursorPaneForDiffSurfacePane(viewMode.value === 'split' ? side : 'inline'));
+    return;
+  }
+
+  const scrollRect = scrollElement.getBoundingClientRect();
+  const elements = [...scrollElement.querySelectorAll<HTMLElement>(`[data-review-side="${side}"][data-review-line]`)];
+  const firstVisible = elements.find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.bottom >= scrollRect.top && rect.top <= scrollRect.bottom;
+  });
+
+  const line = firstVisible ? Number(firstVisible.dataset.reviewLine) : undefined;
+  if (line && Number.isFinite(line)) {
+    diffCursor?.moveCursorToLine(side, line, 0);
+    return;
+  }
+
+  diffCursor?.moveCursorToPane(cursorPaneForDiffSurfacePane(viewMode.value === 'split' ? side : 'inline'));
+};
+
+const moveCursorToInitialDiffPosition = () => {
+  if (viewMode.value === 'split' && hasNavigableSide('new')) {
+    diffCursor?.moveCursorToPane(cursorPaneForDiffSurfacePane('new'));
+    return;
+  }
+
+  if (viewMode.value === 'split' && hasNavigableSide('old')) {
+    diffCursor?.moveCursorToPane(cursorPaneForDiffSurfacePane('old'));
+    return;
+  }
+
+  diffCursor?.moveCursorToPane('inline');
+};
+
+const restoreCursorWithoutAutoScroll = (position: DiffSurface['position']) => {
+  suppressCursorAutoScroll = true;
+  try {
+    return diffCursor?.moveCursorToSurfacePosition(position) ?? false;
+  } finally {
+    suppressCursorAutoScroll = false;
+  }
+};
+
+const scrollElementForSide = (side: SyntaxSide) => {
+  if (viewMode.value === 'split' && syncScroll.value) return syncedSplitRef.value;
+  if (viewMode.value === 'split' && side === 'old') return leftRef.value;
+  if (viewMode.value === 'split') return rightRef.value;
+  return inlineRef.value;
+};
+
+const hasNavigableSide = (side: SyntaxSide) => {
+  return rows.value.some((row) => row.kind !== 'hunk' && Boolean(side === 'old' ? row.oldLine : row.newLine));
+};
+
+const moveCursorToPointer = (event: MouseEvent | PointerEvent) => {
+  const position = pointerTextPosition(event);
+  if (!position) return false;
+
+  diffCursor?.moveCursorToLine(position.side, position.line, position.column);
+  return true;
+};
+
+const diffSurfaceIdForPointer = (event: MouseEvent | PointerEvent) => {
+  const currentModel = model.value;
+  if (!currentModel) return undefined;
+
+  const position = pointerTextPosition(event);
+  if (position) return diffSurfaceId(currentModel.fileId, position.side);
+
+  const pane = diffSurfacePaneForPointer(event);
+  if (!pane) return undefined;
+
+  const side = pane === 'inline' ? fallbackDiffSurfaceSide() : pane;
+  return side ? diffSurfaceId(currentModel.fileId, side) : undefined;
+};
+
+const fallbackDiffSurfaceSide = (): SyntaxSide | undefined => {
+  const sides = currentDiffSurfaceSides();
+  return sides.includes('new') ? 'new' : sides[0];
+};
+
+const diffSurfacePaneForPointer = (event: MouseEvent | PointerEvent): DiffSurfacePane | undefined => {
+  if (!(event.target instanceof Node)) return undefined;
+  if (viewMode.value !== 'split') return inlineRef.value?.contains(event.target) ? 'inline' : undefined;
+
+  if (!syncScroll.value) {
+    if (leftRef.value?.contains(event.target)) return 'old';
+    if (rightRef.value?.contains(event.target)) return 'new';
+    return undefined;
+  }
+
+  const rect = syncedSplitRef.value?.getBoundingClientRect();
+  if (!rect || !syncedSplitRef.value?.contains(event.target)) return undefined;
+  return event.clientX < rect.left + rect.width / 2 ? 'old' : 'new';
+};
+
+const pointerTextPosition = (event: MouseEvent | PointerEvent): PointerTextPosition | undefined => {
+  if (!(event.target instanceof Node)) return undefined;
+
+  const element = reviewElementForNode(event.target);
+  if (!element) return undefined;
+
+  const side = element.dataset.reviewSide;
+  const line = Number(element.dataset.reviewLine);
+  if ((side !== 'old' && side !== 'new') || !Number.isFinite(line)) return undefined;
+
+  return {
+    side,
+    line,
+    column: columnAtPoint(element, event.clientX, event.clientY),
+  };
+};
+
+const moveCursorToSelectionFocus = () => {
+  const selection = window.getSelection();
+  if (!selection?.focusNode) return false;
+
+  const element = reviewElementForNode(selection.focusNode);
+  if (!element) return false;
+
+  const side = element.dataset.reviewSide;
+  const line = Number(element.dataset.reviewLine);
+  if ((side !== 'old' && side !== 'new') || !Number.isFinite(line)) return false;
+
+  const column = textOffsetWithinElement(element, selection.focusNode, selection.focusOffset);
+  diffCursor?.moveCursorToLine(side, line, column);
+  return true;
+};
+
+const columnAtPoint = (element: HTMLElement, clientX: number, clientY: number) => {
+  const text = element.dataset.reviewText ?? element.textContent ?? '';
+  const range = rangeAtPoint(clientX, clientY);
+  if (range && element.contains(range.startContainer)) {
+    return Math.max(0, Math.min(text.length, textOffsetWithinElement(element, range.startContainer, range.startOffset)));
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  const fontSize = Number.parseFloat(style.fontSize) || 12;
+  const charWidth = fontSize * 0.62;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  return Math.max(0, Math.min(text.length, Math.round((clientX - rect.left - paddingLeft) / charWidth)));
+};
+
+const rangeAtPoint = (clientX: number, clientY: number): Range | undefined => {
+  const documentWithCaret = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const position = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
+  if (position) {
+    const range = document.createRange();
+    range.setStart(position.offsetNode, position.offset);
+    range.collapse(true);
+    return range;
+  }
+  return documentWithCaret.caretRangeFromPoint?.(clientX, clientY) ?? undefined;
+};
+
+const cursorScrollElement = () => {
+  const cursor = diffCursor?.cursor.value;
+  if (!cursor) return inlineRef.value ?? syncedSplitRef.value ?? rightRef.value ?? leftRef.value;
+  if (cursor.pane === 'left') return leftRef.value;
+  if (cursor.pane === 'right') return rightRef.value;
+  if (cursor.pane === 'syncedSplit') return syncedSplitRef.value;
+  return inlineRef.value;
+};
+
+const showCursorHover = (position: DiffCursorPosition) => {
+  if (!supportsLspFile(position.fileId) || !lspStatus.value?.running) return;
+
+  const marker = rootRef.value?.querySelector<HTMLElement>('[data-diff-cursor="true"]');
+  const rect = marker?.getBoundingClientRect();
+  const rootRect = rootRef.value?.getBoundingClientRect();
+  showLspHoverAt({
+    fileId: position.fileId,
+    side: position.side,
+    line: position.line,
+    column: position.column,
+    clientX: rect?.left ?? (rootRect ? rootRect.left + 120 : 120),
+    clientY: rect?.bottom ?? (rootRect ? rootRect.top + 80 : 80),
+  });
+};
+
+const startCursorComment = (anchor: ReviewAnchor) => {
+  startCursorDraft(anchor, 'comment');
+};
+
+const startCursorAskAi = (anchor: ReviewAnchor) => {
+  startCursorDraft(anchor, 'chat');
+};
+
+const startCursorDraft = (anchor: ReviewAnchor, mode: 'comment' | 'chat') => {
+  if (!activeFile.value) return;
+  selectionDraft.value = undefined;
+  clearNativeSelection();
+  draftBody.value = '';
+  review.startDraft(activeFile.value, anchor, mode);
+};
+
+const syncCursorNativeSelection = (anchor: ReviewAnchor | undefined) => {
+  if (!anchor) {
+    clearNativeSelection();
+    return;
+  }
+
+  void nextTick(() => {
+    selectCursorAnchor(anchor);
+  });
+};
+
+const selectCursorAnchor = (anchor: ReviewAnchor) => {
+  const start = reviewElementForLine(anchor.side, anchor.startLine);
+  const end = reviewElementForLine(anchor.side, anchor.endLine);
+  if (!start || !end) return;
+
+  const range = document.createRange();
+  const startBoundary = textBoundary(start, anchor.startColumn ?? 0);
+  const endBoundary = textBoundary(end, anchor.endColumn ?? (end.dataset.reviewText ?? '').length);
+  range.setStart(startBoundary.node, startBoundary.offset);
+  range.setEnd(endBoundary.node, endBoundary.offset);
+
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+};
+
+const reviewElementForLine = (side: SyntaxSide, line: number) => {
+  return rootRef.value?.querySelector<HTMLElement>(`[data-review-side="${side}"][data-review-line="${line}"]`);
+};
+
+const textBoundary = (element: HTMLElement, column: number): { node: Node; offset: number } => {
+  const textLength = (element.dataset.reviewText ?? element.textContent ?? '').length;
+  let remaining = Math.max(0, Math.min(textLength, column));
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let lastText: Text | undefined;
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    lastText = node;
+    if (remaining <= node.data.length) return { node, offset: remaining };
+    remaining -= node.data.length;
+  }
+
+  if (lastText) return { node: lastText, offset: lastText.data.length };
+  return { node: element, offset: 0 };
+};
+
+const positionCursorSelectionToolbar = () => {
+  const root = rootRef.value;
+  const marker = root?.querySelector<HTMLElement>('[data-diff-cursor="true"]');
+  if (!root || !marker) return;
+
+  const rootRect = root.getBoundingClientRect();
+  const markerRect = marker.getBoundingClientRect();
+  const toolbarWidth = 220;
+  const toolbarHeight = 34;
+  const gap = 6;
+  selectionBubblePosition.value = {
+    left: Math.max(12, Math.min(markerRect.right - rootRect.left + gap, rootRect.width - toolbarWidth - 12)),
+    top: Math.max(48, Math.min(markerRect.top - rootRect.top - toolbarHeight - gap, rootRect.height - toolbarHeight - 12)),
+  };
+};
+
+diffCursor = useDiffCursor({
+  model: () => model.value,
+  viewMode: () => viewMode.value,
+  syncScroll: () => syncScroll.value,
+  displayRows: (side) => {
+    if (viewMode.value === 'inline') return inlineDisplayRows.value;
+    if (syncScroll.value) return syncedSplitDisplayRows.value;
+    return side === 'old' ? leftDisplayRows.value : rightDisplayRows.value;
+  },
+  diagnostics: () => lspDiagnostics.value,
+  diffTargetFingerprint,
+  halfPageLines: cursorHalfPageLines,
+  onOpenSearch: openSearch,
+  onMoveSearch: moveSearch,
+  onHover: showCursorHover,
+  onComment: startCursorComment,
+  onAskAi: startCursorAskAi,
+  onClear: clearCursorTransientState,
+  onMove: (position) => {
+    syncActiveDiffSurfacePosition();
+    scrollToCursorPosition(position, activeCursorMotion);
+  },
+});
+
+watch(
+  () => [viewMode.value, syncScroll.value, model.value?.fileId, rows.value.length] as const,
+  () => {
+    void nextTick(() => {
+      syncRegisteredDiffSurfaces();
+    });
+  },
+  { immediate: true, flush: 'post' },
+);
+
+watch(
+  diffCursor.visualAnchor,
+  (anchor) => {
+    syncCursorNativeSelection(anchor);
+  },
+  { flush: 'post' },
+);
+
 const revealFileSearchRequest = async () => {
-  const request = props.fileSearchRequest;
-  if (!request || request.requestId === handledFileSearchRequestId || request.fileId !== props.model?.fileId || props.loading) return;
+  const request = fileSearchRequest.value;
+  if (!request || request.requestId === handledFileSearchRequestId || request.fileId !== model.value?.fileId || loading.value) return;
 
   searchOpen.value = true;
   searchQuery.value = request.query;
@@ -1021,7 +1829,6 @@ const revealFileSearchRequest = async () => {
   if (searchMatches.value.length > 0) scrollToActiveSearchMatch();
 
   handledFileSearchRequestId = request.requestId;
-  emit('fileSearchHandled', request.requestId);
 };
 
 const fileSearchRequestMatchIndex = (request: FileSearchRequest) => {
@@ -1030,8 +1837,8 @@ const fileSearchRequestMatchIndex = (request: FileSearchRequest) => {
 };
 
 const revealThreadRequest = async () => {
-  const request = props.threadRevealRequest;
-  if (!request || request.requestId === handledThreadRevealRequestId || request.fileId !== props.model?.fileId || props.loading) return;
+  const request = threadRevealRequest.value;
+  if (!request || request.requestId === handledThreadRevealRequestId || request.fileId !== model.value?.fileId || loading.value) return;
 
   const thread = fileThreads.value.find((item) => item.id === request.threadId);
   if (!thread) return;
@@ -1055,10 +1862,10 @@ const revealThreadRequest = async () => {
 
   await nextTick();
   if (!scrollToReviewThread(thread.id, thread.anchor.side)) return;
+  diffCursor?.moveCursorToReviewKey(`thread:${thread.id}`);
 
   handledThreadRevealRequestId = request.requestId;
   await flashReviewThread(thread.id);
-  emit('threadRevealHandled', request.requestId);
 };
 
 const flashReviewThread = async (threadId: string) => {
@@ -1076,11 +1883,11 @@ const scrollToReviewThread = (threadId: string, side: SyntaxSide) => {
   if (!scrollElementForThread(side)) return false;
 
   let scrolled = false;
-  if (props.viewMode === 'split' && props.syncScroll) {
+  if (viewMode.value === 'split' && syncScroll.value) {
     scrolled = scrollVirtualizerToThread(syncedSplitVirtualizer.value, syncedSplitDisplayRows.value, threadId);
-  } else if (props.viewMode === 'split' && side === 'old') {
+  } else if (viewMode.value === 'split' && side === 'old') {
     scrolled = scrollVirtualizerToThread(leftVirtualizer.value, leftDisplayRows.value, threadId);
-  } else if (props.viewMode === 'split') {
+  } else if (viewMode.value === 'split') {
     scrolled = scrollVirtualizerToThread(rightVirtualizer.value, rightDisplayRows.value, threadId);
   } else {
     scrolled = scrollVirtualizerToThread(inlineVirtualizer.value, inlineDisplayRows.value, threadId);
@@ -1090,9 +1897,9 @@ const scrollToReviewThread = (threadId: string, side: SyntaxSide) => {
 };
 
 const scrollElementForThread = (side: SyntaxSide) => {
-  if (props.viewMode === 'split' && props.syncScroll) return syncedSplitRef.value;
-  if (props.viewMode === 'split' && side === 'old') return leftRef.value;
-  if (props.viewMode === 'split') return rightRef.value;
+  if (viewMode.value === 'split' && syncScroll.value) return syncedSplitRef.value;
+  if (viewMode.value === 'split' && side === 'old') return leftRef.value;
+  if (viewMode.value === 'split') return rightRef.value;
   return inlineRef.value;
 };
 
@@ -1109,20 +1916,17 @@ const scrollVirtualizerToThread = (
 
 watch(
   [
-    () => props.threadRevealRequest?.requestId,
-    () => props.threadRevealRequest?.fileId,
-    () => props.model?.fileId,
-    () => props.loading,
-    () => props.viewMode,
-    () => props.syncScroll,
+    () => threadRevealRequest.value?.requestId,
+    () => threadRevealRequest.value?.fileId,
+    () => model.value?.fileId,
+    loading,
+    viewMode,
+    syncScroll,
     () => leftRef.value,
     () => rightRef.value,
     () => syncedSplitRef.value,
     () => inlineRef.value,
-    leftDisplayRows,
-    rightDisplayRows,
-    syncedSplitDisplayRows,
-    inlineDisplayRows,
+    activeDisplayRows,
   ],
   () => {
     void revealThreadRequest();
@@ -1131,7 +1935,7 @@ watch(
 );
 
 watch(
-  [() => props.fileSearchRequest?.requestId, () => props.fileSearchRequest?.fileId, () => props.model?.fileId, () => props.loading],
+  [() => fileSearchRequest.value?.requestId, () => fileSearchRequest.value?.fileId, () => model.value?.fileId, loading],
   () => {
     void revealFileSearchRequest();
   },
@@ -1141,6 +1945,14 @@ watch(
 const syntaxKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
 
 const syntaxPageKey = (fileId: string, context: DiffContextMode, side: SyntaxSide, page: number) => `${fileId}:${context}:${side}:${page}`;
+
+const scheduleSyntaxVersionBump = () => {
+  if (syntaxVersionFrame !== undefined) return;
+  syntaxVersionFrame = requestAnimationFrame(() => {
+    syntaxVersionFrame = undefined;
+    syntaxVersion.value += 1;
+  });
+};
 
 const runSyntaxQueue = () => {
   while (activeSyntaxRequests < maxConcurrentSyntaxRequests) {
@@ -1162,12 +1974,12 @@ const runSyntaxQueue = () => {
           request.startLine,
           request.endLine,
           { context: request.context },
-          props.target,
+          target.value,
         );
         const isCurrentRequest =
           request.generation === syntaxRequestGeneration &&
-          props.model?.fileId === request.fileId &&
-          props.model.context === request.context;
+          model.value?.fileId === request.fileId &&
+          model.value.context === request.context;
         if (isCurrentRequest) {
           const lineKeys: string[] = [];
           for (const line of lines) {
@@ -1179,7 +1991,7 @@ const runSyntaxQueue = () => {
           syntaxPageLineKeys.set(request.key, lineKeys);
           touchSyntaxPage(request.key);
           evictOldSyntaxPages();
-          syntaxVersion.value += 1;
+          scheduleSyntaxVersionBump();
         } else if (request.generation === syntaxRequestGeneration && syntaxPageStates.get(request.key) === 'loading') {
           syntaxPageStates.delete(request.key);
         }
@@ -1194,10 +2006,10 @@ const runSyntaxQueue = () => {
 };
 
 const requestSyntaxPage = (side: SyntaxSide, page: number, priority: 'high' | 'low') => {
-  const model = props.model;
-  if (!model?.syntax.grammarInstalled || page < 0) return false;
+  const currentModel = model.value;
+  if (!currentModel?.syntax.grammarInstalled || page < 0) return false;
 
-  const requestKey = syntaxPageKey(model.fileId, model.context, side, page);
+  const requestKey = syntaxPageKey(currentModel.fileId, currentModel.context, side, page);
   const existingState = syntaxPageStates.get(requestKey);
   if (existingState === 'done') {
     touchSyntaxPage(requestKey);
@@ -1206,8 +2018,8 @@ const requestSyntaxPage = (side: SyntaxSide, page: number, priority: 'high' | 'l
   if (existingState === 'loading' || existingState === 'queued-high') return false;
   if (existingState === 'queued-low' && priority === 'low') return false;
 
-  const fileId = model.fileId;
-  const context = model.context;
+  const fileId = currentModel.fileId;
+  const context = currentModel.context;
   const startLine = page * syntaxPageSize + 1;
   const endLine = startLine + syntaxPageSize - 1;
   const request = { key: requestKey, fileId, context, side, page, startLine, endLine, generation: syntaxRequestGeneration };
@@ -1273,7 +2085,7 @@ const firstLineForSide = (side: SyntaxSide) => {
 };
 
 const requestInitialSyntaxPages = () => {
-  if (!props.model?.syntax.grammarInstalled) return;
+  if (!model.value?.syntax.grammarInstalled) return;
   const oldLine = firstLineForSide('old');
   const newLine = firstLineForSide('new');
   if (oldLine) requestSyntaxPages('old', oldLine, oldLine, 'high');
@@ -1290,7 +2102,7 @@ const releaseInitialSyntaxGate = (generation: number) => {
 const startInitialSyntaxGate = () => {
   initialSyntaxGeneration += 1;
   const generation = initialSyntaxGeneration;
-  if (!props.model?.syntax.grammarInstalled || rows.value.length === 0) {
+  if (!model.value?.syntax.grammarInstalled || rows.value.length === 0) {
     releaseInitialSyntaxGate(generation);
     return;
   }
@@ -1309,7 +2121,7 @@ const startInitialSyntaxGate = () => {
 };
 
 const syncScrollPosition = (source: HTMLElement, target: HTMLElement | null) => {
-  if (!props.syncScroll || !target) return;
+  if (!syncScroll.value || !target) return;
   pendingScrollSync = { target, top: source.scrollTop, left: source.scrollLeft };
   if (syncScrollFrame !== undefined) return;
 
@@ -1347,6 +2159,24 @@ const onInlineScroll = () => {
   scrollbars.schedule();
 };
 
+const onPaneMouseUp = (event: MouseEvent) => {
+  if (isInteractiveTarget(event.target)) return;
+
+  const selectedText = window.getSelection()?.toString().trim();
+  captureSelectionComment();
+  if (selectedText) {
+    moveCursorToSelectionFocus();
+    void nextTick(() => {
+      positionCursorSelectionToolbar();
+    });
+    return;
+  }
+
+  diffCursor?.clearVisual();
+  clearCursorTransientState();
+  moveCursorToPointer(event);
+};
+
 const setPaneRef = (pane: PaneKey, element: Element | null) => {
   const htmlElement = element instanceof HTMLElement ? element : null;
   const currentElement = paneRefValue(pane);
@@ -1357,6 +2187,7 @@ const setPaneRef = (pane: PaneKey, element: Element | null) => {
   else if (pane === 'syncedSplit') syncedSplitRef.value = htmlElement;
   else inlineRef.value = htmlElement;
   scrollbars.updateAfterRender();
+  void nextTick(() => flushPendingDiffActivation());
 };
 
 const paneRefValue = (pane: PaneKey) => {
@@ -1374,6 +2205,17 @@ const onPaneScroll = (pane: PaneKey, event: Event) => {
   else onInlineScroll();
 };
 
+const onPanePointerMove = (event: PointerEvent) => {
+  if (isInteractiveTarget(event.target)) return;
+
+  if ((event.buttons & 1) === 1) {
+    clearLspHover();
+    return;
+  }
+
+  queueLspHover(event);
+};
+
 const onScrollbarTrackPointerDown = (event: PointerEvent, pane: PaneKey) => {
   scrollbars.onTrackPointerDown(event, pane);
 };
@@ -1385,49 +2227,50 @@ const onScrollbarThumbPointerDown = (event: PointerEvent, pane: PaneKey) => {
 const paneActions: DiffPaneActions = {
   paneRef: setPaneRef,
   scroll: onPaneScroll,
-  pointerMove: queueLspHover,
+  pointerMove: onPanePointerMove,
   mouseLeave: clearLspHover,
-  mouseUp: captureSelectionComment,
+  mouseUp: onPaneMouseUp,
   scrollbarTrackPointerDown: onScrollbarTrackPointerDown,
   scrollbarThumbPointerDown: onScrollbarThumbPointerDown,
   comment: startLineComment,
   toggleComments,
 };
 
-watch(
-  () => props.syncScroll,
-  (enabled, wasEnabled) => {
-    if (props.viewMode !== 'split' || enabled === wasEnabled) return;
+watch(syncScroll, (enabled, wasEnabled) => {
+  if (viewMode.value !== 'split' || enabled === wasEnabled) return;
 
-    const source = wasEnabled ? syncedSplitRef.value : (leftRef.value ?? rightRef.value);
-    const scrollTop = source?.scrollTop ?? 0;
-    const scrollLeft = source?.scrollLeft ?? 0;
+  const source = wasEnabled ? syncedSplitRef.value : (leftRef.value ?? rightRef.value);
+  const scrollTop = source?.scrollTop ?? 0;
+  const scrollLeft = source?.scrollLeft ?? 0;
 
-    void nextTick(() => {
-      requestAnimationFrame(() => {
-        if (enabled) {
-          if (syncedSplitRef.value) {
-            syncedSplitRef.value.scrollTop = scrollTop;
-            syncedSplitRef.value.scrollLeft = scrollLeft;
-          }
-          return;
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      if (enabled) {
+        if (syncedSplitRef.value) {
+          syncedSplitRef.value.scrollTop = scrollTop;
+          syncedSplitRef.value.scrollLeft = scrollLeft;
         }
+        return;
+      }
 
-        for (const pane of [leftRef.value, rightRef.value]) {
-          if (!pane) continue;
-          pane.scrollTop = scrollTop;
-          pane.scrollLeft = scrollLeft;
-        }
-      });
+      for (const pane of [leftRef.value, rightRef.value]) {
+        if (!pane) continue;
+        pane.scrollTop = scrollTop;
+        pane.scrollLeft = scrollLeft;
+      }
     });
-  },
-);
+  });
+});
 
 watch(
-  () => `${props.model?.fileId ?? ''}:${props.model?.context ?? ''}`,
+  () => `${model.value?.fileId ?? ''}:${model.value?.context ?? ''}`,
   () => {
     activeSearchIndex.value = 0;
     syntaxRequestGeneration += 1;
+    if (syntaxVersionFrame !== undefined) {
+      cancelAnimationFrame(syntaxVersionFrame);
+      syntaxVersionFrame = undefined;
+    }
     syntaxCache.clear();
     syntaxPageLineKeys.clear();
     syntaxPageAccessOrder.length = 0;
@@ -1444,7 +2287,7 @@ watch(
   },
 );
 
-watch([normalizedSearchQuery, () => props.model?.fileId, () => props.model?.context, () => props.viewMode, () => props.syncScroll], () => {
+watch([normalizedSearchQuery, () => model.value?.fileId, () => model.value?.context, viewMode, syncScroll], () => {
   activeSearchIndex.value = 0;
   if (searchMatches.value.length > 0) {
     void nextTick(() => scrollToActiveSearchMatch());
@@ -1468,7 +2311,7 @@ watch(searchOpen, (open) => {
 });
 
 watch(
-  [() => props.model, () => diffTargetFingerprint()],
+  [model, () => diffTargetFingerprint()],
   () => {
     void loadLspStatus();
     void loadLspDiagnostics();
@@ -1477,25 +2320,10 @@ watch(
 );
 
 watch(
-  [
-    leftVirtualRows,
-    rightVirtualRows,
-    syncedSplitVirtualRows,
-    inlineVirtualRows,
-    () => props.model?.syntax.grammarInstalled,
-    () => props.viewMode,
-    () => props.syncScroll,
-  ],
+  [activeSyntaxRowRequests, () => model.value?.syntax.grammarInstalled],
   () => {
-    if (props.viewMode === 'split' && props.syncScroll) {
-      requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'old');
-      requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'new');
-    } else if (props.viewMode === 'split') {
-      requestSyntaxForVirtualRows(leftVirtualRows.value, leftDisplayRows.value, 'old');
-      requestSyntaxForVirtualRows(rightVirtualRows.value, rightDisplayRows.value, 'new');
-    } else {
-      requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'old');
-      requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'new');
+    for (const request of activeSyntaxRowRequests.value) {
+      for (const side of request.sides) requestSyntaxForVirtualRows(request.virtualRows, request.displayRows, side);
     }
   },
   { immediate: true, flush: 'post' },
@@ -1508,9 +2336,14 @@ watch(
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
   height: 100%;
   background: var(--color-bg-app);
   overflow: hidden;
+
+  &:focus {
+    outline: none;
+  }
 }
 
 .diff-header {

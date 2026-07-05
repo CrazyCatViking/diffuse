@@ -1,18 +1,25 @@
 <template>
-  <div class="tree-list" :class="`density-${density}`" role="tree" :aria-label="ariaLabel">
+  <div
+    class="tree-list"
+    :class="[`density-${density}`, { virtualized: virtualized }]"
+    :style="treeStyle"
+    role="tree"
+    :aria-label="ariaLabel"
+  >
     <div
-      v-for="item in visibleItems"
+      v-for="item in renderedItems"
       :key="item.node.key"
       class="tree-row"
       :class="[
         item.node.rowClass,
         item.node.tone ? `tone-${item.node.tone}` : undefined,
-        { active: item.node.active, branch: item.hasChildren, leaf: !item.hasChildren },
+        { active: isActive(item.node), branch: item.hasChildren, leaf: !item.hasChildren },
       ]"
-      :style="{ '--tree-depth': item.depth }"
+      :data-index="item.index"
+      :style="rowStyle(item)"
       role="treeitem"
       :aria-expanded="item.hasChildren ? !item.collapsed : undefined"
-      :aria-selected="item.node.active || undefined"
+      :aria-selected="isActive(item.node) || undefined"
     >
       <span class="tree-leading-cell">
         <slot name="leading" :node="item.node" :depth="item.depth" :collapsed="item.collapsed" :has-children="item.hasChildren" />
@@ -64,21 +71,33 @@ type VisibleTreeItem<T> = {
   collapsed: boolean;
 };
 
+type RenderedTreeItem<T> = VisibleTreeItem<T> & {
+  index: number;
+  start?: number;
+};
+
 type TreeListSlotProps<T> = VisibleTreeItem<T>;
 </script>
 
 <script setup lang="ts" generic="T = unknown">
-import { computed } from 'vue';
+import { useVirtualizer } from '@tanstack/vue-virtual';
+import { computed, type CSSProperties } from 'vue';
 
 const props = withDefaults(
   defineProps<{
     nodes: TreeListNode<T>[];
     collapsedKeys: Set<string>;
     ariaLabel: string;
+    activeKey?: string;
+    virtualScrollElement?: HTMLElement | null;
+    virtualEstimateSize?: number;
+    virtualOverscan?: number;
     density?: 'normal' | 'compact';
   }>(),
   {
     density: 'normal',
+    virtualEstimateSize: 32,
+    virtualOverscan: 12,
   },
 );
 
@@ -108,19 +127,55 @@ const visibleItems = computed<VisibleTreeItem<T>[]>(() => {
   return items;
 });
 
+const virtualized = computed(() => Boolean(props.virtualScrollElement));
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: visibleItems.value.length,
+    getScrollElement: () => props.virtualScrollElement ?? null,
+    estimateSize: () => props.virtualEstimateSize,
+    overscan: props.virtualOverscan,
+    useAnimationFrameWithResizeObserver: true,
+  })),
+);
+
+const renderedItems = computed<RenderedTreeItem<T>[]>(() => {
+  if (!virtualized.value) return visibleItems.value.map((item, index) => ({ ...item, index }));
+  return virtualizer.value.getVirtualItems().flatMap((virtualRow) => {
+    const item = visibleItems.value[virtualRow.index];
+    return item ? [{ ...item, index: virtualRow.index, start: virtualRow.start }] : [];
+  });
+});
+
+const treeStyle = computed<CSSProperties | undefined>(() => {
+  if (!virtualized.value) return undefined;
+  return { height: `${virtualizer.value.getTotalSize()}px` };
+});
+
+const rowStyle = (item: RenderedTreeItem<T>): CSSProperties & Record<'--tree-depth', number> => ({
+  '--tree-depth': item.depth,
+  ...(virtualized.value ? { transform: `translateY(${item.start ?? 0}px)` } : {}),
+});
+
 const toggleNode = (key: string) => {
   const next = new Set(props.collapsedKeys);
   if (next.has(key)) next.delete(key);
   else next.add(key);
   emit('update:collapsedKeys', next);
 };
+
+const isActive = (node: TreeListNode<T>) => Boolean(node.active || node.key === props.activeKey);
 </script>
 
 <style scoped lang="scss">
 .tree-list {
+  position: relative;
   display: grid;
   gap: var(--space-1);
   min-width: 0;
+}
+
+.tree-list.virtualized {
+  display: block;
 }
 
 .tree-row {
@@ -137,6 +192,13 @@ const toggleNode = (key: string) => {
   transition:
     background var(--transition-fast),
     border-color var(--transition-fast);
+}
+
+.virtualized .tree-row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
 }
 
 .density-compact .tree-row {

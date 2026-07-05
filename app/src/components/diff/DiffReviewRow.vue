@@ -1,5 +1,5 @@
 <template>
-  <div class="inline-review-row" :class="[reviewClass, { flashing }]">
+  <div class="inline-review-row" :class="[reviewClass, { flashing, focused }]">
     <div v-if="mode === 'split'" class="review-cell">
       <InlineReviewBox
         v-bind="reviewProps"
@@ -48,10 +48,12 @@ const props = withDefaults(
     agentResponding?: boolean;
     error?: string;
     flashing?: boolean;
+    focused?: boolean;
   }>(),
   {
     draftBody: '',
     flashing: false,
+    focused: false,
   },
 );
 
@@ -84,6 +86,10 @@ const reviewProps = computed(() => ({
 
 .inline-review-row.flashing {
   animation: review-row-flash 1800ms ease-out;
+}
+
+.inline-review-row.focused {
+  box-shadow: inset 3px 0 0 var(--color-border-focus);
 }
 
 .inline-review-row.inline {

@@ -37,57 +37,57 @@ Use CSS custom properties from `tokens.scss` for new UI. Avoid hard-coded colors
 
 Use background tokens by surface depth:
 
-| Token | Use |
-| --- | --- |
-| `--color-bg-app` | Full app and major viewer backgrounds. |
-| `--color-bg-shell` | Application chrome, sidebars, headers, toolbars. |
-| `--color-bg-panel` | Cards, overview panels, file headers, neutral containers. |
-| `--color-bg-panel-raised` | Dialogs, popovers, active cards, raised settings rows. |
-| `--color-bg-inset` | Inputs, grouped controls, code-adjacent inset wells. |
-| `--color-bg-code` | Diff row and code surfaces. |
-| `--color-bg-line-number` | Diff gutter line-number cells. |
-| `--color-bg-hover` | Hover state for interactive rows and controls. |
-| `--color-bg-active` | Active or pressed row/control state. |
-| `--color-bg-overlay` | Modal and drawer overlays. |
+| Token                     | Use                                                       |
+| ------------------------- | --------------------------------------------------------- |
+| `--color-bg-app`          | Full app and major viewer backgrounds.                    |
+| `--color-bg-shell`        | Application chrome, sidebars, headers, toolbars.          |
+| `--color-bg-panel`        | Cards, overview panels, file headers, neutral containers. |
+| `--color-bg-panel-raised` | Dialogs, popovers, active cards, raised settings rows.    |
+| `--color-bg-inset`        | Inputs, grouped controls, code-adjacent inset wells.      |
+| `--color-bg-code`         | Diff row and code surfaces.                               |
+| `--color-bg-line-number`  | Diff gutter line-number cells.                            |
+| `--color-bg-hover`        | Hover state for interactive rows and controls.            |
+| `--color-bg-active`       | Active or pressed row/control state.                      |
+| `--color-bg-overlay`      | Modal and drawer overlays.                                |
 
 ### Border Tokens
 
 Use border tokens by strength:
 
-| Token | Use |
-| --- | --- |
-| `--color-border-subtle` | Structural dividers and low-emphasis panel borders. |
-| `--color-border-default` | Cards, inputs, dialogs, and visible grouping. |
-| `--color-border-strong` | Hovered or emphasized containers. |
-| `--color-border-focus` | Keyboard focus outlines. |
-| `--color-border-hairline` | Dense diff row separators. |
+| Token                     | Use                                                 |
+| ------------------------- | --------------------------------------------------- |
+| `--color-border-subtle`   | Structural dividers and low-emphasis panel borders. |
+| `--color-border-default`  | Cards, inputs, dialogs, and visible grouping.       |
+| `--color-border-strong`   | Hovered or emphasized containers.                   |
+| `--color-border-focus`    | Keyboard focus outlines.                            |
+| `--color-border-hairline` | Dense diff row separators.                          |
 
 ### Text Tokens
 
 Use text tokens by hierarchy:
 
-| Token | Use |
-| --- | --- |
-| `--color-text-primary` | Main titles, filenames, active content. |
-| `--color-text-secondary` | Normal body text and secondary labels. |
-| `--color-text-muted` | Supporting descriptions and metadata. |
-| `--color-text-subtle` | Counts, timestamps, helper copy. |
-| `--color-text-disabled` | Disabled line numbers and inactive metadata. |
+| Token                    | Use                                          |
+| ------------------------ | -------------------------------------------- |
+| `--color-text-primary`   | Main titles, filenames, active content.      |
+| `--color-text-secondary` | Normal body text and secondary labels.       |
+| `--color-text-muted`     | Supporting descriptions and metadata.        |
+| `--color-text-subtle`    | Counts, timestamps, helper copy.             |
+| `--color-text-disabled`  | Disabled line numbers and inactive metadata. |
 | `--color-text-on-accent` | Text placed on saturated accent backgrounds. |
 
 ### Semantic Tokens
 
 Use semantic tokens consistently:
 
-| Token Family | Meaning |
-| --- | --- |
-| `accent` | Primary app action or selected control. |
-| `review` | Human review state, comments, threads, overview navigation. |
-| `ai` | AI review, AI chat, language-server info when no stronger severity applies. |
-| `success` | Ready, reviewed, resolved, installed, completed. |
-| `warning` | Missing configuration, incomplete install, open attention state. |
-| `danger` | Errors, destructive actions, failed state. |
-| `info` | Loading, stale state, neutral informational state. |
+| Token Family | Meaning                                                                     |
+| ------------ | --------------------------------------------------------------------------- |
+| `accent`     | Primary app action or selected control.                                     |
+| `review`     | Human review state, comments, threads, overview navigation.                 |
+| `ai`         | AI review, AI chat, language-server info when no stronger severity applies. |
+| `success`    | Ready, reviewed, resolved, installed, completed.                            |
+| `warning`    | Missing configuration, incomplete install, open attention state.            |
+| `danger`     | Errors, destructive actions, failed state.                                  |
+| `info`       | Loading, stale state, neutral informational state.                          |
 
 Each semantic family has a muted background token, such as `--color-review-muted`. Use muted backgrounds for badges, chips, and low-emphasis highlights.
 
@@ -118,21 +118,21 @@ Use `Button.vue` for all normal buttons. Do not create custom button styles unle
 
 Variants:
 
-| Variant | Use |
-| --- | --- |
-| `primary` | Main action in a dialog or panel. |
+| Variant     | Use                                                      |
+| ----------- | -------------------------------------------------------- |
+| `primary`   | Main action in a dialog or panel.                        |
 | `secondary` | Normal toolbar action, toggles, and non-primary actions. |
-| `ghost` | Low-emphasis action in dense rows or headers. |
-| `danger` | Stop, remove, uninstall, or destructive action. |
-| `review` | Review-specific actions such as opening review surfaces. |
-| `ai` | AI review and AI chat actions. |
+| `ghost`     | Low-emphasis action in dense rows or headers.            |
+| `danger`    | Stop, remove, uninstall, or destructive action.          |
+| `review`    | Review-specific actions such as opening review surfaces. |
+| `ai`        | AI review and AI chat actions.                           |
 
 Sizes:
 
-| Size | Use |
-| --- | --- |
-| `sm` | Toolbars, dense rows, overview cards. |
-| `md` | Normal panels and forms. |
+| Size | Use                                             |
+| ---- | ----------------------------------------------- |
+| `sm` | Toolbars, dense rows, overview cards.           |
+| `md` | Normal panels and forms.                        |
 | `lg` | Start screen and large primary calls to action. |
 
 Use `pressed` for toggle state and `block` for full-width actions. Shared button focus is handled by the component.
@@ -178,6 +178,8 @@ Use existing diff primitives before creating new ones:
 - `InlineReviewBox.vue` and `DiffReviewRow.vue` for inline comments, AI chat, drafts, and thread actions.
 
 Do not add separate marker systems for review, diagnostics, or search. Extend `DiffScrollMarkerKind` and `buildDiffScrollMarkers` when a new scan marker belongs on the diff scrollbar.
+
+Single-file diff keyboard navigation is rendered through the existing code row primitives. Cursor and visual-selection state should be model-driven from diff rows, not DOM-driven, because diff rows are virtualized. Add cursor or visual styling through `CodeTextHighlight`/`CodeLineModel` so syntax, search, review, cursor, and visual-selection styling share one text-fragment pipeline.
 
 ### Folder Diff
 
@@ -226,10 +228,10 @@ Use typed props and emits:
 ```ts
 const props = withDefaults(
   defineProps<{
-    tone?: 'neutral' | 'warning';
+    tone?: "neutral" | "warning";
   }>(),
   {
-    tone: 'neutral',
+    tone: "neutral",
   },
 );
 

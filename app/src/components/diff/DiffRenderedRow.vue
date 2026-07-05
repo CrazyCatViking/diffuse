@@ -4,7 +4,7 @@
   <div
     v-else-if="mode === 'neutral' && row.inlineLine"
     class="diff-row neutral"
-    :class="[row.kind, { 'comment-hover-disabled': commentHoverDisabled }]"
+    :class="[row.kind, row.inlineLine.className, { 'comment-hover-disabled': commentHoverDisabled }]"
   >
     <CodeLineNumber
       side="old"
@@ -121,5 +121,10 @@ const emitToggleComments = (line: CodeLineModel | undefined) => {
 
 .diff-row.context {
   background: var(--color-bg-code);
+}
+
+.diff-row.cursor-line,
+:global(.code-line.cursor-line) {
+  box-shadow: inset 3px 0 0 var(--color-border-focus);
 }
 </style>

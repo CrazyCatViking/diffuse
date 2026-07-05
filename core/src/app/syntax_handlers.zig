@@ -87,10 +87,14 @@ fn getSyntaxSpans(runtime: *Runtime, writer: *std.Io.Writer, request: json_rpc.R
     defer snapshot.deinit();
     const repo = snapshot.toRepository();
 
-    try runtime.syntax_cache_lock.lock(runtime.io);
-    defer runtime.syntax_cache_lock.unlock(runtime.io);
+    var prepared = try diff.prepareSyntaxSpans(runtime.allocator, repo.io, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root, .target = target }, side, start_line, end_line);
+    defer if (prepared) |*value| value.deinit(runtime.allocator);
 
-    const spans = try diff.getSyntaxSpans(runtime.allocator, repo.io, &runtime.syntax_cache, repo.root, file_id, file_id, .{ .context = diff_context, .grammar_root = grammar_root, .target = target }, side, start_line, end_line);
+    const spans = if (prepared) |*value| spans: {
+        try runtime.syntax_cache_lock.lock(runtime.io);
+        defer runtime.syntax_cache_lock.unlock(runtime.io);
+        break :spans try diff.highlightPreparedSyntaxSpans(runtime.allocator, repo.io, &runtime.syntax_cache, value);
+    } else try runtime.allocator.alloc(diff.SyntaxLineSpans, 0);
     defer diff.freeSyntaxLineSpans(runtime.allocator, spans);
 
     var result: std.ArrayList(types.SyntaxLineSpans) = .empty;

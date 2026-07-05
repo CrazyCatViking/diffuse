@@ -50,18 +50,7 @@
         :class="{ resizing: fileTreeResizing, 'has-pinned-search': search.drawerOpen }"
         :style="{ '--file-tree-width': `${fileTreeWidth}px` }"
       >
-        <ChangedFilesPane
-          :files="repo.changedFiles"
-          :active-file-id="activeWorkspaceView === 'file' ? repo.activeFileId : undefined"
-          :active-folder-path="activeWorkspaceView === 'folder' ? selectedFolder?.path : undefined"
-          :overview-active="activeWorkspaceView === 'overview'"
-          :reviewed-file-ids="reviewedFileIds"
-          @select-overview="selectOverview"
-          @select-file="selectFile"
-          @select-folder="selectFolder"
-          @set-reviewed="setFileReviewed"
-          @set-folder-reviewed="setFolderReviewed"
-        />
+        <ChangedFilesPane />
 
         <div
           class="resize-handle"
@@ -74,61 +63,9 @@
           @pointerdown="startFileTreeResize"
         />
 
-        <ReviewOverviewView
-          v-if="activeWorkspaceView === 'overview'"
-          class="workspace-main"
-          v-bind="reviewOverviewProps"
-          @select-file="selectFile"
-          @new-session="review.startNewSession()"
-          @start-review="review.startAgentReview()"
-          @stop-review="review.stopAgentReview()"
-          @select-thread="selectReviewThread"
-          @resolve-thread="review.resolveThread($event)"
-          @reopen-thread="review.reopenThread($event)"
-        />
+        <RouterView />
 
-        <FolderDiffViewer
-          v-else-if="activeWorkspaceView === 'folder' && selectedFolder"
-          class="workspace-main"
-          :folder-path="selectedFolder.path"
-          :files="selectedFolder.files"
-          :target="repo.diffTarget"
-          :view-mode="diff.viewMode"
-          :context-mode="diff.contextMode"
-          @update:view-mode="diff.setViewMode($event)"
-          @update:context-mode="diff.setContextMode($event)"
-        />
-
-        <DiffViewer
-          v-else
-          class="workspace-main"
-          :model="diff.current"
-          :loading="diff.loading"
-          :error="diff.error"
-          :view-mode="diff.viewMode"
-          :context-mode="diff.contextMode"
-          :target="repo.diffTarget"
-          :sync-scroll="diff.syncScroll"
-          :installing-grammar="diff.installingGrammar"
-          :grammar-install-step="diff.grammarInstallStep"
-          :has-new-changes="diff.hasNewChanges"
-          :thread-reveal-request="threadRevealRequest"
-          :file-search-request="fileSearchRequest"
-          @update:view-mode="diff.setViewMode($event)"
-          @update:context-mode="diff.setContextMode($event)"
-          @update:sync-scroll="diff.setSyncScroll($event)"
-          @install-grammar="diff.installMissingGrammar()"
-          @load-latest="repo.activeFileId && diff.loadDiff(repo.activeFileId)"
-          @thread-reveal-handled="handleThreadRevealHandled"
-          @file-search-handled="handleFileSearchHandled"
-        />
-
-        <SearchResultsDrawer
-          v-if="repo.repository"
-          class="workspace-search-drawer"
-          @open="openSearchResult"
-          @preview="previewSearchResult"
-        />
+        <SearchResultsDrawer v-if="repo.repository" class="workspace-search-drawer" @open="openSearchResult" />
       </main>
     </template>
 
@@ -137,20 +74,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import ChangedFilesPane from './components/changed-files/ChangedFilesPane.vue';
 import DiffTargetMenu from './components/diff/DiffTargetMenu.vue';
-import DiffViewer from './components/diff/DiffViewer.vue';
-import FolderDiffViewer from './components/diff/FolderDiffViewer.vue';
 import TopBar from './components/layout/TopBar.vue';
 import RecentRepositoriesDialog from './components/repositories/RecentRepositoriesDialog.vue';
 import RepositoryStartView from './components/repositories/RepositoryStartView.vue';
-import ReviewOverviewView from './components/review/ReviewOverviewView.vue';
 import SearchPalette from './components/search/SearchPalette.vue';
 import SearchResultsDrawer from './components/search/SearchResultsDrawer.vue';
 import SettingsView from './components/settings/SettingsView.vue';
 import type { SearchResult } from './lib/search/searchTypes';
-import type { ChangedFile, DiffTarget, ReviewThread, SyntaxSide } from './lib/protocol';
+import { overviewRoute, searchResultDiffRoute, threadDiffRoute } from './lib/workspaceRoutes';
+import type { DiffTarget } from './lib/protocol';
+import { useCursorStore } from './stores/cursor';
 import { useDiffStore } from './stores/diff';
 import { useRepoStore } from './stores/repo';
 import { useReviewStore } from './stores/review';
@@ -158,37 +95,19 @@ import { useSearchStore } from './stores/search';
 
 const repo = useRepoStore();
 const diff = useDiffStore();
+const cursor = useCursorStore();
 const review = useReviewStore();
 const search = useSearchStore();
+const router = useRouter();
 const showRecentRepositories = ref(false);
 const showSettings = ref(false);
-type WorkspaceView = 'overview' | 'file' | 'folder';
-const activeWorkspaceView = ref<WorkspaceView>('overview');
-const selectedFolder = ref<{ path: string; files: ChangedFile[] }>();
 const fileTreeWidthStorageKey = 'diffuse.fileTreeWidth';
 const minFileTreeWidth = 220;
 const maxFileTreeWidth = 640;
 let resizeStartX = 0;
 let resizeStartWidth = 0;
-
-type ThreadRevealRequest = {
-  threadId: string;
-  fileId: string;
-  requestId: number;
-};
-
-type FileSearchRequest = {
-  fileId: string;
-  query: string;
-  line?: number;
-  side?: SyntaxSide;
-  requestId: number;
-};
-
-const threadRevealRequest = ref<ThreadRevealRequest>();
-const fileSearchRequest = ref<FileSearchRequest>();
-let threadRevealRequestId = 0;
-let fileSearchRequestId = 0;
+const globalKeydownOptions = { capture: true };
+const keyboardDefaultSuppressionOptions = { capture: false };
 
 function loadFileTreeWidth() {
   const savedWidth = Number(window.localStorage.getItem(fileTreeWidthStorageKey));
@@ -202,19 +121,6 @@ function clampFileTreeWidth(width: number) {
 
 const fileTreeWidth = ref(loadFileTreeWidth());
 const fileTreeResizing = ref(false);
-const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
-const reviewOverviewProps = computed(() => ({
-  changedFiles: repo.changedFiles,
-  target: repo.diffTarget,
-  reviewedFileIds: reviewedFileIds.value,
-  session: review.session,
-  progress: review.progress,
-  activeRun: review.activeRun,
-  activeAgentState: review.activeAgentState,
-  threads: review.threads,
-  loading: review.loading,
-  error: review.error,
-}));
 
 const startFileTreeResize = (event: PointerEvent) => {
   event.preventDefault();
@@ -238,143 +144,86 @@ const stopFileTreeResize = () => {
 
 const openNewRepository = async () => {
   await repo.pickAndOpenRepository();
-  if (repo.repository && !repo.error) showRecentRepositories.value = false;
+  if (repo.repository && !repo.error) {
+    showRecentRepositories.value = false;
+    await router.replace(overviewRoute());
+  }
 };
 
 const openRecentRepository = async (path: string) => {
   await repo.openRepository(path);
-  if (!repo.error) showRecentRepositories.value = false;
+  if (!repo.error) {
+    showRecentRepositories.value = false;
+    await router.replace(overviewRoute());
+  }
 };
 
 const applyDiffTarget = async (target: DiffTarget) => {
   await repo.setDiffTarget(target);
 };
 
-const selectOverview = () => {
-  threadRevealRequest.value = undefined;
-  fileSearchRequest.value = undefined;
-  selectedFolder.value = undefined;
-  activeWorkspaceView.value = 'overview';
-  repo.activeFileId = undefined;
-};
-
-const selectFile = (fileId: string) => {
-  threadRevealRequest.value = undefined;
-  selectedFolder.value = undefined;
-  activeWorkspaceView.value = 'file';
-  repo.selectFile(fileId);
-};
-
-const selectReviewThread = (thread: ReviewThread) => {
-  selectedFolder.value = undefined;
-  activeWorkspaceView.value = 'file';
-  fileSearchRequest.value = undefined;
-  threadRevealRequest.value = { threadId: thread.id, fileId: thread.fileId, requestId: ++threadRevealRequestId };
-  repo.selectFile(thread.fileId);
-};
-
-const handleThreadRevealHandled = (requestId: number) => {
-  if (threadRevealRequest.value?.requestId === requestId) threadRevealRequest.value = undefined;
-};
-
-const handleFileSearchHandled = (requestId: number) => {
-  if (fileSearchRequest.value?.requestId === requestId) fileSearchRequest.value = undefined;
-};
-
-const selectFolder = (folder: { path: string; files: ChangedFile[] }) => {
-  threadRevealRequest.value = undefined;
-  fileSearchRequest.value = undefined;
-  activeWorkspaceView.value = 'folder';
-  selectedFolder.value = { path: folder.path, files: sortFilesLikeSidebar(folder.files) };
-  repo.activeFileId = undefined;
-};
-
 const openSearchResult = (result: SearchResult) => {
-  previewSearchResult(result);
+  void previewSearchResult(result);
 };
 
-const previewSearchResult = (result: SearchResult) => {
+const previewSearchResult = async (result: SearchResult) => {
   if (result.kind === 'comment') {
-    selectReviewThread(result.thread);
+    await router.push(threadDiffRoute(result.thread));
     return;
   }
 
   if (result.fileId) {
-    const target = result.kind === 'content' || result.kind === 'symbol' ? { line: result.line, side: result.side } : undefined;
-    if (target) diff.setContextMode('full');
-    selectFile(result.fileId);
-    requestFileSearch(result.fileId, target);
+    if (result.kind === 'content' || result.kind === 'symbol') diff.setContextMode('full');
+    const targetRoute = searchResultDiffRoute(result, search.query);
+    if (targetRoute) {
+      await router.push(targetRoute);
+    }
   }
-};
-
-const requestFileSearch = (fileId: string, target?: { line?: number; side?: SyntaxSide }) => {
-  const value = search.query.trim();
-  if (!value) return;
-
-  fileSearchRequest.value = {
-    fileId,
-    query: value,
-    line: target?.line,
-    side: target?.side,
-    requestId: ++fileSearchRequestId,
-  };
-};
-
-const setFileReviewed = async (payload: { fileId: string; reviewed: boolean }) => {
-  const file = repo.changedFiles.find((item) => item.id === payload.fileId);
-  if (!file) return;
-  if (payload.reviewed) await review.markFileReviewed(file);
-  else await review.unmarkFileReviewed(file);
-};
-
-const setFolderReviewed = async (payload: { files: ChangedFile[]; reviewed: boolean }) => {
-  await review.setFilesReviewed(payload.files, payload.reviewed);
-};
-
-const changedFilePath = (file: ChangedFile) => file.newPath ?? file.oldPath ?? file.id;
-
-const sortFilesLikeSidebar = (files: ChangedFile[]) => {
-  return [...files].sort((first, second) => compareSidebarPaths(changedFilePath(first), changedFilePath(second)));
-};
-
-const compareSidebarPaths = (firstPath: string, secondPath: string) => {
-  const firstParts = firstPath.split('/').filter(Boolean);
-  const secondParts = secondPath.split('/').filter(Boolean);
-  const length = Math.min(firstParts.length, secondParts.length);
-
-  for (let index = 0; index < length; index += 1) {
-    if (firstParts[index] === secondParts[index]) continue;
-
-    const firstIsFolder = index < firstParts.length - 1;
-    const secondIsFolder = index < secondParts.length - 1;
-    if (firstIsFolder !== secondIsFolder) return firstIsFolder ? -1 : 1;
-
-    return firstParts[index].localeCompare(secondParts[index]);
-  }
-
-  return firstParts.length - secondParts.length;
 };
 
 onMounted(async () => {
-  window.addEventListener('keydown', handleGlobalSearchShortcut);
+  cursor.setNavigator((route) => {
+    void router.push(route);
+  });
+  window.addEventListener('keydown', handleGlobalSearchShortcut, globalKeydownOptions);
+  window.addEventListener('keydown', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
+  window.addEventListener('keypress', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
+  window.addEventListener('keyup', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
   try {
     await repo.loadVersion();
     const launchRepository = await window.diffuse.getLaunchRepository();
-    if (launchRepository) await repo.openRepository(launchRepository);
+    if (launchRepository) {
+      await repo.openRepository(launchRepository);
+      if (!repo.error) await router.replace(overviewRoute());
+    }
   } catch (error) {
     repo.error = error instanceof Error ? error.message : String(error);
   }
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleGlobalSearchShortcut);
+  cursor.setNavigator(undefined);
+  window.removeEventListener('keydown', handleGlobalSearchShortcut, globalKeydownOptions);
+  window.removeEventListener('keydown', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
+  window.removeEventListener('keypress', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
+  window.removeEventListener('keyup', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
   window.removeEventListener('pointermove', resizeFileTree);
   window.removeEventListener('pointerup', stopFileTreeResize);
 });
 
 const handleGlobalSearchShortcut = (event: KeyboardEvent) => {
+  if (event.defaultPrevented) return;
   if (!repo.repository) return;
   const commandOrControl = event.metaKey || event.ctrlKey;
+  const isTextEntry = isTextEntryTarget(event.target);
+
+  if (!isTextEntry && event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    return;
+  }
+
+  if (!isTextEntry && cursor.handleKeyDown(event)) return;
+
   if (commandOrControl && event.key.toLowerCase() === 'p') {
     event.preventDefault();
     search.openOverlay('all');
@@ -386,81 +235,32 @@ const handleGlobalSearchShortcut = (event: KeyboardEvent) => {
   }
 };
 
+const suppressBrowserKeyboardDefault = (event: KeyboardEvent) => {
+  if (!event.cancelable || event.defaultPrevented) return;
+  if (isTextEntryTarget(event.target) || isModifierOnlyKey(event.key) || event.isComposing) return;
+
+  event.preventDefault();
+};
+
+const isTextEntryTarget = (target: EventTarget | null) => {
+  return target instanceof HTMLElement && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+};
+
+const isModifierOnlyKey = (key: string) => {
+  return key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta' || key === 'AltGraph';
+};
+
 watch(
   () => repo.repository?.root,
   (root) => {
-    threadRevealRequest.value = undefined;
-    fileSearchRequest.value = undefined;
-    selectedFolder.value = undefined;
-    activeWorkspaceView.value = 'overview';
     if (root) {
       void review.ensureSession();
+      void router.replace(overviewRoute());
     } else {
       review.clear();
-    }
-  },
-);
-
-watch(
-  () => review.threads,
-  (threads) => {
-    const request = threadRevealRequest.value;
-    if (request && !threads.some((thread) => thread.id === request.threadId)) threadRevealRequest.value = undefined;
-  },
-);
-
-watch(
-  () => [activeWorkspaceView.value, repo.activeFileId] as const,
-  ([view, fileId]) => {
-    if (view !== 'file') {
       diff.clear();
-      return;
-    }
-
-    if (fileId) void diff.loadDiff(fileId, { silent: diff.current?.fileId === fileId });
-    else diff.clear();
-  },
-);
-
-watch(
-  () => repo.changeRevision,
-  () => {
-    if (activeWorkspaceView.value === 'folder' && selectedFolder.value) {
-      const folderPath = selectedFolder.value.path;
-      const files = sortFilesLikeSidebar(repo.changedFiles.filter((file) => changedFilePath(file).startsWith(`${folderPath}/`)));
-      if (files.length > 0) selectedFolder.value = { path: folderPath, files };
-      else selectOverview();
-      return;
-    }
-
-    if (activeWorkspaceView.value !== 'file') {
-      diff.clear();
-      return;
-    }
-
-    if (!repo.activeFileId) {
-      diff.clear();
-      return;
-    }
-
-    if (diff.current?.fileId === repo.activeFileId && repo.changedFileIds.includes(repo.activeFileId)) {
-      diff.markNewChanges();
     }
   },
-);
-
-watch(
-  () => repo.diffTarget,
-  () => {
-    if (activeWorkspaceView.value !== 'file') {
-      diff.clear();
-      return;
-    }
-
-    if (repo.activeFileId) void diff.loadDiff(repo.activeFileId);
-    else diff.clear();
-  },
-  { deep: true },
 );
 </script>
 
@@ -487,11 +287,6 @@ watch(
   &.has-pinned-search {
     grid-template-columns: var(--file-tree-width) 6px minmax(0, 1fr) minmax(280px, 340px);
   }
-}
-
-.workspace-main {
-  min-width: 0;
-  min-height: 0;
 }
 
 .workspace-search-drawer {
