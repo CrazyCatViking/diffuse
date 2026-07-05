@@ -170,6 +170,16 @@ pub const SyntaxSpan = struct {
     scope: []const u8,
 };
 
+pub const StructuralSymbol = struct {
+    label: []const u8,
+    start_line: u32,
+    end_line: u32,
+
+    pub fn deinit(self: *StructuralSymbol, allocator: std.mem.Allocator) void {
+        allocator.free(self.label);
+    }
+};
+
 pub const Side = enum { old, new };
 
 const LineSpan = struct {
@@ -695,6 +705,131 @@ fn highlightSourceDirect(allocator: std.mem.Allocator, io: std.Io, cache: ?*Cach
 
     dedupeLineSpans(allocator, &result);
     return result.toOwnedSlice(allocator);
+}
+
+pub fn structuralSymbols(allocator: std.mem.Allocator, language: []const u8, grammar_path: []const u8, source: []const u8) ![]StructuralSymbol {
+    if (!enable_direct_highlighter) return error.DirectHighlighterUnsupported;
+
+    var library = try std.DynLib.open(grammar_path);
+    defer library.close();
+    const ts_language = try loadTreeSitterLanguage(allocator, &library, language);
+
+    const parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(ts_language);
+
+    const tree = parser.parseString(source, null) orelse return error.ParseFailed;
+    defer tree.destroy();
+    const root = tree.rootNode();
+    if (root.hasError()) return allocator.alloc(StructuralSymbol, 0);
+
+    var result: std.ArrayList(StructuralSymbol) = .empty;
+    errdefer freeStructuralSymbols(allocator, result.items);
+    try collectStructuralSymbols(allocator, source, root, 0, &result);
+    return result.toOwnedSlice(allocator);
+}
+
+pub fn freeStructuralSymbols(allocator: std.mem.Allocator, symbols: []StructuralSymbol) void {
+    for (symbols) |*symbol| symbol.deinit(allocator);
+    allocator.free(symbols);
+}
+
+fn collectStructuralSymbols(allocator: std.mem.Allocator, source: []const u8, node: ts.Node, depth: u8, result: *std.ArrayList(StructuralSymbol)) !void {
+    if (depth > 96) return;
+
+    if (isStructuralNode(node)) {
+        const start = node.startPoint();
+        const end = node.endPoint();
+        const start_line = start.row + 1;
+        const end_line = if (end.column == 0 and end.row > start.row) end.row else end.row + 1;
+        if (end_line >= start_line) {
+            const label = try structuralLabel(allocator, source, node);
+            errdefer allocator.free(label);
+            try result.append(allocator, .{
+                .label = label,
+                .start_line = start_line,
+                .end_line = end_line,
+            });
+        }
+    }
+
+    var cursor = node.walk();
+    defer cursor.destroy();
+    const children = try node.namedChildren(&cursor, allocator);
+    defer allocator.free(children);
+    for (children) |child| try collectStructuralSymbols(allocator, source, child, depth + 1, result);
+}
+
+fn isStructuralNode(node: ts.Node) bool {
+    const kind = node.kind();
+    if (node.endPoint().row <= node.startPoint().row) return false;
+    return std.mem.indexOf(u8, kind, "function") != null or
+        std.mem.indexOf(u8, kind, "method") != null or
+        std.mem.indexOf(u8, kind, "class") != null or
+        std.mem.indexOf(u8, kind, "struct") != null or
+        std.mem.indexOf(u8, kind, "enum") != null or
+        std.mem.indexOf(u8, kind, "interface") != null or
+        std.mem.indexOf(u8, kind, "impl") != null or
+        std.mem.indexOf(u8, kind, "module") != null or
+        std.mem.endsWith(u8, kind, "_item") or
+        std.mem.endsWith(u8, kind, "_declaration") or
+        std.mem.endsWith(u8, kind, "_definition");
+}
+
+fn structuralLabel(allocator: std.mem.Allocator, source: []const u8, node: ts.Node) ![]u8 {
+    const kind = normalizedStructuralKind(node.kind());
+    if (structuralName(source, node)) |name| return std.fmt.allocPrint(allocator, "{s} {s}", .{ kind, name });
+    return allocator.dupe(u8, kind);
+}
+
+fn normalizedStructuralKind(kind: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, kind, "function") != null) return "function";
+    if (std.mem.indexOf(u8, kind, "method") != null) return "method";
+    if (std.mem.indexOf(u8, kind, "class") != null) return "class";
+    if (std.mem.indexOf(u8, kind, "struct") != null) return "struct";
+    if (std.mem.indexOf(u8, kind, "enum") != null) return "enum";
+    if (std.mem.indexOf(u8, kind, "interface") != null) return "interface";
+    if (std.mem.indexOf(u8, kind, "impl") != null) return "impl";
+    if (std.mem.indexOf(u8, kind, "module") != null) return "module";
+    return kind;
+}
+
+fn structuralName(source: []const u8, node: ts.Node) ?[]const u8 {
+    if (node.childByFieldName("name")) |name| return structuralNameText(source, name);
+    if (node.childByFieldName("property")) |name| return structuralNameText(source, name);
+    if (node.childByFieldName("declarator")) |declarator| {
+        if (firstIdentifier(source, declarator, 0)) |name| return name;
+    }
+    if (firstIdentifier(source, node, 0)) |name| return name;
+    return null;
+}
+
+fn firstIdentifier(source: []const u8, node: ts.Node, depth: u8) ?[]const u8 {
+    if (depth > 4) return null;
+    if (isIdentifierNode(node)) return structuralNameText(source, node);
+    var index: u32 = 0;
+    while (index < node.namedChildCount()) : (index += 1) {
+        if (node.namedChild(index)) |child| {
+            if (firstIdentifier(source, child, depth + 1)) |name| return name;
+        }
+    }
+    return null;
+}
+
+fn isIdentifierNode(node: ts.Node) bool {
+    const kind = node.kind();
+    return std.mem.eql(u8, kind, "identifier") or
+        std.mem.eql(u8, kind, "type_identifier") or
+        std.mem.eql(u8, kind, "property_identifier") or
+        std.mem.eql(u8, kind, "field_identifier") or
+        std.mem.eql(u8, kind, "name") or
+        std.mem.eql(u8, kind, "property_name") or
+        std.mem.endsWith(u8, kind, "_identifier");
+}
+
+fn structuralNameText(source: []const u8, node: ts.Node) ?[]const u8 {
+    const text = std.mem.trim(u8, nodeText(source, node), " \t\r\n");
+    return if (text.len == 0 or text.len > 120) null else text;
 }
 
 fn highlightSourceCli(allocator: std.mem.Allocator, io: std.Io, language: []const u8, grammar_path: []const u8, query_path: []const u8, source_map: SourceMap, depth: u8) anyerror![]LineSpan {

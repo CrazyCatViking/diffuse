@@ -1,0 +1,11 @@
+diff --git a/src/rename.ts b/src/rename.ts
+--- a/src/rename.ts
++++ b/src/rename.ts
+@@ -1,5 +1,5 @@ function renderUser
+ export function renderUser(user: User) {
+-  const oldName = user.name;
++  const displayName = user.name;
+   const role = user.role ?? 'guest';
+-  return `${oldName.trim()} (${role})`;
++  return `${displayName.trim()} (${role})`;
+ }

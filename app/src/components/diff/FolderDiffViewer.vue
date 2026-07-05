@@ -302,6 +302,7 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
       commentsExpandedForLine: (side, line) => expandedCommentStarts.value.has(fileCommentStartKey(fileId, side, line)),
       reviewHighlightsForLine: (side, line, textLength) => reviewHighlightsForLine(fileId, side, line, textLength),
       diagnosticsForLine: (_side, line) => diagnosticsForLine(fileId, line),
+      changeGroupForId: (id) => model.annotations?.changeGroups.find((group) => group.id === id),
       renderTarget: viewMode.value === 'split' ? 'split' : 'inline',
     });
     const reviewRow = displayReviewRow(item.item);
@@ -357,6 +358,7 @@ const emptyModel = (): DiffRenderModel => ({
   context: contextMode.value,
   syntax: { grammarInstalled: false, highlightsInstalled: false },
   rows: [],
+  annotations: { columnUnit: 'utf16', linePairs: [], changeGroups: [] },
 });
 
 const fileSideKey = (fileId: string, side: SyntaxSide) => `${fileId}:${side}`;

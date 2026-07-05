@@ -87,6 +87,7 @@ pub const DiffRenderModel = struct {
 };
 
 pub const DiffAnnotations = struct {
+    columnUnit: []const u8,
     linePairs: []const DiffLinePair,
     changeGroups: []const DiffChangeGroup,
 };
@@ -306,6 +307,7 @@ pub fn diffRow(row: diff.DiffRow) DiffRow {
 
 pub fn diffAnnotations(value: diff.DiffAnnotations) DiffAnnotations {
     return .{
+        .columnUnit = value.column_unit,
         .linePairs = value.line_pairs.items,
         .changeGroups = value.change_groups.items,
     };

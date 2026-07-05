@@ -54,6 +54,7 @@ export type DiffRenderModel = {
 };
 
 export type DiffAnnotations = {
+  columnUnit: 'utf16' | string;
   linePairs: DiffLinePair[];
   changeGroups: DiffChangeGroup[];
 };

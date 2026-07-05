@@ -31,6 +31,7 @@ export type CodeLineModel = {
   selectable?: boolean;
   commentable?: boolean;
   title?: string;
+  explanation?: string;
   className?: string | string[] | Record<string, boolean>;
 };
 

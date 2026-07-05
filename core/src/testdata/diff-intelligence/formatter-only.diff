@@ -1,0 +1,14 @@
+diff --git a/src/format.ts b/src/format.ts
+--- a/src/format.ts
++++ b/src/format.ts
+@@ -1,5 +1,8 @@ function formatUser
+-export function formatUser(user: User) {
+-  return { id: user.id, name: user.name, active: Boolean(user.active) };
+-}
++export function formatUser(user: User) {
++  return {
++    id: user.id,
++    name: user.name,
++    active: Boolean(user.active),
++  };
++}

@@ -1,0 +1,10 @@
+diff --git a/src/unicode.ts b/src/unicode.ts
+--- a/src/unicode.ts
++++ b/src/unicode.ts
+@@ -1,5 +1,5 @@ function labels
+ export const labels = {
+-  greeting: 'Hello, 😀',
+-  city: 'Malmö',
++  greeting: 'Hello, 😃',
++  city: 'Zürich',
+ };

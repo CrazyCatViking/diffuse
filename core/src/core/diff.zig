@@ -2,6 +2,8 @@ const std = @import("std");
 const repository = @import("repository.zig");
 pub const syntax = @import("syntax.zig");
 
+const max_structural_source_bytes = 2 * 1024 * 1024;
+
 pub const DiffRowKind = enum {
     context,
     added,
@@ -36,6 +38,7 @@ pub const DiffChangeGroup = struct {
 };
 
 pub const DiffAnnotations = struct {
+    column_unit: []const u8 = "utf16",
     line_pairs: std.ArrayList(DiffLinePair) = .empty,
     change_groups: std.ArrayList(DiffChangeGroup) = .empty,
 
@@ -142,6 +145,7 @@ pub fn getDiffRenderModel(allocator: std.mem.Allocator, io: std.Io, repo_root: [
     errdefer model.deinit(allocator);
 
     try parseUnifiedDiff(allocator, output, &model.rows);
+    applyStructuralSymbols(allocator, io, repo_root, path, options, model.syntax_status, &model.rows) catch {};
     try enrichDiffRows(allocator, &model.rows, &model.annotations);
     return model;
 }
@@ -290,6 +294,63 @@ fn sparseSyntaxResult(allocator: std.mem.Allocator, source: []const u8, spans: [
     return spans.len * 4 < requested;
 }
 
+fn applyStructuralSymbols(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, path: []const u8, options: DiffOptions, status: syntax.SyntaxStatus, rows: *std.ArrayList(DiffRow)) !void {
+    if (!status.grammarInstalled) return;
+    const language = status.language orelse return;
+    const grammar_path = status.grammarPath orelse return;
+
+    const old_source = try sourceForSide(allocator, io, repo_root, path, .old, options.target);
+    defer allocator.free(old_source);
+    if (old_source.len > 0 and old_source.len <= max_structural_source_bytes) {
+        const symbols = try syntax.structuralSymbols(allocator, language, grammar_path, old_source);
+        defer syntax.freeStructuralSymbols(allocator, symbols);
+        try attachStructuralSymbols(allocator, rows, .old, symbols);
+    }
+
+    const new_source = try sourceForSide(allocator, io, repo_root, path, .new, options.target);
+    defer allocator.free(new_source);
+    if (new_source.len > 0 and new_source.len <= max_structural_source_bytes) {
+        const symbols = try syntax.structuralSymbols(allocator, language, grammar_path, new_source);
+        defer syntax.freeStructuralSymbols(allocator, symbols);
+        try attachStructuralSymbols(allocator, rows, .new, symbols);
+    }
+}
+
+fn attachStructuralSymbols(allocator: std.mem.Allocator, rows: *std.ArrayList(DiffRow), side: SyntaxSide, symbols: []const syntax.StructuralSymbol) !void {
+    if (symbols.len == 0) return;
+    for (rows.items) |*row| {
+        if (row.kind == .hunk) continue;
+        const line = switch (side) {
+            .old => row.old_line,
+            .new => row.new_line,
+        } orelse continue;
+        const symbol = structuralSymbolForLine(symbols, line) orelse continue;
+        const replacement = try allocator.dupe(u8, symbol.label);
+        if (row.symbol) |existing| {
+            if (std.mem.eql(u8, existing, symbol.label)) {
+                allocator.free(replacement);
+                continue;
+            }
+            allocator.free(existing);
+        }
+        row.symbol = replacement;
+    }
+}
+
+fn structuralSymbolForLine(symbols: []const syntax.StructuralSymbol, line: u32) ?syntax.StructuralSymbol {
+    var best: ?syntax.StructuralSymbol = null;
+    var best_width: u32 = std.math.maxInt(u32);
+    for (symbols) |symbol| {
+        if (line < symbol.start_line or line > symbol.end_line) continue;
+        const width = symbol.end_line - symbol.start_line;
+        if (width <= best_width) {
+            best = symbol;
+            best_width = width;
+        }
+    }
+    return best;
+}
+
 const SourceChunk = struct {
     source: []u8,
     start_line: u32,
@@ -409,8 +470,10 @@ fn parseUnifiedDiff(allocator: std.mem.Allocator, input: []const u8, rows: *std.
 const TokenClass = enum { whitespace, word, punctuation };
 
 const Token = struct {
-    start: u32,
-    end: u32,
+    byte_start: u32,
+    byte_end: u32,
+    column_start: u32,
+    column_end: u32,
     class: TokenClass,
 };
 
@@ -523,11 +586,11 @@ fn diffTokenSpans(allocator: std.mem.Allocator, old_text: []const u8, new_text: 
 
     if (old_tokens.len == 0 and new_tokens.len == 0) return;
     if (old_tokens.len == 0) {
-        if (new_text.len > 0) try new_spans.append(allocator, .{ .startColumn = 0, .endColumn = @intCast(new_text.len), .kind = "inserted-token" });
+        if (new_text.len > 0) try new_spans.append(allocator, .{ .startColumn = 0, .endColumn = utf16ColumnForEndByte(new_text, new_text.len), .kind = "inserted-token" });
         return;
     }
     if (new_tokens.len == 0) {
-        if (old_text.len > 0) try old_spans.append(allocator, .{ .startColumn = 0, .endColumn = @intCast(old_text.len), .kind = "deleted-token" });
+        if (old_text.len > 0) try old_spans.append(allocator, .{ .startColumn = 0, .endColumn = utf16ColumnForEndByte(old_text, old_text.len), .kind = "deleted-token" });
         return;
     }
 
@@ -598,7 +661,13 @@ fn tokenizeLine(allocator: std.mem.Allocator, text: []const u8) ![]Token {
         } else {
             while (index < text.len and tokenClass(text[index]) == class) : (index += 1) {}
         }
-        try tokens.append(allocator, .{ .start = @intCast(start), .end = @intCast(index), .class = class });
+        try tokens.append(allocator, .{
+            .byte_start = @intCast(start),
+            .byte_end = @intCast(index),
+            .column_start = utf16ColumnForStartByte(text, start),
+            .column_end = utf16ColumnForEndByte(text, index),
+            .class = class,
+        });
     }
 
     return tokens.toOwnedSlice(allocator);
@@ -612,14 +681,14 @@ fn tokenClass(byte: u8) TokenClass {
 
 fn tokensEqual(old_text: []const u8, old_token: Token, new_text: []const u8, new_token: Token) bool {
     if (old_token.class != new_token.class) return false;
-    return std.mem.eql(u8, old_text[old_token.start..old_token.end], new_text[new_token.start..new_token.end]);
+    return std.mem.eql(u8, old_text[old_token.byte_start..old_token.byte_end], new_text[new_token.byte_start..new_token.byte_end]);
 }
 
 fn appendChangedTokenRun(allocator: std.mem.Allocator, tokens: []const Token, start: usize, end: usize, spans: *std.ArrayList(DiffTokenSpan), kind: []const u8) !void {
     if (end <= start) return;
     try spans.append(allocator, .{
-        .startColumn = tokens[start].start,
-        .endColumn = tokens[end - 1].end,
+        .startColumn = tokens[start].column_start,
+        .endColumn = tokens[end - 1].column_end,
         .kind = kind,
     });
 }
@@ -635,16 +704,15 @@ fn fallbackByteSpans(allocator: std.mem.Allocator, old_text: []const u8, new_tex
     }
     const whitespace_only = equalIgnoringAsciiWhitespace(old_text, new_text);
     const replacement = old_suffix > prefix and new_suffix > prefix;
-    if (old_suffix > prefix) try old_spans.append(allocator, .{
-        .startColumn = @intCast(prefix),
-        .endColumn = @intCast(old_suffix),
-        .kind = if (whitespace_only) "whitespace" else if (replacement) "replaced-token" else "deleted-token",
-    });
-    if (new_suffix > prefix) try new_spans.append(allocator, .{
-        .startColumn = @intCast(prefix),
-        .endColumn = @intCast(new_suffix),
-        .kind = if (whitespace_only) "whitespace" else if (replacement) "replaced-token" else "inserted-token",
-    });
+    if (old_suffix > prefix) try appendByteRangeSpan(allocator, old_text, prefix, old_suffix, old_spans, if (whitespace_only) "whitespace" else if (replacement) "replaced-token" else "deleted-token");
+    if (new_suffix > prefix) try appendByteRangeSpan(allocator, new_text, prefix, new_suffix, new_spans, if (whitespace_only) "whitespace" else if (replacement) "replaced-token" else "inserted-token");
+}
+
+fn appendByteRangeSpan(allocator: std.mem.Allocator, text: []const u8, start_byte: usize, end_byte: usize, spans: *std.ArrayList(DiffTokenSpan), kind: []const u8) !void {
+    const start_column = utf16ColumnForStartByte(text, start_byte);
+    const end_column = utf16ColumnForEndByte(text, end_byte);
+    if (end_column <= start_column) return;
+    try spans.append(allocator, .{ .startColumn = start_column, .endColumn = end_column, .kind = kind });
 }
 
 fn ownedSpansOrNull(allocator: std.mem.Allocator, spans: *std.ArrayList(DiffTokenSpan)) !?[]const DiffTokenSpan {
@@ -655,8 +723,48 @@ fn ownedSpansOrNull(allocator: std.mem.Allocator, spans: *std.ArrayList(DiffToke
 fn fullLineSpan(allocator: std.mem.Allocator, text: []const u8, kind: []const u8) !?[]const DiffTokenSpan {
     if (text.len == 0) return null;
     const spans = try allocator.alloc(DiffTokenSpan, 1);
-    spans[0] = .{ .startColumn = 0, .endColumn = @intCast(text.len), .kind = kind };
+    spans[0] = .{ .startColumn = 0, .endColumn = utf16ColumnForEndByte(text, text.len), .kind = kind };
     return spans;
+}
+
+fn utf16ColumnForStartByte(text: []const u8, byte_offset: usize) u32 {
+    return utf16ColumnForByte(text, byte_offset, false);
+}
+
+fn utf16ColumnForEndByte(text: []const u8, byte_offset: usize) u32 {
+    return utf16ColumnForByte(text, byte_offset, true);
+}
+
+fn utf16ColumnForByte(text: []const u8, byte_offset: usize, include_crossing_scalar: bool) u32 {
+    const limit = @min(byte_offset, text.len);
+    var index: usize = 0;
+    var column: u32 = 0;
+    while (index < limit) {
+        const sequence_len = utf8SequenceLength(text[index], text[index..]);
+        if (!include_crossing_scalar and index + sequence_len > limit) break;
+        column += if (sequence_len == 4) 2 else 1;
+        index += sequence_len;
+    }
+    return column;
+}
+
+fn utf8SequenceLength(first: u8, remaining: []const u8) usize {
+    const expected: usize = if (first < 0x80)
+        1
+    else if (first & 0xE0 == 0xC0)
+        2
+    else if (first & 0xF0 == 0xE0)
+        3
+    else if (first & 0xF8 == 0xF0)
+        4
+    else
+        1;
+    if (expected > remaining.len) return 1;
+    var index: usize = 1;
+    while (index < expected) : (index += 1) {
+        if (remaining[index] & 0xC0 != 0x80) return 1;
+    }
+    return expected;
 }
 
 fn linePairConfidence(old_text: []const u8, new_text: []const u8) f32 {
@@ -929,6 +1037,98 @@ test "diff enrichment pairs adjacent replacements" {
     try std.testing.expect(rows.items[1].old_diff_spans != null);
     try std.testing.expect(rows.items[2].new_diff_spans != null);
     try std.testing.expectEqualStrings("fn rename()", rows.items[1].symbol.?);
+}
+
+test "diff token spans use utf16 columns for non-ascii text" {
+    const allocator = std.testing.allocator;
+    var old_spans: std.ArrayList(DiffTokenSpan) = .empty;
+    defer old_spans.deinit(allocator);
+    var new_spans: std.ArrayList(DiffTokenSpan) = .empty;
+    defer new_spans.deinit(allocator);
+
+    try diffTokenSpans(allocator, "const label = \"😀\";", "const label = \"😃\";", &old_spans, &new_spans);
+
+    try std.testing.expectEqual(@as(usize, 1), old_spans.items.len);
+    try std.testing.expectEqual(@as(usize, 1), new_spans.items.len);
+    try std.testing.expectEqual(@as(u32, 15), old_spans.items[0].startColumn);
+    try std.testing.expectEqual(@as(u32, 17), old_spans.items[0].endColumn);
+    try std.testing.expectEqual(@as(u32, 15), new_spans.items[0].startColumn);
+    try std.testing.expectEqual(@as(u32, 17), new_spans.items[0].endColumn);
+}
+
+test "full line spans use utf16 columns" {
+    const allocator = std.testing.allocator;
+    const spans = (try fullLineSpan(allocator, "😀x", "deleted-token")).?;
+    defer allocator.free(spans);
+
+    try std.testing.expectEqual(@as(u32, 0), spans[0].startColumn);
+    try std.testing.expectEqual(@as(u32, 3), spans[0].endColumn);
+}
+
+test "structural symbols replace hunk context symbols" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\diff --git a/demo.zig b/demo.zig
+        \\--- a/demo.zig
+        \\+++ b/demo.zig
+        \\@@ -2 +2 @@ fn fallback()
+        \\-const oldName = value;
+        \\+const newName = value;
+        \\
+    ;
+
+    var rows: std.ArrayList(DiffRow) = .empty;
+    defer {
+        for (rows.items) |row| deinitRow(allocator, row);
+        rows.deinit(allocator);
+    }
+
+    try parseUnifiedDiff(allocator, input, &rows);
+    try attachStructuralSymbols(allocator, &rows, .old, &.{.{ .label = "function structural", .start_line = 1, .end_line = 4 }});
+    try attachStructuralSymbols(allocator, &rows, .new, &.{.{ .label = "function structural", .start_line = 1, .end_line = 4 }});
+
+    try std.testing.expectEqualStrings("function structural", rows.items[1].symbol.?);
+    try std.testing.expectEqualStrings("function structural", rows.items[2].symbol.?);
+}
+
+test "diff intelligence benchmark fixtures parse and enrich" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        input: []const u8,
+        expected_group_kind: ?[]const u8 = null,
+    }{
+        .{ .input = @embedFile("../testdata/diff-intelligence/renamed-identifier.diff") },
+        .{ .input = @embedFile("../testdata/diff-intelligence/moved-block.diff"), .expected_group_kind = "moved-block" },
+        .{ .input = @embedFile("../testdata/diff-intelligence/moved-and-edited-block.diff") },
+        .{ .input = @embedFile("../testdata/diff-intelligence/formatter-only.diff") },
+        .{ .input = @embedFile("../testdata/diff-intelligence/wrapper-added.diff") },
+        .{ .input = @embedFile("../testdata/diff-intelligence/import-reorder.diff") },
+        .{ .input = @embedFile("../testdata/diff-intelligence/non-ascii.diff") },
+        .{ .input = @embedFile("../testdata/diff-intelligence/large-rewrite.diff") },
+    };
+
+    for (cases) |case| {
+        var rows: std.ArrayList(DiffRow) = .empty;
+        defer {
+            for (rows.items) |row| deinitRow(allocator, row);
+            rows.deinit(allocator);
+        }
+        var annotations: DiffAnnotations = .{};
+        defer annotations.deinit(allocator);
+
+        try parseUnifiedDiff(allocator, case.input, &rows);
+        try enrichDiffRows(allocator, &rows, &annotations);
+
+        try std.testing.expect(rows.items.len > 0);
+        if (case.expected_group_kind) |kind| try std.testing.expect(hasChangeGroupKind(annotations.change_groups.items, kind));
+    }
+}
+
+fn hasChangeGroupKind(groups: []const DiffChangeGroup, kind: []const u8) bool {
+    for (groups) |group| {
+        if (std.mem.eql(u8, group.kind, kind)) return true;
+    }
+    return false;
 }
 
 test "diff enrichment detects moved blocks" {

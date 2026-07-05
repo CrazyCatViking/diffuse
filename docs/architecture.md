@@ -220,9 +220,13 @@ Each row carries old/new line numbers and old/new text where applicable. After p
 - Adjacent deleted/added blocks are paired as replacement candidates in `annotations.linePairs`.
 - Paired replacement lines receive `oldDiffSpans` and `newDiffSpans` token ranges for inserted, deleted, replaced, or whitespace-only text.
 - Exact normalized deleted/added runs that are far enough apart are marked as `moved-block` groups in `annotations.changeGroups`; their rows receive `changeGroupId`, `changeRole`, and `changeConfidence`.
-- Git hunk function context is carried as `symbol` on rows and as `symbol-change` groups where available.
+- When an installed Tree-sitter grammar is available, the core parses old and new source text and annotates rows with the innermost structural symbol containing each changed line. Git hunk function context remains the fallback when parsing is unavailable, too large, or fails.
+- Rows sharing a symbol are grouped as `symbol-change` annotations where available.
+- `annotations.columnUnit` is currently `utf16`; all diff token span columns are emitted as JavaScript string indexes rather than byte offsets so renderer slicing stays correct for non-ASCII text.
 
-Git remains the correctness and fallback layer. These annotations explain relationships for review UI rendering, but they do not replace Git patch semantics or review anchors. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
+Git remains the correctness and fallback layer. These annotations explain relationships for review UI rendering, but they do not replace Git patch semantics or review anchors. The renderer converts token spans into inline highlights, moved rows into side accents, and available group/token metadata into native line tooltips. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
+
+Diff intelligence regression fixtures live under `core/src/testdata/diff-intelligence`. They cover renamed identifiers, moved blocks, moved-and-edited blocks, formatter-only changes, wrapper additions, import reorders, non-ASCII text, and larger rewrites. Core tests embed these fixtures so parsing and enrichment failures are caught by `zig build test`.
 
 ## Syntax Highlighting
 

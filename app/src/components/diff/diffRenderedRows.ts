@@ -1,4 +1,4 @@
-import type { DiffRow, DiffTokenSpan, LspDiagnostic, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type { DiffChangeGroup, DiffRow, DiffTokenSpan, LspDiagnostic, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import type { CodeLineModel, CodeTextHighlight } from '../code/codeModels';
 import type { DiffCodeRowModel } from './diffViewModels';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
@@ -27,6 +27,7 @@ export const buildRenderedDiffRowFields = (
       textLength: number,
     ) => Pick<CodeLineModel, 'highlights' | 'className'>;
     diagnosticsForLine: (side: SyntaxSide, line: number | undefined) => LspDiagnostic[];
+    changeGroupForId?: (id: string) => DiffChangeGroup | undefined;
     renderTarget?: DiffRowRenderTarget;
   },
 ): RenderedDiffRowFields => {
@@ -56,6 +57,7 @@ export const buildRenderedDiffRowFields = (
   const newLineIsInlineMetadata = renderTarget === 'inline' && inlineSide !== 'new' && newLine !== undefined;
   const oldDiffHighlights = diffHighlights(diffRow.oldDiffSpans);
   const newDiffHighlights = diffHighlights(diffRow.newDiffSpans);
+  const changeGroup = diffRow.changeGroupId ? options.changeGroupForId?.(diffRow.changeGroupId) : undefined;
 
   const lineOptions = (side: SyntaxSide, full: boolean) => {
     const lineNumber = side === 'old' ? oldLine : newLine;
@@ -74,6 +76,10 @@ export const buildRenderedDiffRowFields = (
       diffHighlights: full ? (side === 'old' ? oldDiffHighlights : newDiffHighlights) : [],
       diagnostics: options.diagnosticsForLine(side, lineNumber),
       title: side === 'old' ? 'Add old-side comment' : 'Add new-side comment',
+      explanation:
+        full && lineNumber
+          ? diffExplanation(diffRow, changeGroup, side === 'old' ? diffRow.oldDiffSpans : diffRow.newDiffSpans)
+          : undefined,
       cursorHighlights: cursorState?.highlights ?? [],
       className: mergeClassNames(cursorState?.className, full ? diffClassName(diffRow, side) : undefined),
     };
@@ -109,6 +115,7 @@ const codeLineForSide = (options: {
   diffHighlights: CodeTextHighlight[];
   diagnostics: LspDiagnostic[];
   title: string;
+  explanation?: string;
   cursorHighlights: CodeTextHighlight[];
   className?: CodeLineModel['className'];
 }): CodeLineModel => {
@@ -123,6 +130,7 @@ const codeLineForSide = (options: {
     commentsExpanded: options.commentsExpanded,
     diagnostics: options.diagnostics,
     title: options.title,
+    explanation: options.explanation,
     className: options.className,
     highlights: highlights.length > 0 ? highlights : undefined,
   };
@@ -162,6 +170,38 @@ const diffClassName = (row: DiffRow | undefined, side: SyntaxSide): string | und
   if (!row?.changeRole) return undefined;
   if (row.changeRole === 'moved-from' && side === 'old') return 'diff-moved diff-moved-from';
   if (row.changeRole === 'moved-to' && side === 'new') return 'diff-moved diff-moved-to';
+  return undefined;
+};
+
+const diffExplanation = (row: DiffRow, group: DiffChangeGroup | undefined, spans: DiffTokenSpan[] | undefined): string | undefined => {
+  const parts: string[] = [];
+  if (row.changeRole === 'moved-from') {
+    parts.push(group?.newStartLine ? `Moved to new ${lineRange(group.newStartLine, group.newEndLine)}` : 'Moved from this location');
+  } else if (row.changeRole === 'moved-to') {
+    parts.push(group?.oldStartLine ? `Moved from old ${lineRange(group.oldStartLine, group.oldEndLine)}` : 'Moved to this location');
+  } else if (group?.kind === 'symbol-change') {
+    parts.push(`Related change in ${group.symbol ?? 'this symbol'}`);
+  }
+
+  const symbol = group?.symbol ?? row.symbol;
+  if (symbol && !parts.some((part) => part.includes(symbol))) parts.push(`Inside ${symbol}`);
+  const tokenSummary = diffTokenSummary(spans);
+  if (tokenSummary) parts.push(tokenSummary);
+  if (row.changeConfidence !== undefined) parts.push(`Confidence ${Math.round(row.changeConfidence * 100)}%`);
+  return parts.length > 0 ? parts.join('\n') : undefined;
+};
+
+const lineRange = (start: number, end: number | undefined): string => {
+  if (!end || end === start) return `line ${start}`;
+  return `lines ${start}-${end}`;
+};
+
+const diffTokenSummary = (spans: DiffTokenSpan[] | undefined): string | undefined => {
+  if (!spans || spans.length === 0) return undefined;
+  if (spans.some((span) => span.kind === 'whitespace')) return 'Whitespace-only token change';
+  if (spans.some((span) => span.kind === 'replaced-token')) return 'Token replacement';
+  if (spans.some((span) => span.kind === 'inserted-token')) return 'Inserted token range';
+  if (spans.some((span) => span.kind === 'deleted-token')) return 'Deleted token range';
   return undefined;
 };
 

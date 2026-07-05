@@ -202,6 +202,7 @@ const registeredDiffSurfaceIds = new Set<string>();
 const routeFileId = computed(() => routeParamString(route.params.fileId));
 const model = computed(() => diff.current);
 const rows = computed(() => model.value?.rows ?? []);
+const changeGroupsById = computed(() => new Map((model.value?.annotations?.changeGroups ?? []).map((group) => [group.id, group])));
 const navigableDiffSides = computed<SyntaxSide[]>(() => {
   if (!model.value || rows.value.length === 0) return [];
   const sides: SyntaxSide[] = [];
@@ -694,6 +695,7 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[],
       cursorStateForLine: (side, line, textLength) =>
         diffSurfaceActive ? (diffCursor?.lineStateForLine(side, line, textLength) ?? {}) : {},
       diagnosticsForLine,
+      changeGroupForId: (id) => changeGroupsById.value.get(id),
       renderTarget,
     });
     return {
@@ -805,16 +807,16 @@ const onRootPointerDown = (event: PointerEvent) => {
   }
   if (target?.closest('.diff-scrollbar')) return;
   if (isInteractiveTarget(event.target)) return;
-  const surfaceId = diffSurfaceIdForPointer(event) ?? activeDiffSurfaceId();
-  if (surfaceId) {
-    cursor.setActiveSurface(surfaceId, { activate: false });
-    const side = diffSurfaceSideFromId(surfaceId);
-    if (side) activateDiffSurface(surfaceId, side, 'default', Boolean(cursor.surface<DiffSurface>(surfaceId)));
-  }
+
+  const pointerPosition = pointerTextPosition(event);
+  const surfaceId =
+    pointerPosition && model.value ? diffSurfaceId(model.value.fileId, pointerPosition.side) : diffSurfaceIdForPointer(event);
+  if (surfaceId) cursor.setActiveSurface(surfaceId, { activate: false });
   rootRef.value?.focus({ preventScroll: true });
   diffCursor?.clearVisual();
   selectionDraft.value = undefined;
   clearNativeSelection();
+  if (pointerPosition) diffCursor?.moveCursorToLine(pointerPosition.side, pointerPosition.line, pointerPosition.column);
 };
 
 const isTextInputTarget = (target: EventTarget | null) => {

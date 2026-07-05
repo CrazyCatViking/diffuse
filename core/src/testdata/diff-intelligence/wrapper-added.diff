@@ -1,0 +1,14 @@
+diff --git a/src/wrapper.ts b/src/wrapper.ts
+--- a/src/wrapper.ts
++++ b/src/wrapper.ts
+@@ -1,6 +1,8 @@ function publishMetrics
+ export function publishMetrics(metrics: Metrics) {
+-  sendMetric('total', metrics.total);
+-  sendMetric('failed', metrics.failed);
++  if (metrics.enabled) {
++    sendMetric('total', metrics.total);
++    sendMetric('failed', metrics.failed);
++  }
+ 
+   flushMetrics();
+ }

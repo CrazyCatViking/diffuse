@@ -5,6 +5,7 @@
     v-else-if="mode === 'neutral' && row.inlineLine"
     class="diff-row neutral"
     :class="[row.kind, row.inlineLine.className, { 'comment-hover-disabled': commentHoverDisabled }]"
+    :title="row.inlineLine.explanation"
   >
     <CodeLineNumber
       side="old"

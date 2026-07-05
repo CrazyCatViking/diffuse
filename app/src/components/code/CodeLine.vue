@@ -1,5 +1,5 @@
 <template>
-  <div :class="['code-line', kind, mode, line.className, { 'comment-hover-disabled': commentHoverDisabled }]">
+  <div :class="['code-line', kind, mode, line.className, { 'comment-hover-disabled': commentHoverDisabled }]" :title="line.explanation">
     <CodeLineNumber
       :side="line.side"
       :line-number="line.lineNumber"
