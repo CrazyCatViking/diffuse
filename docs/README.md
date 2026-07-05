@@ -9,6 +9,7 @@ This directory contains the project documentation that should be readable direct
 | [`architecture.md`](architecture.md) | Contributors | High-level map of app/core boundaries, runtime flow, persistence, and build wiring. |
 | [`amazing-file-search-plan.md`](amazing-file-search-plan.md) | Contributors | Full implementation plan for the unified changed-file search, global palette, and pinned results drawer. |
 | [`design-system.md`](design-system.md) | Contributors | Design tokens, shared UI primitives, feature UI patterns, and frontend implementation rules. |
+| [`diff-intelligence.html`](diff-intelligence.html) | Contributors | Standalone visual planning page for richer token, move, and syntax-aware diff models. |
 | [`refactor-report.md`](refactor-report.md) | Contributors | Current architecture assessment, risks, and prioritized cleanup plan. |
 | [`lsp.md`](lsp.md) | Users and contributors | Language server configuration, built-in defaults, diagnostics, install actions, and lifecycle. |
 | [`review-spec-v1.md`](review-spec-v1.md) | Contributors and integrations | File layout and JSON formats for `.diffuse/reviews`. |

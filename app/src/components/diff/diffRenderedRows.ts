@@ -1,4 +1,4 @@
-import type { DiffRow, LspDiagnostic, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import type { DiffRow, DiffTokenSpan, LspDiagnostic, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import type { CodeLineModel, CodeTextHighlight } from '../code/codeModels';
 import type { DiffCodeRowModel } from './diffViewModels';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
@@ -54,6 +54,8 @@ export const buildRenderedDiffRowFields = (
   const inlineSide = diffRow.kind === 'deleted' ? 'old' : 'new';
   const oldLineIsInlineMetadata = renderTarget === 'inline' && inlineSide !== 'old' && oldLine !== undefined;
   const newLineIsInlineMetadata = renderTarget === 'inline' && inlineSide !== 'new' && newLine !== undefined;
+  const oldDiffHighlights = diffHighlights(diffRow.oldDiffSpans);
+  const newDiffHighlights = diffHighlights(diffRow.newDiffSpans);
 
   const lineOptions = (side: SyntaxSide, full: boolean) => {
     const lineNumber = side === 'old' ? oldLine : newLine;
@@ -69,10 +71,11 @@ export const buildRenderedDiffRowFields = (
       commentsExpanded: Boolean(lineNumber && options.commentsExpandedForLine(side, lineNumber)),
       reviewHighlights: full && lineNumber && text.length > 0 ? options.reviewHighlightsForLine(side, lineNumber, text.length) : [],
       searchHighlights: full ? (options.searchHighlightsForLine?.(side, lineNumber) ?? []) : [],
+      diffHighlights: full ? (side === 'old' ? oldDiffHighlights : newDiffHighlights) : [],
       diagnostics: options.diagnosticsForLine(side, lineNumber),
       title: side === 'old' ? 'Add old-side comment' : 'Add new-side comment',
       cursorHighlights: cursorState?.highlights ?? [],
-      className: cursorState?.className,
+      className: mergeClassNames(cursorState?.className, full ? diffClassName(diffRow, side) : undefined),
     };
   };
 
@@ -103,12 +106,13 @@ const codeLineForSide = (options: {
   commentsExpanded: boolean;
   reviewHighlights: ReviewTextHighlight[];
   searchHighlights: SearchTextHighlight[];
+  diffHighlights: CodeTextHighlight[];
   diagnostics: LspDiagnostic[];
   title: string;
   cursorHighlights: CodeTextHighlight[];
   className?: CodeLineModel['className'];
 }): CodeLineModel => {
-  const highlights = codeHighlights(options.reviewHighlights, options.searchHighlights, options.cursorHighlights);
+  const highlights = codeHighlights(options.reviewHighlights, options.searchHighlights, options.diffHighlights, options.cursorHighlights);
   return {
     side: options.side,
     fileId: options.fileId,
@@ -127,8 +131,10 @@ const codeLineForSide = (options: {
 const codeHighlights = (
   reviewHighlights: ReviewTextHighlight[],
   searchHighlights: SearchTextHighlight[],
+  diffHighlights: CodeTextHighlight[],
   cursorHighlights: CodeTextHighlight[],
 ): CodeTextHighlight[] => [
+  ...diffHighlights,
   ...reviewHighlights.map((highlight) => ({ kind: 'review' as const, startColumn: highlight.startColumn, endColumn: highlight.endColumn })),
   ...searchHighlights.map((highlight) => ({
     kind: highlight.active ? ('active-search' as const) : ('search' as const),
@@ -137,3 +143,32 @@ const codeHighlights = (
   })),
   ...cursorHighlights,
 ];
+
+const diffHighlights = (spans: DiffTokenSpan[] | undefined): CodeTextHighlight[] =>
+  (spans ?? []).map((span) => ({
+    kind: diffHighlightKind(span.kind),
+    startColumn: span.startColumn,
+    endColumn: span.endColumn,
+  }));
+
+const diffHighlightKind = (kind: DiffTokenSpan['kind']): CodeTextHighlight['kind'] => {
+  if (kind === 'inserted-token') return 'diff-inserted';
+  if (kind === 'deleted-token') return 'diff-deleted';
+  if (kind === 'whitespace') return 'diff-whitespace';
+  return 'diff-replaced';
+};
+
+const diffClassName = (row: DiffRow | undefined, side: SyntaxSide): string | undefined => {
+  if (!row?.changeRole) return undefined;
+  if (row.changeRole === 'moved-from' && side === 'old') return 'diff-moved diff-moved-from';
+  if (row.changeRole === 'moved-to' && side === 'new') return 'diff-moved diff-moved-to';
+  return undefined;
+};
+
+const mergeClassNames = (first: CodeLineModel['className'], second: string | undefined): CodeLineModel['className'] => {
+  if (!first) return second;
+  if (!second) return first;
+  if (typeof first === 'string') return `${first} ${second}`;
+  if (Array.isArray(first)) return [...first, second];
+  return { ...first, [second]: true };
+};

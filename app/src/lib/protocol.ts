@@ -50,6 +50,40 @@ export type DiffRenderModel = {
   context: DiffContextMode;
   syntax: SyntaxStatus;
   rows: DiffRow[];
+  annotations?: DiffAnnotations;
+};
+
+export type DiffAnnotations = {
+  linePairs: DiffLinePair[];
+  changeGroups: DiffChangeGroup[];
+};
+
+export type DiffLinePair = {
+  oldLine: number;
+  newLine: number;
+  oldRow: number;
+  newRow: number;
+  kind: 'replacement' | string;
+  confidence: number;
+};
+
+export type DiffChangeGroup = {
+  id: string;
+  kind: 'moved-block' | 'symbol-change' | string;
+  oldStartLine?: number;
+  oldEndLine?: number;
+  newStartLine?: number;
+  newEndLine?: number;
+  confidence: number;
+  symbol?: string;
+};
+
+export type DiffTokenSpanKind = 'inserted-token' | 'deleted-token' | 'replaced-token' | 'whitespace' | string;
+
+export type DiffTokenSpan = {
+  startColumn: number;
+  endColumn: number;
+  kind: DiffTokenSpanKind;
 };
 
 export type SyntaxStatus = {
@@ -339,4 +373,10 @@ export type DiffRow = {
   hunkHeader?: string;
   oldSyntaxSpans?: SyntaxSpan[];
   newSyntaxSpans?: SyntaxSpan[];
+  oldDiffSpans?: DiffTokenSpan[];
+  newDiffSpans?: DiffTokenSpan[];
+  changeGroupId?: string;
+  changeRole?: 'moved-from' | 'moved-to' | string;
+  changeConfidence?: number;
+  symbol?: string;
 };

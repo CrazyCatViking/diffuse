@@ -45,7 +45,13 @@ function resolveCoreExecutable(): string {
   const installedPath = join(installRoot, 'core', executableName);
   if (existsSync(installedPath)) return installedPath;
 
-  return devCandidates[0];
+  throw new Error(
+    [
+      'Diffuse core executable was not found.',
+      'Build it with `zig build` from the `core` directory, or set DIFFUSE_CORE_EXECUTABLE to a built diffuse binary.',
+      `Checked: ${[...devCandidates, ...packagedCandidates, installedPath].join(', ')}`,
+    ].join(' '),
+  );
 }
 
 function defaultInstallRoot(): string {

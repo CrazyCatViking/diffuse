@@ -37,5 +37,6 @@ fn getDiffRenderModel(runtime: *Runtime, writer: *std.Io.Writer, request: json_r
         .context = options.context,
         .syntax = types.syntaxStatus(model.syntax_status),
         .rows = rows.items,
+        .annotations = types.diffAnnotations(model.annotations),
     });
 }

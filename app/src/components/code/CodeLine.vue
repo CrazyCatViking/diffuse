@@ -100,4 +100,16 @@ const emitToggleComments = () => {
 .code-line.context {
   background: var(--color-bg-code);
 }
+
+.code-line.diff-moved {
+  box-shadow: inset 3px 0 0 var(--color-info);
+}
+
+.code-line.diff-moved-from {
+  box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.code-line.diff-moved-to {
+  box-shadow: inset 3px 0 0 var(--color-info);
+}
 </style>

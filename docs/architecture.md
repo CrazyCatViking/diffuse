@@ -215,7 +215,14 @@ The resulting unified diff is parsed into rows:
 - `deleted` rows for old-side lines.
 - `added` rows for new-side lines.
 
-Each row carries old/new line numbers and old/new text where applicable. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
+Each row carries old/new line numbers and old/new text where applicable. After parsing, the core enriches the row model with a conservative diff intelligence pass:
+
+- Adjacent deleted/added blocks are paired as replacement candidates in `annotations.linePairs`.
+- Paired replacement lines receive `oldDiffSpans` and `newDiffSpans` token ranges for inserted, deleted, replaced, or whitespace-only text.
+- Exact normalized deleted/added runs that are far enough apart are marked as `moved-block` groups in `annotations.changeGroups`; their rows receive `changeGroupId`, `changeRole`, and `changeConfidence`.
+- Git hunk function context is carried as `symbol` on rows and as `symbol-change` groups where available.
+
+Git remains the correctness and fallback layer. These annotations explain relationships for review UI rendering, but they do not replace Git patch semantics or review anchors. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
 
 ## Syntax Highlighting
 

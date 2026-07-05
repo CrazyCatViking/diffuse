@@ -127,4 +127,16 @@ const emitToggleComments = (line: CodeLineModel | undefined) => {
 :global(.code-line.cursor-line) {
   box-shadow: inset 3px 0 0 var(--color-border-focus);
 }
+
+.diff-row.diff-moved {
+  box-shadow: inset 3px 0 0 var(--color-info);
+}
+
+.diff-row.diff-moved-from {
+  box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.diff-row.diff-moved-to {
+  box-shadow: inset 3px 0 0 var(--color-info);
+}
 </style>

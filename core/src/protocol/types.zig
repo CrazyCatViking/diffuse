@@ -83,7 +83,19 @@ pub const DiffRenderModel = struct {
     context: []const u8,
     syntax: SyntaxStatus,
     rows: []const DiffRow,
+    annotations: DiffAnnotations,
 };
+
+pub const DiffAnnotations = struct {
+    linePairs: []const DiffLinePair,
+    changeGroups: []const DiffChangeGroup,
+};
+
+pub const DiffLinePair = diff.DiffLinePair;
+
+pub const DiffChangeGroup = diff.DiffChangeGroup;
+
+pub const DiffTokenSpan = diff.DiffTokenSpan;
 
 pub const SyntaxStatus = struct {
     language: ?[]const u8 = null,
@@ -223,6 +235,12 @@ pub const DiffRow = struct {
     hunkHeader: ?[]const u8 = null,
     oldSyntaxSpans: ?[]const SyntaxSpan = null,
     newSyntaxSpans: ?[]const SyntaxSpan = null,
+    oldDiffSpans: ?[]const DiffTokenSpan = null,
+    newDiffSpans: ?[]const DiffTokenSpan = null,
+    changeGroupId: ?[]const u8 = null,
+    changeRole: ?[]const u8 = null,
+    changeConfidence: ?f32 = null,
+    symbol: ?[]const u8 = null,
 };
 
 pub fn versionInfo() VersionInfo {
@@ -277,6 +295,19 @@ pub fn diffRow(row: diff.DiffRow) DiffRow {
         .hunkHeader = row.hunk_header,
         .oldSyntaxSpans = syntaxSpans(row.old_syntax_spans),
         .newSyntaxSpans = syntaxSpans(row.new_syntax_spans),
+        .oldDiffSpans = row.old_diff_spans,
+        .newDiffSpans = row.new_diff_spans,
+        .changeGroupId = row.change_group_id,
+        .changeRole = row.change_role,
+        .changeConfidence = row.change_confidence,
+        .symbol = row.symbol,
+    };
+}
+
+pub fn diffAnnotations(value: diff.DiffAnnotations) DiffAnnotations {
+    return .{
+        .linePairs = value.line_pairs.items,
+        .changeGroups = value.change_groups.items,
     };
 }
 

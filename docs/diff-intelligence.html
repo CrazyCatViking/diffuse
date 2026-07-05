@@ -1,0 +1,996 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diffuse Diff Intelligence</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090b10;
+      --bg-soft: #10141d;
+      --panel: rgba(18, 24, 36, 0.82);
+      --panel-strong: rgba(23, 31, 47, 0.96);
+      --border: rgba(149, 170, 210, 0.18);
+      --border-strong: rgba(171, 198, 255, 0.34);
+      --text: #eef3ff;
+      --muted: #9aa8bd;
+      --muted-strong: #c3ccdc;
+      --blue: #78a7ff;
+      --cyan: #6ee7f9;
+      --green: #8df2b1;
+      --yellow: #ffd166;
+      --orange: #ff9f68;
+      --red: #ff7b8a;
+      --purple: #b89cff;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 5%, rgba(120, 167, 255, 0.18), transparent 36rem),
+        radial-gradient(circle at 92% 8%, rgba(110, 231, 249, 0.12), transparent 32rem),
+        radial-gradient(circle at 68% 48%, rgba(184, 156, 255, 0.10), transparent 30rem),
+        linear-gradient(180deg, #080a0f 0%, #0c1018 48%, #080a0f 100%);
+      font-family: var(--font-sans);
+      line-height: 1.55;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 44px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      background:
+        linear-gradient(135deg, rgba(120, 167, 255, 0.16), rgba(110, 231, 249, 0.06) 34%, rgba(13, 17, 26, 0.88)),
+        var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero::before {
+      position: absolute;
+      inset: -1px;
+      pointer-events: none;
+      content: "";
+      background:
+        linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.12), transparent),
+        repeating-linear-gradient(90deg, transparent 0 28px, rgba(255, 255, 255, 0.035) 28px 29px);
+      mask-image: linear-gradient(90deg, transparent, #000 24%, #000 72%, transparent);
+      opacity: 0.5;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 20px;
+      padding: 7px 11px;
+      border: 1px solid rgba(120, 167, 255, 0.34);
+      border-radius: 999px;
+      color: #d9e6ff;
+      background: rgba(120, 167, 255, 0.12);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      display: block;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 18px rgba(141, 242, 177, 0.8);
+      content: "";
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    h1 {
+      max-width: 900px;
+      font-size: clamp(42px, 8vw, 86px);
+    }
+
+    h2 {
+      font-size: clamp(28px, 4vw, 48px);
+    }
+
+    h3 {
+      font-size: 20px;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    .hero-copy {
+      max-width: 760px;
+      margin-top: 24px;
+      color: var(--muted-strong);
+      font-size: clamp(17px, 2vw, 21px);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 34px;
+    }
+
+    .stat-card {
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: rgba(7, 10, 16, 0.46);
+    }
+
+    .stat-card strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--cyan);
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .stat-card span {
+      color: var(--muted-strong);
+      font-size: 14px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 26px;
+      margin-top: 26px;
+    }
+
+    .toc {
+      position: sticky;
+      top: 20px;
+      align-self: start;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(12, 16, 24, 0.74);
+      backdrop-filter: blur(16px);
+    }
+
+    .toc-title {
+      margin-bottom: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .toc a {
+      display: block;
+      padding: 9px 10px;
+      border-radius: 10px;
+      color: var(--muted-strong);
+      font-size: 14px;
+      text-decoration: none;
+    }
+
+    .toc a:hover,
+    .toc a:focus-visible {
+      color: var(--text);
+      background: rgba(120, 167, 255, 0.12);
+      outline: none;
+    }
+
+    main {
+      display: grid;
+      gap: 26px;
+    }
+
+    section {
+      scroll-margin-top: 24px;
+      padding: 30px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      background: var(--panel);
+      box-shadow: 0 16px 52px rgba(0, 0, 0, 0.22);
+    }
+
+    .section-lede {
+      max-width: 780px;
+      margin-top: 14px;
+      color: var(--muted-strong);
+      font-size: 17px;
+    }
+
+    .callout {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border: 1px solid rgba(141, 242, 177, 0.3);
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, rgba(141, 242, 177, 0.11), rgba(120, 167, 255, 0.08));
+      color: #dfffea;
+    }
+
+    .callout strong {
+      color: var(--green);
+    }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .pipe-step {
+      position: relative;
+      min-height: 160px;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: rgba(9, 12, 18, 0.56);
+    }
+
+    .pipe-step:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -10px;
+      z-index: 2;
+      width: 18px;
+      height: 18px;
+      border-top: 2px solid rgba(120, 167, 255, 0.62);
+      border-right: 2px solid rgba(120, 167, 255, 0.62);
+      transform: translateY(-50%) rotate(45deg);
+      content: "";
+    }
+
+    .pipe-step .number {
+      display: inline-grid;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 16px;
+      place-items: center;
+      border-radius: 999px;
+      color: #091018;
+      background: var(--cyan);
+      font-weight: 900;
+    }
+
+    .pipe-step p {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .card {
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(9, 13, 20, 0.52);
+    }
+
+    .card h3 {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 24px;
+      padding: 3px 8px;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      color: #dce8ff;
+      background: rgba(120, 167, 255, 0.13);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .card p,
+    .card li {
+      color: var(--muted-strong);
+    }
+
+    ul {
+      margin: 14px 0 0;
+      padding-left: 18px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .comparison {
+      width: 100%;
+      margin-top: 24px;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(8, 11, 17, 0.56);
+    }
+
+    .comparison th,
+    .comparison td {
+      padding: 15px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    .comparison th {
+      color: #dfe9ff;
+      background: rgba(120, 167, 255, 0.11);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .comparison tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .comparison td {
+      color: var(--muted-strong);
+      font-size: 14px;
+    }
+
+    .comparison td:first-child {
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .architecture {
+      display: grid;
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .layer {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      gap: 16px;
+      align-items: stretch;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(8, 11, 17, 0.52);
+    }
+
+    .layer-label {
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius-md);
+      color: #061018;
+      background: linear-gradient(135deg, var(--cyan), var(--blue));
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      text-align: center;
+    }
+
+    .layer:nth-child(2) .layer-label {
+      background: linear-gradient(135deg, var(--green), var(--cyan));
+    }
+
+    .layer:nth-child(3) .layer-label {
+      background: linear-gradient(135deg, var(--yellow), var(--orange));
+    }
+
+    .layer-content h3 {
+      margin-bottom: 8px;
+    }
+
+    .layer-content p {
+      color: var(--muted-strong);
+    }
+
+    .model-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .model-card {
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: rgba(8, 11, 17, 0.56);
+    }
+
+    .model-card code {
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 4px 7px;
+      border-radius: 8px;
+      color: var(--cyan);
+      background: rgba(110, 231, 249, 0.09);
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+
+    .model-card p {
+      color: var(--muted-strong);
+      font-size: 14px;
+    }
+
+    .timeline {
+      position: relative;
+      display: grid;
+      gap: 16px;
+      margin-top: 24px;
+      padding-left: 20px;
+    }
+
+    .timeline::before {
+      position: absolute;
+      top: 8px;
+      bottom: 8px;
+      left: 4px;
+      width: 2px;
+      border-radius: 999px;
+      background: linear-gradient(var(--cyan), var(--purple), var(--orange));
+      content: "";
+    }
+
+    .milestone {
+      position: relative;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(8, 11, 17, 0.58);
+    }
+
+    .milestone::before {
+      position: absolute;
+      top: 22px;
+      left: -24px;
+      width: 10px;
+      height: 10px;
+      border: 3px solid var(--bg-soft);
+      border-radius: 999px;
+      background: var(--cyan);
+      content: "";
+    }
+
+    .milestone:nth-child(2)::before {
+      background: var(--green);
+    }
+
+    .milestone:nth-child(3)::before {
+      background: var(--yellow);
+    }
+
+    .milestone:nth-child(4)::before {
+      background: var(--orange);
+    }
+
+    .milestone h3 {
+      margin-bottom: 8px;
+    }
+
+    .milestone p {
+      color: var(--muted-strong);
+    }
+
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .risk {
+      padding: 18px;
+      border: 1px solid rgba(255, 123, 138, 0.22);
+      border-radius: var(--radius-md);
+      background: rgba(255, 123, 138, 0.06);
+    }
+
+    .risk h3 {
+      margin-bottom: 8px;
+      color: #ffd8de;
+    }
+
+    .risk p {
+      color: var(--muted-strong);
+      font-size: 14px;
+    }
+
+    .code-sample {
+      margin-top: 24px;
+      padding: 20px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: #070a10;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.75;
+    }
+
+    .code-sample .key {
+      color: var(--cyan);
+    }
+
+    .code-sample .string {
+      color: var(--green);
+    }
+
+    .code-sample .comment {
+      color: var(--muted);
+    }
+
+    .next-steps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+      counter-reset: step;
+    }
+
+    .next-step {
+      position: relative;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(8, 11, 17, 0.58);
+      counter-increment: step;
+    }
+
+    .next-step::before {
+      display: inline-grid;
+      width: 32px;
+      height: 32px;
+      margin-bottom: 14px;
+      place-items: center;
+      border-radius: 999px;
+      color: #081018;
+      background: var(--yellow);
+      content: counter(step);
+      font-weight: 900;
+    }
+
+    .next-step p {
+      margin-top: 8px;
+      color: var(--muted-strong);
+      font-size: 14px;
+    }
+
+    footer {
+      margin-top: 26px;
+      padding: 22px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .toc {
+        position: static;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .toc-title {
+        grid-column: 1 / -1;
+      }
+
+      .pipeline,
+      .hero-grid,
+      .model-grid,
+      .next-steps {
+        grid-template-columns: 1fr;
+      }
+
+      .pipe-step:not(:last-child)::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100% - 24px, 1180px);
+        padding-top: 16px;
+      }
+
+      .hero,
+      section {
+        padding: 22px;
+        border-radius: 22px;
+      }
+
+      .cards,
+      .risk-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .layer {
+        grid-template-columns: 1fr;
+      }
+
+      .layer-label {
+        min-height: 70px;
+      }
+
+      .toc {
+        grid-template-columns: 1fr;
+      }
+
+      .comparison {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="eyebrow">Diffuse Research Note</div>
+      <h1>Better Diffs For Code Review</h1>
+      <p class="hero-copy">
+        Diffuse currently renders Git unified diffs. That is reliable and patch-correct, but it does not explain which tokens changed, which blocks moved, or how related edits fit together. The goal should be a layered diff model: Git for correctness, token spans for precision, and syntax-aware relationships for understanding.
+      </p>
+
+      <div class="hero-grid" aria-label="Summary">
+        <div class="stat-card">
+          <strong>Keep Git</strong>
+          <span>Use Git as the canonical patch and file-selection layer.</span>
+        </div>
+        <div class="stat-card">
+          <strong>Add Detail</strong>
+          <span>Layer line pairing, token spans, moved blocks, and confidence on top.</span>
+        </div>
+        <div class="stat-card">
+          <strong>Use Trees</strong>
+          <span>Use tree-sitter selectively for structural grouping and semantic explanations.</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="toc" aria-label="Page sections">
+        <div class="toc-title">Contents</div>
+        <a href="#current-state">Current State</a>
+        <a href="#alternatives">Alternatives</a>
+        <a href="#recommendation">Recommendation</a>
+        <a href="#model">Data Model</a>
+        <a href="#roadmap">Roadmap</a>
+        <a href="#risks">Risks</a>
+        <a href="#next-steps">Next Steps</a>
+      </nav>
+
+      <main>
+        <section id="current-state">
+          <h2>Current Diffuse Pipeline</h2>
+          <p class="section-lede">
+            The current architecture is intentionally simple: ask Git for a unified diff, parse the patch text, and render rows. This is dependable, but the resulting model only knows about hunk rows, context rows, additions, and deletions.
+          </p>
+
+          <div class="pipeline">
+            <div class="pipe-step">
+              <span class="number">1</span>
+              <h3>Git Diff</h3>
+              <p><code>git diff</code> or <code>git diff -U999999</code> produces patch text for a target file.</p>
+            </div>
+            <div class="pipe-step">
+              <span class="number">2</span>
+              <h3>Unified Parser</h3>
+              <p><code>core/src/core/diff.zig</code> parses hunk headers and line prefixes.</p>
+            </div>
+            <div class="pipe-step">
+              <span class="number">3</span>
+              <h3>Render Model</h3>
+              <p>Rows carry kind, line numbers, line text, hunk headers, and syntax spans.</p>
+            </div>
+            <div class="pipe-step">
+              <span class="number">4</span>
+              <h3>Viewer</h3>
+              <p>The app renders split or inline rows and lazily overlays syntax highlighting.</p>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>Important limitation:</strong> this model cannot represent paired replacements, token-level changes, moved code, copied code, format-only edits, or relationships across non-adjacent hunks.
+          </div>
+        </section>
+
+        <section id="alternatives">
+          <h2>Existing Alternatives</h2>
+          <p class="section-lede">
+            There is no single perfect engine. The useful products split into three groups: Git-style text diff, syntax-aware display diff, and AST edit-action diff.
+          </p>
+
+          <table class="comparison">
+            <thead>
+              <tr>
+                <th>Option</th>
+                <th>Strengths</th>
+                <th>Weaknesses</th>
+                <th>Best Use</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Git Diff</td>
+                <td>Fast, installed everywhere, patch-correct. Supports <code>--histogram</code>, <code>--patience</code>, <code>--word-diff</code>, <code>--color-moved</code>, <code>-M</code>, and <code>-C</code>.</td>
+                <td>Still line-oriented. Word and moved-line output are awkward as durable structured data.</td>
+                <td>Canonical patch layer, baseline display, and fallback.</td>
+              </tr>
+              <tr>
+                <td>libgit2 / xdiff</td>
+                <td>Programmatic access to Git-style file, hunk, and line diffs.</td>
+                <td>Mostly the same line-oriented model. Adds native dependency complexity.</td>
+                <td>Potential future replacement for shelling out to Git, not a semantic diff solution.</td>
+              </tr>
+              <tr>
+                <td>Difftastic</td>
+                <td>Excellent human structural diffs using tree-sitter. Handles wrapping and formatting better than line diff.</td>
+                <td>CLI and display oriented, not patch-compatible, no stable structured API, performance concerns on large changes.</td>
+                <td>Benchmark, inspiration, and possible optional experimental engine.</td>
+              </tr>
+              <tr>
+                <td>GumTree</td>
+                <td>AST edit actions such as insert, delete, update, move, and rename. Strong research foundation.</td>
+                <td>Heavy integration, Java runtime, LGPL licensing considerations, uneven language ergonomics.</td>
+                <td>Reference model for move detection and AST action vocabulary.</td>
+              </tr>
+              <tr>
+                <td>Monaco / VS Code Diff</td>
+                <td>Mature text diff UX with good intraline matching.</td>
+                <td>Not AST-aware and would fight Diffuse's custom renderer.</td>
+                <td>UX inspiration, not a core replacement.</td>
+              </tr>
+              <tr>
+                <td>CodeMirror Merge</td>
+                <td>Good editor-side merge and diff primitives.</td>
+                <td>Text-focused and expensive to integrate if Diffuse keeps its current viewer.</td>
+                <td>Useful only if moving toward a CodeMirror-based diff surface.</td>
+              </tr>
+              <tr>
+                <td>Token Diff</td>
+                <td>Simple, fast, and precise enough to answer which token was deleted or replaced.</td>
+                <td>Not semantic. Cannot reliably understand moved functions or syntax wrappers.</td>
+                <td>Best first step for high-value intraline clarity.</td>
+              </tr>
+              <tr>
+                <td>Tree-sitter Custom Diff</td>
+                <td>Fits Diffuse's existing syntax infrastructure. Can group edits by symbol and syntax range.</td>
+                <td>Hard to produce ideal output in every case. Needs careful fallbacks and confidence scoring.</td>
+                <td>Best long-term path for Diffuse-owned code understanding.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="recommendation">
+          <h2>Recommended Architecture</h2>
+          <p class="section-lede">
+            Build a Diffuse-owned diff intelligence layer. Keep Git as the source of truth and add richer analysis as annotations rather than replacing the patch pipeline all at once.
+          </p>
+
+          <div class="architecture">
+            <div class="layer">
+              <div class="layer-label">Patch Layer</div>
+              <div class="layer-content">
+                <h3>Correctness and fallback</h3>
+                <p>Git decides file selection, old/new content boundaries, hunks, line numbers, staged and unstaged behavior, renames, and applyable patch semantics.</p>
+              </div>
+            </div>
+            <div class="layer">
+              <div class="layer-label">Token Layer</div>
+              <div class="layer-content">
+                <h3>Precise local changes</h3>
+                <p>Pair nearby deleted and added lines, tokenize both sides, and produce deleted, inserted, and replaced spans that the existing <code>CodeText</code> highlight pipeline can render.</p>
+              </div>
+            </div>
+            <div class="layer">
+              <div class="layer-label">Relationship Layer</div>
+              <div class="layer-content">
+                <h3>Why changes belong together</h3>
+                <p>Detect moved blocks, copied blocks, changed symbols, identifier renames, format-only groups, and syntax-level wrappers using tree-sitter when confidence is high.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="cards">
+            <div class="card">
+              <h3><span class="badge">Principle</span> Do not parse pretty output</h3>
+              <p>Git color output and Difftastic terminal output are useful for experiments, but Diffuse needs a stable structured JSON model that the UI can reason about.</p>
+            </div>
+            <div class="card">
+              <h3><span class="badge">Principle</span> Prefer confidence over cleverness</h3>
+              <p>When semantic analysis is uncertain, show the reliable Git diff plus token highlights. A wrong semantic explanation is worse than no semantic explanation.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="model">
+          <h2>Richer Data Model</h2>
+          <p class="section-lede">
+            The important design move is to separate rendered rows from relationships. Rows remain stable for review anchors and scrolling, while annotations connect ranges across rows, hunks, and files.
+          </p>
+
+          <div class="model-grid">
+            <div class="model-card">
+              <code>tokenSpans</code>
+              <p>Column ranges inside old or new text. Kinds include inserted, deleted, replaced, whitespace-only, and unchanged-inside-edit.</p>
+            </div>
+            <div class="model-card">
+              <code>linePairs</code>
+              <p>Explicit old/new line relationships. This distinguishes a replacement from unrelated delete and add rows.</p>
+            </div>
+            <div class="model-card">
+              <code>changeGroups</code>
+              <p>Group related rows and spans under one id. Examples: moved block, rename, extracted helper, formatter-only change.</p>
+            </div>
+            <div class="model-card">
+              <code>relations</code>
+              <p>Cross-range links such as moved-from, moved-to, copied-from, renamed-from, wraps, unwraps, and same-symbol.</p>
+            </div>
+            <div class="model-card">
+              <code>symbols</code>
+              <p>Containing function, class, method, import block, object key, or test block derived from tree-sitter.</p>
+            </div>
+            <div class="model-card">
+              <code>confidence</code>
+              <p>Every non-Git explanation should carry confidence and engine metadata so the UI can choose how strongly to present it.</p>
+            </div>
+          </div>
+
+          <pre class="code-sample" aria-label="Example structured diff model"><span class="comment">// Sketch only. Keep the exact schema small and incremental.</span>
+{
+  <span class="key">"rows"</span>: [ ... ],
+  <span class="key">"annotations"</span>: {
+    <span class="key">"linePairs"</span>: [
+      { <span class="key">"oldLine"</span>: 42, <span class="key">"newLine"</span>: 44, <span class="key">"kind"</span>: <span class="string">"replacement"</span> }
+    ],
+    <span class="key">"tokenSpans"</span>: [
+      { <span class="key">"side"</span>: <span class="string">"old"</span>, <span class="key">"line"</span>: 42, <span class="key">"startColumn"</span>: 12, <span class="key">"endColumn"</span>: 18, <span class="key">"kind"</span>: <span class="string">"deleted-token"</span> },
+      { <span class="key">"side"</span>: <span class="string">"new"</span>, <span class="key">"line"</span>: 44, <span class="key">"startColumn"</span>: 12, <span class="key">"endColumn"</span>: 20, <span class="key">"kind"</span>: <span class="string">"inserted-token"</span> }
+    ],
+    <span class="key">"changeGroups"</span>: [
+      { <span class="key">"id"</span>: <span class="string">"move-1"</span>, <span class="key">"kind"</span>: <span class="string">"moved-block"</span>, <span class="key">"confidence"</span>: 0.92 }
+    ]
+  }
+}</pre>
+        </section>
+
+        <section id="roadmap">
+          <h2>Implementation Roadmap</h2>
+          <p class="section-lede">
+            The safest path is incremental. Each stage should improve the product while preserving Git fallback behavior and review anchor stability.
+          </p>
+
+          <div class="timeline">
+            <div class="milestone">
+              <h3>Phase 1: Better Git Baseline</h3>
+              <p>Experiment with <code>--diff-algorithm=histogram</code> for display diffs, keep current parsing, and build a benchmark corpus of tricky examples.</p>
+            </div>
+            <div class="milestone">
+              <h3>Phase 2: Token-Level Highlighting</h3>
+              <p>Pair nearby deleted and added lines, run a token diff, add diff highlight kinds to <code>CodeText</code>, and show exact inserted or deleted tokens.</p>
+            </div>
+            <div class="milestone">
+              <h3>Phase 3: Moved-Block Detection</h3>
+              <p>Normalize changed lines, hash deleted and added blocks, detect same-file moves first, then expand to moved-and-edited and cross-file cases.</p>
+            </div>
+            <div class="milestone">
+              <h3>Phase 4: Syntax-Aware Grouping</h3>
+              <p>Use tree-sitter to label changes by containing symbol and detect high-confidence wrapper, rename, import reorder, and format-only patterns.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="risks">
+          <h2>Risks And Constraints</h2>
+          <p class="section-lede">
+            Rich diffs can become misleading if the engine over-explains. The implementation should be conservative, measurable, and easy to fall back from.
+          </p>
+
+          <div class="risk-grid">
+            <div class="risk">
+              <h3>Column Coordinates</h3>
+              <p>Tree-sitter byte columns, Zig slices, JavaScript UTF-16 indexes, and Unicode text can diverge. Token spans need one documented coordinate system.</p>
+            </div>
+            <div class="risk">
+              <h3>Performance</h3>
+              <p>Structural diffing can be expensive on large files and large rewrites. Add file-size, hunk-size, and parse-error fallbacks from day one.</p>
+            </div>
+            <div class="risk">
+              <h3>False Relationships</h3>
+              <p>Move detection can connect unrelated repeated code. Require confidence thresholds and make uncertain relationships visually subtle.</p>
+            </div>
+            <div class="risk">
+              <h3>Review Anchors</h3>
+              <p>Existing anchors depend on side, line, selected text, and diff target fingerprint. Enhanced annotations must not destabilize comments.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="next-steps">
+          <h2>Practical Next Steps</h2>
+          <p class="section-lede">
+            The first useful milestone is not a full AST diff engine. It is a richer model with precise token highlights and a benchmark set that lets us evaluate improvements objectively.
+          </p>
+
+          <div class="next-steps">
+            <div class="next-step">
+              <h3>Create Benchmarks</h3>
+              <p>Add fixtures for formatter-only changes, moved blocks, moved-and-edited code, identifier rename, wrapper added, import reorder, and large rewrites.</p>
+            </div>
+            <div class="next-step">
+              <h3>Add Token Spans</h3>
+              <p>Extend the render model with optional token annotations and add a diff highlight kind to the existing code text renderer.</p>
+            </div>
+            <div class="next-step">
+              <h3>Measure Engines</h3>
+              <p>Compare current Git, Git histogram, Difftastic, GumTree, and the Diffuse token engine against the benchmark corpus.</p>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>End state:</strong> Diffuse should show the exact patch, the exact token changes, and the relationships that make a review easier to reason about.
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <footer>
+      Standalone planning document for Diffuse. Open this file directly in a browser or link it from the docs index.
+    </footer>
+  </div>
+</body>
+</html>

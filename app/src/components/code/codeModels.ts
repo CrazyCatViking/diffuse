@@ -1,6 +1,15 @@
 import type { LspDiagnostic, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 
-export type CodeTextHighlightKind = 'review' | 'search' | 'active-search' | 'visual' | 'cursor';
+export type CodeTextHighlightKind =
+  | 'review'
+  | 'search'
+  | 'active-search'
+  | 'visual'
+  | 'cursor'
+  | 'diff-inserted'
+  | 'diff-deleted'
+  | 'diff-replaced'
+  | 'diff-whitespace';
 
 export type CodeTextHighlight = {
   kind: CodeTextHighlightKind;
