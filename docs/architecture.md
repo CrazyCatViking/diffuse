@@ -283,6 +283,8 @@ The renderer keeps small UI preferences in browser local storage:
 - File tree width under `diffuse.fileTreeWidth`.
 - Syntax theme id under `diffuse.syntaxTheme`.
 - Custom syntax colors under `diffuse.customSyntaxTheme`.
+- Single-file diff keybindings under `diffuse.diffKeybindings.v1`.
+- Last opened settings section under `diffuse.settings.activeSection`.
 
 This state is UI convenience data only. Review sessions and agent state are stored in the opened repository under `.diffuse/reviews`.
 

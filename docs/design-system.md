@@ -208,6 +208,10 @@ Settings should use the same status language as the diff viewer:
 
 Use shared buttons and badge-like state chips. Keep install commands in `code` blocks or monospace text.
 
+Settings uses a feature-local shell with grouped navigation and one focused content pane. Keep settings sections under `app/src/components/settings/` unless a component is generic enough for unrelated features. Add new settings by extending the section registry and creating a section component; avoid returning to a single page that loads every setting and integration at once.
+
+Settings content should lazy-load expensive integration state from the active section. For example, language server and Tree-sitter grammar RPC calls belong in their section components, not in the settings shell.
+
 ## Building New UI
 
 When adding a feature UI, follow this order:

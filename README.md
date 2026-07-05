@@ -346,7 +346,7 @@ This workflow is still evolving. Treat AI findings as review assistance, not as 
 
 Diffuse uses Tree-sitter for syntax-aware diff rendering. Installed grammars are resolved from `~/.diffuse/grammars` by default, and the app can install missing grammars where supported.
 
-Settings includes syntax theme selection, custom syntax colors stored in browser local storage, single-file diff keybinding customization, language server status and install guidance, installed grammar management, available grammar search, registry sync, install actions, and uninstall actions.
+Settings is organized by area instead of one long page. Use Appearance for syntax themes and custom colors, Keyboard for single-file diff keybindings, Language Servers for LSP status/install guidance/config access, and Syntax Grammars for installed and available Tree-sitter grammars, registry sync, install actions, and uninstall actions. Diffuse remembers the last opened settings section locally.
 
 Useful environment variables:
 

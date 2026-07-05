@@ -213,6 +213,7 @@ onBeforeUnmount(() => {
 
 const handleGlobalSearchShortcut = (event: KeyboardEvent) => {
   if (event.defaultPrevented) return;
+  if (showSettings.value || showRecentRepositories.value) return;
   if (!repo.repository) return;
   const commandOrControl = event.metaKey || event.ctrlKey;
   const isTextEntry = isTextEntryTarget(event.target);
@@ -237,6 +238,7 @@ const handleGlobalSearchShortcut = (event: KeyboardEvent) => {
 
 const suppressBrowserKeyboardDefault = (event: KeyboardEvent) => {
   if (!event.cancelable || event.defaultPrevented) return;
+  if (showSettings.value || showRecentRepositories.value) return;
   if (isTextEntryTarget(event.target) || isModifierOnlyKey(event.key) || event.isComposing) return;
 
   event.preventDefault();
