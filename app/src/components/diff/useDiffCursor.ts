@@ -33,6 +33,14 @@ export type DiffCursorSearchMatch = {
 
 type DiffCursorLine = DiffCursorPosition;
 
+type CursorEntryCache = {
+  fileId: string;
+  rows: DiffRow[];
+  side: SyntaxSide | undefined;
+  includeReviews: boolean;
+  entries: DiffCursorLine[];
+};
+
 export const useDiffCursor = (options: {
   model: () => DiffRenderModel | undefined;
   viewMode: () => DiffViewMode;
@@ -53,6 +61,7 @@ export const useDiffCursor = (options: {
   const desiredColumn = ref(0);
   const mode = ref<DiffCursorMode>('normal');
   const visualStart = ref<DiffCursorPosition>();
+  const entriesCache = new WeakMap<DisplayRow[], CursorEntryCache[]>();
 
   const visualAnchor = computed<ReviewAnchor | undefined>(() => {
     if (
@@ -92,6 +101,16 @@ export const useDiffCursor = (options: {
     }
 
     setCursor(first, Math.min(desiredColumn.value, maxCursorColumn(first.text)), true);
+  };
+
+  const ensureCursorForAction = () => {
+    const model = options.model();
+    if (!model || model.rows.length === 0) {
+      ensureCursor();
+      return;
+    }
+
+    if (!cursor.value || cursor.value.fileId !== model.fileId) ensureCursor();
   };
 
   const moveCursorToSearchMatch = (match: DiffCursorSearchMatch | undefined) => {
@@ -202,7 +221,7 @@ export const useDiffCursor = (options: {
   const handleAction = (action: DiffKeybindingAction, count = 1, hasCount = false) => runAction(action, Math.max(1, count), hasCount);
 
   const runAction = (action: DiffKeybindingAction, count: number, hasCount: boolean) => {
-    ensureCursor();
+    ensureCursorForAction();
 
     if (action === 'clear') {
       clearVisual();
@@ -547,9 +566,20 @@ export const useDiffCursor = (options: {
     includeReviews: boolean,
   ): DiffCursorLine[] => {
     if (!model) return [];
-    return displayRows
+    const cache = entriesCache.get(displayRows) ?? [];
+    const cached = cache.find(
+      (entry) =>
+        entry.fileId === model.fileId && entry.rows === model.rows && entry.side === side && entry.includeReviews === includeReviews,
+    );
+    if (cached) return cached.entries;
+
+    const entries = displayRows
       .map((item, displayIndex) => entryForDisplayRow(item, displayIndex, model, side, includeReviews))
       .filter((line): line is DiffCursorLine => Boolean(line));
+    cache.push({ fileId: model.fileId, rows: model.rows, side, includeReviews, entries });
+    if (cache.length > 8) cache.shift();
+    entriesCache.set(displayRows, cache);
+    return entries;
   };
 
   const entryForDisplayRow = (

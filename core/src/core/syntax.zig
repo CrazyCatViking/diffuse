@@ -495,8 +495,8 @@ pub fn listGrammars(allocator: std.mem.Allocator, io: std.Io, configured_grammar
         defer allocator.free(language_dir);
         var parser_path: ?[]u8 = try std.fs.path.join(allocator, &.{ language_dir, parserFileName(entry.id) });
         errdefer if (parser_path) |path| allocator.free(path);
-    var query_path: ?[]u8 = try registryQuerySourcePathByLanguage(allocator, io, configured_grammar_root, entry.id, .highlights);
-    errdefer if (query_path) |path| allocator.free(path);
+        var query_path: ?[]u8 = try registryQuerySourcePathByLanguage(allocator, io, configured_grammar_root, entry.id, .highlights);
+        errdefer if (query_path) |path| allocator.free(path);
 
         if (fileExists(io, parser_path.?)) {
             grammar.installed = true;
@@ -1399,6 +1399,7 @@ fn attachSpans(allocator: std.mem.Allocator, rows: anytype, side: Side, spans: [
 }
 
 fn groupLineSpans(allocator: std.mem.Allocator, spans: []LineSpan, start_line: u32, end_line: u32) ![]SyntaxLineSpans {
+    std.mem.sort(LineSpan, spans, {}, lineSpanLess);
     var result = std.ArrayList(SyntaxLineSpans).empty;
     errdefer {
         for (result.items) |line| {
@@ -1409,18 +1410,18 @@ fn groupLineSpans(allocator: std.mem.Allocator, spans: []LineSpan, start_line: u
     }
 
     var line = start_line;
+    var span_index: usize = 0;
     while (line <= end_line) : (line += 1) {
-        var count: usize = 0;
-        for (spans) |span| {
-            if (span.line == line) count += 1;
-        }
+        while (span_index < spans.len and spans[span_index].line < line) span_index += 1;
+        const line_start = span_index;
+        while (span_index < spans.len and spans[span_index].line == line) span_index += 1;
+        const count = span_index - line_start;
         if (count == 0) continue;
 
         const line_spans = try allocator.alloc(SyntaxSpan, count);
         errdefer allocator.free(line_spans);
         var index: usize = 0;
-        for (spans) |span| {
-            if (span.line != line) continue;
+        for (spans[line_start..span_index]) |span| {
             line_spans[index] = .{
                 .startColumn = span.span.startColumn,
                 .endColumn = span.span.endColumn,
@@ -1440,26 +1441,35 @@ fn freeLineSpans(allocator: std.mem.Allocator, spans: []LineSpan) void {
 }
 
 fn dedupeLineSpans(allocator: std.mem.Allocator, spans: *std.ArrayList(LineSpan)) void {
-    var index: usize = 0;
-    while (index < spans.items.len) {
-        if (hasEarlierLineSpan(spans.items, index)) {
-            allocator.free(spans.items[index].span.scope);
-            _ = spans.orderedRemove(index);
+    if (spans.items.len <= 1) return;
+    std.mem.sort(LineSpan, spans.items, {}, lineSpanLess);
+
+    var write_index: usize = 0;
+    var read_index: usize = 0;
+    while (read_index < spans.items.len) : (read_index += 1) {
+        if (write_index > 0 and sameLineSpan(spans.items[write_index - 1], spans.items[read_index])) {
+            allocator.free(spans.items[read_index].span.scope);
             continue;
         }
-        index += 1;
+
+        if (write_index != read_index) spans.items[write_index] = spans.items[read_index];
+        write_index += 1;
     }
+    spans.items.len = write_index;
 }
 
-fn hasEarlierLineSpan(spans: []const LineSpan, index: usize) bool {
-    const current = spans[index];
-    for (spans[0..index]) |span| {
-        if (span.line == current.line and
-            span.span.startColumn == current.span.startColumn and
-            span.span.endColumn == current.span.endColumn and
-            std.mem.eql(u8, span.span.scope, current.span.scope)) return true;
-    }
-    return false;
+fn lineSpanLess(_: void, first: LineSpan, second: LineSpan) bool {
+    if (first.line != second.line) return first.line < second.line;
+    if (first.span.startColumn != second.span.startColumn) return first.span.startColumn < second.span.startColumn;
+    if (first.span.endColumn != second.span.endColumn) return first.span.endColumn < second.span.endColumn;
+    return std.mem.lessThan(u8, first.span.scope, second.span.scope);
+}
+
+fn sameLineSpan(first: LineSpan, second: LineSpan) bool {
+    return first.line == second.line and
+        first.span.startColumn == second.span.startColumn and
+        first.span.endColumn == second.span.endColumn and
+        std.mem.eql(u8, first.span.scope, second.span.scope);
 }
 
 fn failedInstall(allocator: std.mem.Allocator, language: []const u8, message: []u8) !InstallResult {

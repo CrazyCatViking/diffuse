@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { type Ref, ref, toRaw } from 'vue';
+import { computed, type Ref, ref, toRaw } from 'vue';
 import type { RouteLocationRaw } from 'vue-router';
 import { diffKeyTokenForEvent, parseDiffKeybinding, type DiffKeybindingAction } from '../lib/diffKeybindings';
 import { diffRoute } from '../lib/workspaceRoutes';
@@ -96,6 +96,14 @@ export const useCursorStore = defineStore('cursor', () => {
   const surfaceMounts = new Map<string, CursorSurfaceMount>();
   const pendingActivationReasons = new Map<string, CursorActivationReason>();
   const surfacePositionHistory: CursorHistoryEntry[] = [];
+  const parsedBindings = computed<ParsedBinding[]>(() => {
+    return Object.entries(settings.diffKeybindings).flatMap(([action, bindings]) => {
+      return bindings
+        .map((binding) => parseDiffKeybinding(binding))
+        .filter((tokens): tokens is string[] => Boolean(tokens && tokens.length > 0))
+        .map((tokens) => ({ action: action as DiffKeybindingAction, tokens }));
+    });
+  });
   let surfacePositionHistoryIndex = -1;
   let pendingTokens: string[] = [];
   let countDigits = '';
@@ -225,7 +233,7 @@ export const useCursorStore = defineStore('cursor', () => {
 
   const executeBindingToken = (token: string, event: KeyboardEvent) => {
     const nextTokens = [...pendingTokens, token];
-    const bindings = parsedBindings();
+    const bindings = parsedBindings.value;
     const exact = bindings.find((binding) => sameTokens(binding.tokens, nextTokens));
     const hasPrefix = bindings.some((binding) => isTokenPrefix(nextTokens, binding.tokens));
 
@@ -259,9 +267,10 @@ export const useCursorStore = defineStore('cursor', () => {
 
   const runMotion = (motion: CursorMotion, context: CursorActionContext) => {
     const mount = activeMotionMount();
-    const before = activeSurfaceSnapshot();
+    const significantByAction = significantMotionActions.has(motion);
+    const before = significantByAction ? activeSurfaceSnapshot() : undefined;
     const result = mount?.onMotion?.(motion, context);
-    return finishSurfaceAction(result, before, significantMotionActions.has(motion));
+    return finishSurfaceAction(result, before, significantByAction);
   };
 
   const runCommand = (command: CursorCommand, context: CursorActionContext) => {
@@ -398,15 +407,6 @@ export const useCursorStore = defineStore('cursor', () => {
   const clearPending = () => {
     pendingTokens = [];
     countDigits = '';
-  };
-
-  const parsedBindings = (): ParsedBinding[] => {
-    return Object.entries(settings.diffKeybindings).flatMap(([action, bindings]) => {
-      return bindings
-        .map((binding) => parseDiffKeybinding(binding))
-        .filter((tokens): tokens is string[] => Boolean(tokens && tokens.length > 0))
-        .map((tokens) => ({ action: action as DiffKeybindingAction, tokens }));
-    });
   };
 
   return {

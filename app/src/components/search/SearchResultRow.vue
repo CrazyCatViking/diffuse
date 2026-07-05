@@ -79,7 +79,9 @@ const kindLabel = computed(() => {
   if (props.result.kind === 'symbol') return 'Symbol';
   return 'File';
 });
-const titleRanges = computed(() => props.result.matches.find((match) => match.field === (props.result.kind === 'symbol' ? 'symbol' : 'name'))?.ranges ?? []);
+const titleRanges = computed(
+  () => props.result.matches.find((match) => match.field === (props.result.kind === 'symbol' ? 'symbol' : 'name'))?.ranges ?? [],
+);
 const subtitleRanges = computed(() => {
   const field = props.result.kind === 'comment' ? 'body' : 'path';
   return props.result.matches.find((match) => match.field === field)?.ranges ?? [];

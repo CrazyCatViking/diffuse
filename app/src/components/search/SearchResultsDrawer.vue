@@ -12,7 +12,7 @@
       <div class="drawer-title">
         <Badge tone="review">Pinned search</Badge>
 
-        <h2>{{ search.query.trim() || 'Search results' }}</h2>
+        <h2>{{ search.pinnedQuery || 'Search results' }}</h2>
       </div>
 
       <Button variant="ghost" size="sm" @click="search.closeDrawer()">Close</Button>
@@ -27,14 +27,14 @@
     </div>
 
     <div class="drawer-summary">
-      <Badge tone="neutral">{{ search.pinnedResults.length }} results</Badge>
+      <Badge tone="neutral">{{ search.pinnedResultCount }} results</Badge>
 
       <span v-if="search.pinnedSelectedResult">{{ displayedSelectedPosition + 1 }} of {{ displayedPinnedEntries.length }}</span>
     </div>
 
     <div ref="drawerResultsRef" class="drawer-results">
       <EmptyState
-        v-if="search.results.length === 0"
+        v-if="!search.hasPinnedSnapshot"
         align="start"
         bordered
         title="No pinned results"
@@ -42,7 +42,7 @@
       />
 
       <EmptyState
-        v-else-if="search.pinnedResults.length === 0"
+        v-else-if="search.pinnedResultCount === 0"
         align="start"
         bordered
         title="All pinned results removed"
@@ -55,6 +55,10 @@
         v-model:collapsed-keys="collapsedGroups"
         class="pinned-tree"
         :nodes="pinnedTreeNodes"
+        :active-key="activePinnedTreeKey"
+        :virtual-scroll-element="drawerResultsRef"
+        :virtual-estimate-size="32"
+        :virtual-overscan="16"
         aria-label="Pinned search results"
         density="compact"
       >
@@ -205,13 +209,25 @@ const pinnedGroups = computed<PinnedGroup[]>(() => {
 const pinnedTreeNodes = computed<TreeListNode<PinnedTreeData>[]>(() => pinnedGroups.value.map(pinnedGroupToTreeNode));
 const displayedPinnedEntries = computed(() => pinnedGroups.value.flatMap(pinnedGroupEntries));
 const pinnedCursorActive = computed(() => cursor.isActiveSurface(pinnedResultsSurfaceId));
+const activePinnedTreeKey = computed(() => (pinnedCursorActive.value ? search.pinnedSelectedResult?.id : undefined));
+const visiblePinnedTreeKeys = computed(() => {
+  const keys: string[] = [];
+  const collect = (nodes: TreeListNode<PinnedTreeData>[]) => {
+    for (const node of nodes) {
+      keys.push(node.key);
+      if (node.children?.length && !collapsedGroups.value.has(node.key)) collect(node.children);
+    }
+  };
+  collect(pinnedTreeNodes.value);
+  return keys;
+});
 const displayedSelectedPosition = computed(() => {
-  const position = displayedPinnedEntries.value.findIndex((entry) => entry.index === search.selectedIndex);
+  const position = displayedPinnedEntries.value.findIndex((entry) => entry.index === search.pinnedSelectedIndex);
   return position >= 0 ? position : 0;
 });
 
 const selectEntry = (index: number) => {
-  search.selectResult(index);
+  search.selectPinnedResult(index);
   void revealSelectedPinnedResult('nearest');
 };
 
@@ -229,18 +245,18 @@ const moveDisplayedSelection = (direction: 1 | -1, count = 1) => {
   const entries = displayedPinnedEntries.value;
   if (entries.length === 0) return;
 
-  for (let step = 0; step < Math.max(1, count); step += 1) {
-    const currentPosition = entries.findIndex((entry) => entry.index === search.selectedIndex);
-    const nextPosition =
-      currentPosition === -1 ? (direction > 0 ? 0 : entries.length - 1) : (currentPosition + direction + entries.length) % entries.length;
-    search.selectResult(entries[nextPosition]?.index ?? entries[0].index);
-  }
+  const currentPosition = entries.findIndex((entry) => entry.index === search.pinnedSelectedIndex);
+  const startPosition = currentPosition === -1 ? (direction > 0 ? -1 : 0) : currentPosition;
+  const nextPosition = positiveModulo(startPosition + direction * Math.max(1, count), entries.length);
+  search.selectPinnedResult(entries[nextPosition]?.index ?? entries[0].index);
 };
+
+const positiveModulo = (value: number, divisor: number) => ((value % divisor) + divisor) % divisor;
 
 const moveSelectionToBoundary = (boundary: 'start' | 'end') => {
   const entries = displayedPinnedEntries.value;
   const entry = boundary === 'start' ? entries[0] : entries[entries.length - 1];
-  if (entry) search.selectResult(entry.index);
+  if (entry) search.selectPinnedResult(entry.index);
 };
 
 const pinnedPageSize = () => Math.max(4, Math.floor((drawerResultsRef.value?.clientHeight ?? 240) / 32 / 2));
@@ -266,8 +282,18 @@ const revealSelectedPinnedResult = async (direction: 'next' | 'previous' | 'near
   await nextTick();
 
   const container = drawerResultsRef.value;
-  const selected = container?.querySelector<HTMLElement>('.tree-row.active.entry-row');
-  if (!container || !selected) return;
+  let selected = container?.querySelector<HTMLElement>('.tree-row.active.entry-row');
+  if (!container) return;
+
+  if (!selected) {
+    const selectedRowIndex = visiblePinnedTreeKeys.value.indexOf(search.pinnedSelectedResult?.id ?? '');
+    if (selectedRowIndex >= 0) {
+      container.scrollTo({ top: selectedRowIndex * 32, behavior: 'auto' });
+      await nextTick();
+      selected = container.querySelector<HTMLElement>('.tree-row.active.entry-row');
+    }
+  }
+  if (!selected) return;
 
   const containerRect = container.getBoundingClientRect();
   const selectedRect = selected.getBoundingClientRect();
@@ -297,17 +323,21 @@ const expandSelectedPinnedGroups = () => {
   if (!result) return;
 
   const next = new Set(collapsedGroups.value);
+  let changed = false;
+  const expand = (key: string) => {
+    if (next.delete(key)) changed = true;
+  };
   if (result.kind === 'content') {
-    next.delete('content');
-    next.delete(`content:${result.path}`);
+    expand('content');
+    expand(`content:${result.path}`);
   } else if (result.kind === 'comment') {
-    next.delete('comments');
+    expand('comments');
   } else if (result.kind === 'symbol') {
-    next.delete('symbols');
+    expand('symbols');
   } else {
-    next.delete('files');
+    expand('files');
   }
-  collapsedGroups.value = next;
+  if (changed) collapsedGroups.value = next;
 };
 
 const contentGroupsByFile = (entries: Array<PinnedEntry & { result: ContentSearchResult }>): PinnedFileGroup[] => {
@@ -350,7 +380,6 @@ const pinnedEntryToTreeNode = (entry: PinnedEntry): TreeListNode<PinnedTreeData>
   key: entry.result.id,
   label: entry.result.title,
   title: entry.result.subtitle ?? entry.result.title,
-  active: pinnedCursorActive.value && entry.index === search.selectedIndex,
   rowClass: { 'entry-row': true },
   data: { type: 'entry', entry },
 });

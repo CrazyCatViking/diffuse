@@ -4,6 +4,8 @@ import type { DiffCodeRowModel } from './diffViewModels';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
 import type { DisplayRow } from './reviewRows';
 
+export type DiffRowRenderTarget = 'all' | 'split' | 'inline' | SyntaxSide;
+
 export type RenderedDiffRowFields = {
   item?: DisplayRow;
   diffRow?: DiffRow;
@@ -25,105 +27,69 @@ export const buildRenderedDiffRowFields = (
       textLength: number,
     ) => Pick<CodeLineModel, 'highlights' | 'className'>;
     diagnosticsForLine: (side: SyntaxSide, line: number | undefined) => LspDiagnostic[];
+    renderTarget?: DiffRowRenderTarget;
   },
 ): RenderedDiffRowFields => {
   const diffRow = item?.kind === 'diff' ? item.row : undefined;
-  const oldLine = diffRow?.oldLine;
-  const newLine = diffRow?.newLine;
-  const oldText = diffRow?.oldText ?? '';
-  const newText = diffRow?.newText ?? '';
-  const oldReviewHighlights =
-    diffRow && oldLine && oldText.length > 0 ? options.reviewHighlightsForLine('old', oldLine, oldText.length) : [];
-  const newReviewHighlights =
-    diffRow && newLine && newText.length > 0 ? options.reviewHighlightsForLine('new', newLine, newText.length) : [];
-  const oldSearchHighlights = diffRow ? (options.searchHighlightsForLine?.('old', oldLine) ?? []) : [];
-  const newSearchHighlights = diffRow ? (options.searchHighlightsForLine?.('new', newLine) ?? []) : [];
-  const oldCursorState = diffRow ? options.cursorStateForLine?.('old', oldLine, oldText.length) : undefined;
-  const newCursorState = diffRow ? options.cursorStateForLine?.('new', newLine, newText.length) : undefined;
+  if (!diffRow) return { item };
+  if (diffRow.kind === 'hunk') {
+    return {
+      item,
+      diffRow,
+      diff: {
+        kind: diffRow.kind,
+        hunkText: diffRow.hunkHeader ?? diffRow.text,
+      },
+    };
+  }
 
-  const oldSyntaxSpans = oldLine ? options.syntaxSpansForLine('old', oldLine) : undefined;
-  const newSyntaxSpans = newLine ? options.syntaxSpansForLine('new', newLine) : undefined;
-  const inlineSyntaxSpans =
-    diffRow?.kind === 'deleted'
-      ? oldLine
-        ? options.syntaxSpansForLine('old', oldLine)
-        : undefined
-      : newLine
-        ? options.syntaxSpansForLine('new', newLine)
-        : undefined;
-  const oldCommentCount = oldLine ? options.commentCountForLine('old', oldLine) : 0;
-  const newCommentCount = newLine ? options.commentCountForLine('new', newLine) : 0;
-  const oldCommentsExpanded = Boolean(oldLine && options.commentsExpandedForLine('old', oldLine));
-  const newCommentsExpanded = Boolean(newLine && options.commentsExpandedForLine('new', newLine));
-  const newDiagnostics = options.diagnosticsForLine('new', newLine);
-  const oldCodeLine = diffRow
-    ? codeLineForSide({
-        side: 'old',
-        fileId: options.fileId,
-        lineNumber: oldLine,
-        text: oldText,
-        syntaxSpans: oldSyntaxSpans,
-        commentCount: oldCommentCount,
-        commentsExpanded: oldCommentsExpanded,
-        reviewHighlights: oldReviewHighlights,
-        searchHighlights: oldSearchHighlights,
-        diagnostics: options.diagnosticsForLine('old', oldLine),
-        title: 'Add old-side comment',
-        cursorHighlights: oldCursorState?.highlights ?? [],
-        className: oldCursorState?.className,
-      })
-    : undefined;
-  const newCodeLine = diffRow
-    ? codeLineForSide({
-        side: 'new',
-        fileId: options.fileId,
-        lineNumber: newLine,
-        text: newText,
-        syntaxSpans: newSyntaxSpans,
-        commentCount: newCommentCount,
-        commentsExpanded: newCommentsExpanded,
-        reviewHighlights: newReviewHighlights,
-        searchHighlights: newSearchHighlights,
-        diagnostics: newDiagnostics,
-        title: 'Add new-side comment',
-        cursorHighlights: newCursorState?.highlights ?? [],
-        className: newCursorState?.className,
-      })
-    : undefined;
-  const inlineSide = diffRow?.kind === 'deleted' ? 'old' : 'new';
-  const inlineLine = inlineSide === 'old' ? oldLine : newLine;
-  const inlineText = diffRow?.oldText ?? diffRow?.newText ?? diffRow?.text ?? '';
-  const inlineCursorState = diffRow ? options.cursorStateForLine?.(inlineSide, inlineLine, inlineText.length) : undefined;
-  const inlineCodeLine = diffRow
-    ? codeLineForSide({
-        side: inlineSide,
-        fileId: options.fileId,
-        lineNumber: inlineLine,
-        text: inlineText,
-        syntaxSpans: inlineSyntaxSpans,
-        commentCount: inlineSide === 'old' ? oldCommentCount : newCommentCount,
-        commentsExpanded: inlineSide === 'old' ? oldCommentsExpanded : newCommentsExpanded,
-        reviewHighlights: diffRow.kind === 'deleted' ? oldReviewHighlights : newReviewHighlights,
-        searchHighlights: diffRow.kind === 'deleted' ? oldSearchHighlights : newSearchHighlights,
-        diagnostics: inlineSide === 'new' ? newDiagnostics : options.diagnosticsForLine('old', oldLine),
-        title: inlineSide === 'old' ? 'Add old-side comment' : 'Add new-side comment',
-        cursorHighlights: inlineCursorState?.highlights ?? [],
-        className: inlineCursorState?.className,
-      })
-    : undefined;
+  const oldLine = diffRow.oldLine;
+  const newLine = diffRow.newLine;
+  const oldText = diffRow.oldText ?? '';
+  const newText = diffRow.newText ?? '';
+  const renderTarget = options.renderTarget ?? 'all';
+  const needsOldLine = renderTarget === 'all' || renderTarget === 'split' || renderTarget === 'old';
+  const needsNewLine = renderTarget === 'all' || renderTarget === 'split' || renderTarget === 'new';
+  const needsInlineLine = renderTarget === 'all' || renderTarget === 'inline';
+  const inlineSide = diffRow.kind === 'deleted' ? 'old' : 'new';
+  const oldLineIsInlineMetadata = renderTarget === 'inline' && inlineSide !== 'old' && oldLine !== undefined;
+  const newLineIsInlineMetadata = renderTarget === 'inline' && inlineSide !== 'new' && newLine !== undefined;
+
+  const lineOptions = (side: SyntaxSide, full: boolean) => {
+    const lineNumber = side === 'old' ? oldLine : newLine;
+    const text = side === 'old' ? oldText : newText;
+    const cursorState = full ? options.cursorStateForLine?.(side, lineNumber, text.length) : undefined;
+    return {
+      side,
+      fileId: options.fileId,
+      lineNumber,
+      text,
+      syntaxSpans: full && lineNumber ? options.syntaxSpansForLine(side, lineNumber) : undefined,
+      commentCount: lineNumber ? options.commentCountForLine(side, lineNumber) : 0,
+      commentsExpanded: Boolean(lineNumber && options.commentsExpandedForLine(side, lineNumber)),
+      reviewHighlights: full && lineNumber && text.length > 0 ? options.reviewHighlightsForLine(side, lineNumber, text.length) : [],
+      searchHighlights: full ? (options.searchHighlightsForLine?.(side, lineNumber) ?? []) : [],
+      diagnostics: options.diagnosticsForLine(side, lineNumber),
+      title: side === 'old' ? 'Add old-side comment' : 'Add new-side comment',
+      cursorHighlights: cursorState?.highlights ?? [],
+      className: cursorState?.className,
+    };
+  };
+
+  const oldCodeLine = needsOldLine || oldLineIsInlineMetadata ? codeLineForSide(lineOptions('old', needsOldLine)) : undefined;
+  const newCodeLine = needsNewLine || newLineIsInlineMetadata ? codeLineForSide(lineOptions('new', needsNewLine)) : undefined;
+  const inlineCodeLine = needsInlineLine ? codeLineForSide(lineOptions(inlineSide, true)) : undefined;
 
   return {
     item,
     diffRow,
-    diff: diffRow
-      ? {
-          kind: diffRow.kind,
-          hunkText: diffRow.hunkHeader ?? diffRow.text,
-          oldLine: oldCodeLine,
-          newLine: newCodeLine,
-          inlineLine: inlineCodeLine,
-        }
-      : undefined,
+    diff: {
+      kind: diffRow.kind,
+      hunkText: diffRow.hunkHeader ?? diffRow.text,
+      oldLine: inlineSide === 'old' && inlineCodeLine ? inlineCodeLine : oldCodeLine,
+      newLine: inlineSide === 'new' && inlineCodeLine ? inlineCodeLine : newCodeLine,
+      inlineLine: inlineCodeLine,
+    },
   };
 };
 
@@ -141,19 +107,22 @@ const codeLineForSide = (options: {
   title: string;
   cursorHighlights: CodeTextHighlight[];
   className?: CodeLineModel['className'];
-}): CodeLineModel => ({
-  side: options.side,
-  fileId: options.fileId,
-  lineNumber: options.lineNumber,
-  text: options.text,
-  syntaxSpans: options.syntaxSpans,
-  commentCount: options.commentCount,
-  commentsExpanded: options.commentsExpanded,
-  diagnostics: options.diagnostics,
-  title: options.title,
-  className: options.className,
-  highlights: codeHighlights(options.reviewHighlights, options.searchHighlights, options.cursorHighlights),
-});
+}): CodeLineModel => {
+  const highlights = codeHighlights(options.reviewHighlights, options.searchHighlights, options.cursorHighlights);
+  return {
+    side: options.side,
+    fileId: options.fileId,
+    lineNumber: options.lineNumber,
+    text: options.text,
+    syntaxSpans: options.syntaxSpans,
+    commentCount: options.commentCount,
+    commentsExpanded: options.commentsExpanded,
+    diagnostics: options.diagnostics,
+    title: options.title,
+    className: options.className,
+    highlights: highlights.length > 0 ? highlights : undefined,
+  };
+};
 
 const codeHighlights = (
   reviewHighlights: ReviewTextHighlight[],

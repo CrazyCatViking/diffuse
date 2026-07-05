@@ -132,7 +132,7 @@ import { useDiffScrollbar } from './useDiffScrollbar';
 import { supportsLspFile, useLspHover } from './useLspHover';
 import { useDiffSelection } from './useDiffSelection';
 import { useDiffCursor, type DiffCursorPane, type DiffCursorPosition } from './useDiffCursor';
-import { buildRenderedDiffRowFields } from './diffRenderedRows';
+import { buildRenderedDiffRowFields, type DiffRowRenderTarget } from './diffRenderedRows';
 import SingleFileDiffPanes from './SingleFileDiffPanes.vue';
 import type { DiffPaneActions, DiffPaneModel, DiffRenderedEntry, DiffReviewActions, DiffReviewUi } from './diffViewModels';
 
@@ -179,6 +179,7 @@ const syntaxVersion = ref(0);
 const initialSyntaxGateActive = ref(false);
 
 let activeSyntaxRequests = 0;
+let syntaxVersionFrame: number | undefined;
 let isSyncingScroll = false;
 let syncScrollFrame: number | undefined;
 let pendingScrollSync: { target: HTMLElement; top: number; left: number } | undefined;
@@ -191,6 +192,8 @@ let handledFileSearchRequestId = 0;
 let diffCursor: ReturnType<typeof useDiffCursor> | undefined;
 let suppressCursorAutoScroll = false;
 let activeCursorMotion: CursorMotion | undefined;
+let cursorScrollFrame: number | undefined;
+let pendingCursorRevealInline = false;
 let pendingDiffActivation: { surfaceId: string; side: SyntaxSide; reason: CursorActivationReason; hadStoredSurface: boolean } | undefined;
 let pendingFileOpenHistoryFileId: string | undefined;
 const diffSurfaceRefs = new Map<string, Ref<DiffSurface>>();
@@ -252,7 +255,7 @@ const queryNumber = (value: unknown) => {
 const syntaxPageSize = 256;
 const syntaxPageLookaround = 1;
 const maxSyntaxCachePages = 32;
-const virtualRowOverscan = 40;
+const virtualRowOverscan = 20;
 const maxConcurrentSyntaxRequests = 2;
 const initialSyntaxGateMs = 80;
 const threadFlashDurationMs = 1800;
@@ -355,6 +358,11 @@ const leftDisplayRows = computed(() => buildDisplayRows('old'));
 const rightDisplayRows = computed(() => buildDisplayRows('new'));
 const syncedSplitDisplayRows = computed(() => buildDisplayRows());
 const inlineDisplayRows = computed(() => buildDisplayRows());
+const activeDisplayRows = computed(() => {
+  if (viewMode.value === 'split' && syncScroll.value) return [syncedSplitDisplayRows.value];
+  if (viewMode.value === 'split') return [leftDisplayRows.value, rightDisplayRows.value];
+  return [inlineDisplayRows.value];
+});
 const leftMarkers = computed(() => scrollMarkersForRows(leftDisplayRows.value, 'old'));
 const rightMarkers = computed(() => scrollMarkersForRows(rightDisplayRows.value, 'new'));
 const syncedSplitMarkers = computed(() => scrollMarkersForRows(syncedSplitDisplayRows.value));
@@ -671,7 +679,7 @@ const buildDisplayRows = (side?: SyntaxSide): DisplayRow[] => {
   );
 };
 
-const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[]): RenderedRow[] => {
+const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[], renderTarget: DiffRowRenderTarget): RenderedRow[] => {
   syntaxVersion.value;
   const diffSurfaceActive = activeDiffSurface();
   return virtualRows.map((virtualRow) => {
@@ -686,6 +694,7 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[])
       cursorStateForLine: (side, line, textLength) =>
         diffSurfaceActive ? (diffCursor?.lineStateForLine(side, line, textLength) ?? {}) : {},
       diagnosticsForLine,
+      renderTarget,
     });
     return {
       virtualRow,
@@ -855,6 +864,14 @@ onBeforeUnmount(() => {
   if (syncScrollFrame !== undefined) {
     cancelAnimationFrame(syncScrollFrame);
     syncScrollFrame = undefined;
+  }
+  if (syntaxVersionFrame !== undefined) {
+    cancelAnimationFrame(syntaxVersionFrame);
+    syntaxVersionFrame = undefined;
+  }
+  if (cursorScrollFrame !== undefined) {
+    cancelAnimationFrame(cursorScrollFrame);
+    cursorScrollFrame = undefined;
   }
   cleanupLspHover();
   scrollbars.cleanup();
@@ -1033,24 +1050,40 @@ const leftVirtualRows = computed(() => leftVirtualizer.value.getVirtualItems());
 const rightVirtualRows = computed(() => rightVirtualizer.value.getVirtualItems());
 const syncedSplitVirtualRows = computed(() => syncedSplitVirtualizer.value.getVirtualItems());
 const inlineVirtualRows = computed(() => inlineVirtualizer.value.getVirtualItems());
-const leftRenderedRows = computed(() => buildRenderedRows(leftVirtualRows.value, leftDisplayRows.value));
-const rightRenderedRows = computed(() => buildRenderedRows(rightVirtualRows.value, rightDisplayRows.value));
-const syncedSplitRenderedRows = computed(() => buildRenderedRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value));
-const inlineRenderedRows = computed(() => buildRenderedRows(inlineVirtualRows.value, inlineDisplayRows.value));
+const leftRenderedRows = computed(() => buildRenderedRows(leftVirtualRows.value, leftDisplayRows.value, 'old'));
+const rightRenderedRows = computed(() => buildRenderedRows(rightVirtualRows.value, rightDisplayRows.value, 'new'));
+const syncedSplitRenderedRows = computed(() => buildRenderedRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'split'));
+const inlineRenderedRows = computed(() => buildRenderedRows(inlineVirtualRows.value, inlineDisplayRows.value, 'inline'));
+const activeSyntaxRowRequests = computed(() => {
+  if (viewMode.value === 'split' && syncScroll.value) {
+    return [
+      { virtualRows: syncedSplitVirtualRows.value, displayRows: syncedSplitDisplayRows.value, sides: ['old', 'new'] as SyntaxSide[] },
+    ];
+  }
+  if (viewMode.value === 'split') {
+    return [
+      { virtualRows: leftVirtualRows.value, displayRows: leftDisplayRows.value, sides: ['old'] as SyntaxSide[] },
+      { virtualRows: rightVirtualRows.value, displayRows: rightDisplayRows.value, sides: ['new'] as SyntaxSide[] },
+    ];
+  }
+  return [{ virtualRows: inlineVirtualRows.value, displayRows: inlineDisplayRows.value, sides: ['old', 'new'] as SyntaxSide[] }];
+});
 const leftTotalSize = computed(() => leftVirtualizer.value.getTotalSize());
 const rightTotalSize = computed(() => rightVirtualizer.value.getTotalSize());
 const syncedSplitTotalSize = computed(() => syncedSplitVirtualizer.value.getTotalSize());
 const inlineTotalSize = computed(() => inlineVirtualizer.value.getTotalSize());
+const activePaneTotalSizes = computed(() => {
+  if (viewMode.value === 'split' && syncScroll.value) return [syncedSplitTotalSize.value];
+  if (viewMode.value === 'split') return [leftTotalSize.value, rightTotalSize.value];
+  return [inlineTotalSize.value];
+});
 const commentHoverDisabled = computed(() => {
-  return (
-    leftVirtualizer.value.isScrolling ||
-    rightVirtualizer.value.isScrolling ||
-    syncedSplitVirtualizer.value.isScrolling ||
-    inlineVirtualizer.value.isScrolling
-  );
+  if (viewMode.value === 'split' && syncScroll.value) return syncedSplitVirtualizer.value.isScrolling;
+  if (viewMode.value === 'split') return leftVirtualizer.value.isScrolling || rightVirtualizer.value.isScrolling;
+  return inlineVirtualizer.value.isScrolling;
 });
 
-watch([leftTotalSize, rightTotalSize, syncedSplitTotalSize, inlineTotalSize, viewMode, syncScroll], scrollbars.updateAfterRender, {
+watch([activePaneTotalSizes, viewMode, syncScroll], scrollbars.updateAfterRender, {
   immediate: true,
   flush: 'post',
 });
@@ -1079,47 +1112,76 @@ const paneStatus = computed(() => ({
   initialSyntaxGateActive: initialSyntaxGateActive.value,
 }));
 
-const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => ({
-  left: {
-    key: 'left',
-    compositionMode: 'pane',
-    paneSide: 'old',
-    rows: leftRenderedRows.value,
-    totalSize: leftTotalSize.value,
-    hasScroll: hasLeftScroll.value,
-    markers: leftMarkers.value,
-    thumbStyle: leftThumbStyle.value,
-    shellClass: 'old-pane-shell',
-    paneClass: 'old-pane',
-    keyPrefix: 'old-',
-    measureElement: measureLeftElement,
-  },
-  right: {
-    key: 'right',
-    compositionMode: 'pane',
-    paneSide: 'new',
-    rows: rightRenderedRows.value,
-    totalSize: rightTotalSize.value,
-    hasScroll: hasRightScroll.value,
-    markers: rightMarkers.value,
-    thumbStyle: rightThumbStyle.value,
-    paneClass: 'new-pane',
-    keyPrefix: 'new-',
-    measureElement: measureRightElement,
-  },
-  syncedSplit: {
-    key: 'syncedSplit',
-    compositionMode: 'split',
-    rows: syncedSplitRenderedRows.value,
-    totalSize: syncedSplitTotalSize.value,
-    hasScroll: hasSyncedSplitScroll.value,
-    markers: syncedSplitMarkers.value,
-    thumbStyle: syncedSplitThumbStyle.value,
-    paneClass: 'synced-split-view',
-    spacerClass: 'synced-split-spacer',
-    measureElement: measureSyncedSplitElement,
-  },
-  inline: {
+const noopMeasureElement = () => {};
+
+const inactivePaneModel = (key: PaneKey): DiffPaneModel => ({
+  key,
+  compositionMode: key === 'syncedSplit' ? 'split' : key === 'inline' ? 'inline' : 'pane',
+  paneSide: key === 'left' ? 'old' : key === 'right' ? 'new' : undefined,
+  rows: [],
+  totalSize: 0,
+  hasScroll: false,
+  markers: [],
+  thumbStyle: {},
+  measureElement: noopMeasureElement,
+});
+
+const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => {
+  const panes: Record<PaneKey, DiffPaneModel> = {
+    left: inactivePaneModel('left'),
+    right: inactivePaneModel('right'),
+    syncedSplit: inactivePaneModel('syncedSplit'),
+    inline: inactivePaneModel('inline'),
+  };
+
+  if (viewMode.value === 'split' && syncScroll.value) {
+    panes.syncedSplit = {
+      key: 'syncedSplit',
+      compositionMode: 'split',
+      rows: syncedSplitRenderedRows.value,
+      totalSize: syncedSplitTotalSize.value,
+      hasScroll: hasSyncedSplitScroll.value,
+      markers: syncedSplitMarkers.value,
+      thumbStyle: syncedSplitThumbStyle.value,
+      paneClass: 'synced-split-view',
+      spacerClass: 'synced-split-spacer',
+      measureElement: measureSyncedSplitElement,
+    };
+    return panes;
+  }
+
+  if (viewMode.value === 'split') {
+    panes.left = {
+      key: 'left',
+      compositionMode: 'pane',
+      paneSide: 'old',
+      rows: leftRenderedRows.value,
+      totalSize: leftTotalSize.value,
+      hasScroll: hasLeftScroll.value,
+      markers: leftMarkers.value,
+      thumbStyle: leftThumbStyle.value,
+      shellClass: 'old-pane-shell',
+      paneClass: 'old-pane',
+      keyPrefix: 'old-',
+      measureElement: measureLeftElement,
+    };
+    panes.right = {
+      key: 'right',
+      compositionMode: 'pane',
+      paneSide: 'new',
+      rows: rightRenderedRows.value,
+      totalSize: rightTotalSize.value,
+      hasScroll: hasRightScroll.value,
+      markers: rightMarkers.value,
+      thumbStyle: rightThumbStyle.value,
+      paneClass: 'new-pane',
+      keyPrefix: 'new-',
+      measureElement: measureRightElement,
+    };
+    return panes;
+  }
+
+  panes.inline = {
     key: 'inline',
     compositionMode: 'inline',
     rows: inlineRenderedRows.value,
@@ -1130,8 +1192,9 @@ const paneModels = computed<Record<PaneKey, DiffPaneModel>>(() => ({
     paneClass: 'inline-view',
     spacerClass: 'inline-spacer',
     measureElement: measureInlineElement,
-  },
-}));
+  };
+  return panes;
+});
 
 const scrollToActiveSearchMatch = () => {
   const match = activeSearchMatch.value;
@@ -1169,15 +1232,26 @@ const scrollToCursorPosition = (position: DiffCursorPosition, motion?: CursorMot
   const needsVerticalScroll = !target.element || !displayIndexFullyVisible(target.virtualizer, target.element, position.displayIndex);
   if (needsVerticalScroll) target.virtualizer.scrollToIndex(position.displayIndex, { align: 'auto' });
 
-  if (needsVerticalScroll || (motion && columnScrollMotions.has(motion))) {
-    void nextTick(() => {
-      requestAnimationFrame(() => {
-        rootRef.value?.querySelector<HTMLElement>('[data-diff-cursor="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        scrollbars.updateAfterRender();
-      });
+  if (needsVerticalScroll || (motion && columnScrollMotions.has(motion)))
+    scheduleCursorPostScroll(Boolean(motion && columnScrollMotions.has(motion)));
+};
+
+const scheduleCursorPostScroll = (revealInline: boolean) => {
+  pendingCursorRevealInline = pendingCursorRevealInline || revealInline;
+  void nextTick(() => {
+    if (cursorScrollFrame !== undefined) return;
+    cursorScrollFrame = requestAnimationFrame(() => {
+      cursorScrollFrame = undefined;
+      const shouldRevealInline = pendingCursorRevealInline;
+      pendingCursorRevealInline = false;
+      if (shouldRevealInline) {
+        cursorScrollElement()
+          ?.querySelector<HTMLElement>('[data-diff-cursor="true"]')
+          ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+      scrollbars.updateAfterRender();
     });
-    return;
-  }
+  });
 };
 
 const cursorScrollTarget = (position: DiffCursorPosition): { virtualizer: CursorScrollVirtualizer; element: HTMLElement | null } => {
@@ -1852,10 +1926,7 @@ watch(
     () => rightRef.value,
     () => syncedSplitRef.value,
     () => inlineRef.value,
-    leftDisplayRows,
-    rightDisplayRows,
-    syncedSplitDisplayRows,
-    inlineDisplayRows,
+    activeDisplayRows,
   ],
   () => {
     void revealThreadRequest();
@@ -1874,6 +1945,14 @@ watch(
 const syntaxKey = (side: SyntaxSide, line: number) => `${side}:${line}`;
 
 const syntaxPageKey = (fileId: string, context: DiffContextMode, side: SyntaxSide, page: number) => `${fileId}:${context}:${side}:${page}`;
+
+const scheduleSyntaxVersionBump = () => {
+  if (syntaxVersionFrame !== undefined) return;
+  syntaxVersionFrame = requestAnimationFrame(() => {
+    syntaxVersionFrame = undefined;
+    syntaxVersion.value += 1;
+  });
+};
 
 const runSyntaxQueue = () => {
   while (activeSyntaxRequests < maxConcurrentSyntaxRequests) {
@@ -1912,7 +1991,7 @@ const runSyntaxQueue = () => {
           syntaxPageLineKeys.set(request.key, lineKeys);
           touchSyntaxPage(request.key);
           evictOldSyntaxPages();
-          syntaxVersion.value += 1;
+          scheduleSyntaxVersionBump();
         } else if (request.generation === syntaxRequestGeneration && syntaxPageStates.get(request.key) === 'loading') {
           syntaxPageStates.delete(request.key);
         }
@@ -2188,6 +2267,10 @@ watch(
   () => {
     activeSearchIndex.value = 0;
     syntaxRequestGeneration += 1;
+    if (syntaxVersionFrame !== undefined) {
+      cancelAnimationFrame(syntaxVersionFrame);
+      syntaxVersionFrame = undefined;
+    }
     syntaxCache.clear();
     syntaxPageLineKeys.clear();
     syntaxPageAccessOrder.length = 0;
@@ -2237,25 +2320,10 @@ watch(
 );
 
 watch(
-  [
-    leftVirtualRows,
-    rightVirtualRows,
-    syncedSplitVirtualRows,
-    inlineVirtualRows,
-    () => model.value?.syntax.grammarInstalled,
-    viewMode,
-    syncScroll,
-  ],
+  [activeSyntaxRowRequests, () => model.value?.syntax.grammarInstalled],
   () => {
-    if (viewMode.value === 'split' && syncScroll.value) {
-      requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'old');
-      requestSyntaxForVirtualRows(syncedSplitVirtualRows.value, syncedSplitDisplayRows.value, 'new');
-    } else if (viewMode.value === 'split') {
-      requestSyntaxForVirtualRows(leftVirtualRows.value, leftDisplayRows.value, 'old');
-      requestSyntaxForVirtualRows(rightVirtualRows.value, rightDisplayRows.value, 'new');
-    } else {
-      requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'old');
-      requestSyntaxForVirtualRows(inlineVirtualRows.value, inlineDisplayRows.value, 'new');
+    for (const request of activeSyntaxRowRequests.value) {
+      for (const side of request.sides) requestSyntaxForVirtualRows(request.virtualRows, request.displayRows, side);
     }
   },
   { immediate: true, flush: 'post' },

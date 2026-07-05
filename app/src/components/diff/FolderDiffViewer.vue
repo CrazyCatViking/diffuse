@@ -53,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useRoute, useRouter } from 'vue-router';
 import type { DiffRenderModel, DiffRow, LspDiagnostic, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
@@ -92,11 +92,11 @@ const repo = useRepoStore();
 const diff = useDiffStore();
 const review = useReviewStore();
 const cursor = useCursorStore();
-const models = ref<DiffRenderModel[]>([]);
+const models = shallowRef<DiffRenderModel[]>([]);
 const loading = ref(false);
 const error = ref<string>();
-const syntaxSpans = ref<Record<string, SyntaxSpan[]>>({});
-const diagnosticsByFile = ref<Record<string, LspDiagnostic[]>>({});
+const syntaxSpans = shallowRef<Record<string, SyntaxSpan[]>>({});
+const diagnosticsByFile = shallowRef<Record<string, LspDiagnostic[]>>({});
 const draftBody = ref('');
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
@@ -185,7 +185,7 @@ const folderVirtualizer = useVirtualizer(
     getScrollElement: () => folderScrollRef.value,
     getItemKey: (index) => folderVirtualItems.value[index]?.key ?? index,
     estimateSize: (index: number) => estimateFolderItemSize(folderVirtualItems.value[index]),
-    overscan: 40,
+    overscan: 20,
     useAnimationFrameWithResizeObserver: true,
   })),
 );
@@ -302,6 +302,7 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
       commentsExpandedForLine: (side, line) => expandedCommentStarts.value.has(fileCommentStartKey(fileId, side, line)),
       reviewHighlightsForLine: (side, line, textLength) => reviewHighlightsForLine(fileId, side, line, textLength),
       diagnosticsForLine: (_side, line) => diagnosticsForLine(fileId, line),
+      renderTarget: viewMode.value === 'split' ? 'split' : 'inline',
     });
     const reviewRow = displayReviewRow(item.item);
     return {
@@ -385,7 +386,7 @@ const loadFolderDiff = async () => {
     for (const file of files.value) {
       const model = await client.getDiffRenderModel(file.id, { mode: viewMode.value, context: contextMode.value }, target.value);
       if (generation !== loadGeneration) return;
-      loaded.push(model);
+      loaded.push(markRaw(model));
       models.value = [...loaded];
       void loadSyntaxForModel(model, generation);
       void loadDiagnosticsForModel(model, generation);

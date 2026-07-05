@@ -63,11 +63,14 @@ export const useLspHover = (options: {
       return;
     }
 
-    const column = columnAtPoint(element, event.clientX, event.clientY, options.textOffsetWithinElement);
-    const cacheKey = `${fileId}:${options.diffTargetFingerprint()}:${side}:${line}:${column}`;
+    const clientX = event.clientX;
+    const clientY = event.clientY;
     if (timer !== undefined) window.clearTimeout(timer);
     timer = window.setTimeout(() => {
-      void load({ fileId, side, line, column, cacheKey, clientX: event.clientX, clientY: event.clientY });
+      if (!element.isConnected) return;
+      const column = columnAtPoint(element, clientX, clientY, options.textOffsetWithinElement);
+      const cacheKey = `${fileId}:${options.diffTargetFingerprint()}:${side}:${line}:${column}`;
+      void load({ fileId, side, line, column, cacheKey, clientX, clientY });
     }, lspHoverDelayMs);
   };
 

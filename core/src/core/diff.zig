@@ -60,6 +60,25 @@ pub const SyntaxSide = enum { old, new };
 
 pub const SyntaxLineSpans = syntax.SyntaxLineSpans;
 
+pub const PreparedSyntaxSpans = struct {
+    language: []u8,
+    grammar_path: []u8,
+    query_path: []u8,
+    source: []u8,
+    chunk: SourceChunk,
+    start_line: u32,
+    end_line: u32,
+    context_before: u32,
+
+    pub fn deinit(self: *PreparedSyntaxSpans, allocator: std.mem.Allocator) void {
+        allocator.free(self.language);
+        allocator.free(self.grammar_path);
+        allocator.free(self.query_path);
+        allocator.free(self.source);
+        self.chunk.deinit(allocator);
+    }
+};
+
 pub const DiffContextMode = enum {
     diff,
     full,
@@ -91,37 +110,62 @@ pub fn getDiffRenderModel(allocator: std.mem.Allocator, io: std.Io, repo_root: [
 }
 
 pub fn getSyntaxSpans(allocator: std.mem.Allocator, io: std.Io, cache: ?*syntax.Cache, repo_root: []const u8, file_id: []const u8, path: []const u8, options: DiffOptions, side: SyntaxSide, start_line: u32, end_line: u32) ![]SyntaxLineSpans {
+    var prepared = try prepareSyntaxSpans(allocator, io, repo_root, file_id, path, options, side, start_line, end_line) orelse return allocator.alloc(SyntaxLineSpans, 0);
+    defer prepared.deinit(allocator);
+    return highlightPreparedSyntaxSpans(allocator, io, cache, &prepared);
+}
+
+pub fn prepareSyntaxSpans(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8, file_id: []const u8, path: []const u8, options: DiffOptions, side: SyntaxSide, start_line: u32, end_line: u32) !?PreparedSyntaxSpans {
     _ = file_id;
     var status = try syntax.detectStatus(allocator, io, path, options.grammar_root);
     defer status.deinit(allocator);
-    if (!status.grammarInstalled) return allocator.alloc(SyntaxLineSpans, 0);
-    const language = status.language orelse return allocator.alloc(SyntaxLineSpans, 0);
-    const grammar_path = status.grammarPath orelse return allocator.alloc(SyntaxLineSpans, 0);
-    const query_path = status.highlightsQueryPath orelse return allocator.alloc(SyntaxLineSpans, 0);
+    if (!status.grammarInstalled) return null;
+    const language = status.language orelse return null;
+    const grammar_path = status.grammarPath orelse return null;
+    const query_path = status.highlightsQueryPath orelse return null;
 
     const source = try sourceForSide(allocator, io, repo_root, path, side, options.target);
-    defer allocator.free(source);
+    errdefer allocator.free(source);
 
     const has_injections = syntax.hasInjections(allocator, io, language, options.grammar_root);
     const context_before: u32 = if (has_injections) 1024 else 0;
     const context_after: u32 = if (has_injections) 128 else 0;
     var chunk = try sourceLineChunk(allocator, source, start_line, end_line, context_before, context_after);
-    defer chunk.deinit(allocator);
+    errdefer chunk.deinit(allocator);
+    const owned_language = try allocator.dupe(u8, language);
+    errdefer allocator.free(owned_language);
+    const owned_grammar_path = try allocator.dupe(u8, grammar_path);
+    errdefer allocator.free(owned_grammar_path);
+    const owned_query_path = try allocator.dupe(u8, query_path);
+    errdefer allocator.free(owned_query_path);
 
-    const local_start = start_line - chunk.start_line + 1;
-    const local_end = end_line - chunk.start_line + 1;
-    const spans = try syntax.highlightTextRangeCached(allocator, io, cache, language, grammar_path, query_path, chunk.source, local_start, local_end);
-    if (has_injections and sparseSyntaxResult(allocator, source, spans, start_line, end_line)) {
+    return .{
+        .language = owned_language,
+        .grammar_path = owned_grammar_path,
+        .query_path = owned_query_path,
+        .source = source,
+        .chunk = chunk,
+        .start_line = start_line,
+        .end_line = end_line,
+        .context_before = context_before,
+    };
+}
+
+pub fn highlightPreparedSyntaxSpans(allocator: std.mem.Allocator, io: std.Io, cache: ?*syntax.Cache, prepared: *PreparedSyntaxSpans) ![]SyntaxLineSpans {
+    const local_start = prepared.start_line - prepared.chunk.start_line + 1;
+    const local_end = prepared.end_line - prepared.chunk.start_line + 1;
+    const spans = try syntax.highlightTextRangeCached(allocator, io, cache, prepared.language, prepared.grammar_path, prepared.query_path, prepared.chunk.source, local_start, local_end);
+    if (prepared.context_before > 0 and sparseSyntaxResult(allocator, prepared.source, spans, prepared.start_line, prepared.end_line)) {
         freeSyntaxLineSpans(allocator, spans);
-        var fallback_chunk = try sourceLineChunk(allocator, source, start_line, end_line, context_before, 1024);
+        var fallback_chunk = try sourceLineChunk(allocator, prepared.source, prepared.start_line, prepared.end_line, prepared.context_before, 1024);
         defer fallback_chunk.deinit(allocator);
-        const fallback_start = start_line - fallback_chunk.start_line + 1;
-        const fallback_end = end_line - fallback_chunk.start_line + 1;
-        const fallback_spans = try syntax.highlightTextRangeCached(allocator, io, cache, language, grammar_path, query_path, fallback_chunk.source, fallback_start, fallback_end);
+        const fallback_start = prepared.start_line - fallback_chunk.start_line + 1;
+        const fallback_end = prepared.end_line - fallback_chunk.start_line + 1;
+        const fallback_spans = try syntax.highlightTextRangeCached(allocator, io, cache, prepared.language, prepared.grammar_path, prepared.query_path, fallback_chunk.source, fallback_start, fallback_end);
         for (fallback_spans) |*line| line.line += fallback_chunk.start_line - 1;
         return fallback_spans;
     }
-    for (spans) |*line| line.line += chunk.start_line - 1;
+    for (spans) |*line| line.line += prepared.chunk.start_line - 1;
     return spans;
 }
 
