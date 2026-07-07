@@ -42,7 +42,7 @@ export type DiffContextMode = 'diff' | 'full';
 export type DiffRenderOptions = {
   mode: DiffViewMode;
   context: DiffContextMode;
-  intelligence?: 'basic' | 'full';
+  intelligence?: 'basic';
 };
 
 export type DiffRenderModel = {
@@ -51,119 +51,6 @@ export type DiffRenderModel = {
   context: DiffContextMode;
   syntax: SyntaxStatus;
   rows: DiffRow[];
-  annotations?: DiffAnnotations;
-};
-
-export type DiffAnalysisStatusKind = 'missing' | 'queued' | 'analyzing' | 'ready' | 'stale' | 'failed' | 'skipped' | string;
-
-export type DiffAnalysisStatus = {
-  fileId: string;
-  signature: string;
-  status: DiffAnalysisStatusKind;
-  updatedAtMs: number;
-  message?: string;
-};
-
-export type DiffAnalysisSummary = {
-  tokenChanges: number;
-  changeGroups: number;
-  movedBlocks: number;
-  semanticGroups: number;
-  crossFileLinks: number;
-  formatterOnlyGroups: number;
-  highImpactGroups: number;
-};
-
-export type DiffAnalysis = {
-  version: number;
-  fileId: string;
-  signature: string;
-  targetKey: string;
-  generatedAtMs: number;
-  summary: DiffAnalysisSummary;
-  annotations: DiffAnnotations;
-  rows: DiffAnalysisRow[];
-};
-
-export type DiffAnalysisRow = {
-  kind: DiffRow['kind'];
-  oldLine?: number;
-  newLine?: number;
-  oldDiffSpans?: DiffTokenSpan[];
-  newDiffSpans?: DiffTokenSpan[];
-  changeGroupId?: string;
-  changeRole?: string;
-  changeConfidence?: number;
-  symbol?: string;
-  semanticSummary?: string;
-};
-
-export type DiffAnnotations = {
-  columnUnit: 'utf16' | string;
-  linePairs: DiffLinePair[];
-  changeGroups: DiffChangeGroup[];
-  anchorRemaps?: DiffAnchorRemap[];
-};
-
-export type DiffLinePair = {
-  oldLine: number;
-  newLine: number;
-  oldRow: number;
-  newRow: number;
-  kind: 'replacement' | string;
-  confidence: number;
-};
-
-export type DiffChangeGroup = {
-  id: string;
-  kind:
-    | 'moved-block'
-    | 'moved-and-edited-block'
-    | 'symbol-change'
-    | 'identifier-rename'
-    | 'formatter-only'
-    | 'import-reorder'
-    | 'wrapper-added'
-    | 'argument-change'
-    | 'extracted-function'
-    | 'inlined-function'
-    | 'call-site-update'
-    | 'condition-change'
-    | 'condition-inverted'
-    | 'control-flow-change'
-    | 'return-value-change'
-    | 'assignment-change'
-    | 'cross-file-move'
-    | string;
-  oldStartLine?: number;
-  oldEndLine?: number;
-  newStartLine?: number;
-  newEndLine?: number;
-  confidence: number;
-  symbol?: string;
-  summary?: string;
-  relatedFile?: string;
-  oldName?: string;
-  newName?: string;
-};
-
-export type DiffAnchorRemap = {
-  oldLine: number;
-  newLine: number;
-  oldRow?: number;
-  newRow?: number;
-  kind: string;
-  confidence: number;
-  summary?: string;
-  relatedFile?: string;
-};
-
-export type DiffTokenSpanKind = 'inserted-token' | 'deleted-token' | 'replaced-token' | 'whitespace' | string;
-
-export type DiffTokenSpan = {
-  startColumn: number;
-  endColumn: number;
-  kind: DiffTokenSpanKind;
 };
 
 export type SyntaxStatus = {
@@ -453,11 +340,4 @@ export type DiffRow = {
   hunkHeader?: string;
   oldSyntaxSpans?: SyntaxSpan[];
   newSyntaxSpans?: SyntaxSpan[];
-  oldDiffSpans?: DiffTokenSpan[];
-  newDiffSpans?: DiffTokenSpan[];
-  changeGroupId?: string;
-  changeRole?: 'moved-from' | 'moved-to' | string;
-  changeConfidence?: number;
-  symbol?: string;
-  semanticSummary?: string;
 };

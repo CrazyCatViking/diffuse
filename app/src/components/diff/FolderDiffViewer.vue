@@ -36,7 +36,6 @@
       :lsp-hover-style="lspHoverStyle"
       :diagnostic-summary="diagnosticSummary"
       :review-summary="reviewSummary"
-      :analysis-summary="analysisSummary"
       :measure-folder-element="measureFolderElement"
       @scroll-ref="setFolderScrollRef"
       @scroll="onFolderScroll"
@@ -58,12 +57,10 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRe
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useRoute, useRouter } from 'vue-router';
 import type { DiffRenderModel, DiffRow, LspDiagnostic, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
-import { applyDiffAnalysis } from '../../lib/diffAnalysis';
 import { useClient } from '../../lib/useClient';
 import { filesForFolderPath, overviewRoute, routeParamString } from '../../lib/workspaceRoutes';
 import { folderDiffSurfaceId, type FolderDiffSurface, useCursorStore } from '../../stores/cursor';
 import { useDiffStore } from '../../stores/diff';
-import { useDiffAnalysisStore } from '../../stores/diffAnalysis';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
@@ -93,7 +90,6 @@ const route = useRoute();
 const router = useRouter();
 const repo = useRepoStore();
 const diff = useDiffStore();
-const diffAnalysis = useDiffAnalysisStore();
 const review = useReviewStore();
 const cursor = useCursorStore();
 const models = shallowRef<DiffRenderModel[]>([]);
@@ -166,7 +162,6 @@ const {
   requireSameFile: true,
 });
 const folderVirtualItems = computed<FolderVirtualItem[]>(() => {
-  diffAnalysis.revision;
   return models.value.flatMap((model, fileIndex) => {
     const items: FolderVirtualItem[] = [{ kind: 'file', key: `file:${model.fileId}`, model, fileIndex }];
     if (model.rows.length === 0) items.push({ kind: 'empty', key: `empty:${model.fileId}`, fileId: model.fileId, fileIndex });
@@ -362,23 +357,12 @@ const reviewSummary = (fileId: string) => {
   };
 };
 
-const analysisSummary = (fileId: string) => {
-  const file = files.value.find((candidate) => candidate.id === fileId);
-  const status = diffAnalysis.statusForFile(fileId);
-  const analysis = diffAnalysis.analysisForFile(fileId, file?.signature);
-  if (status?.status === 'queued' || status?.status === 'analyzing') return { label: 'Analyzing', className: 'running' };
-  if (status?.status === 'failed') return { label: 'Analysis failed', className: 'failed' };
-  if (!analysis) return undefined;
-  return { label: 'Analyzed', className: 'ready' };
-};
-
 const emptyModel = (): DiffRenderModel => ({
   fileId: '',
   mode: viewMode.value,
   context: contextMode.value,
   syntax: { grammarInstalled: false, highlightsInstalled: false },
   rows: [],
-  annotations: { columnUnit: 'utf16', linePairs: [], changeGroups: [], anchorRemaps: [] },
 });
 
 const fileSideKey = (fileId: string, side: SyntaxSide) => `${fileId}:${side}`;
@@ -489,11 +473,8 @@ const syntaxForInlineRow = (fileId: string, row: DiffRow) => {
 const syntaxKey = (fileId: string, side: SyntaxSide, line: number) => `${fileId}:${side}:${line}`;
 
 const displayRowsForModel = (model: DiffRenderModel): DisplayRow[] => {
-  const file = files.value.find((candidate) => candidate.id === model.fileId);
-  const analysis = diffAnalysis.analysisForFile(model.fileId, file?.signature);
-  const rows = applyDiffAnalysis(model.rows, analysis);
   return buildReviewDisplayRows(
-    rows,
+    model.rows,
     buildReviewEntriesByEndLine({
       fileId: model.fileId,
       threads: fileThreads(model.fileId),
@@ -665,22 +646,6 @@ watch(
   ],
   () => {
     void loadFolderDiff();
-  },
-  { immediate: true },
-);
-
-watch(
-  () => [
-    folderPath.value,
-    files.value.map((file) => `${file.id}:${file.signature}`).join('\n'),
-    contextMode.value,
-    JSON.stringify(target.value),
-  ],
-  () => {
-    const folderFiles = files.value;
-    void diffAnalysis.refreshStatuses(folderFiles, contextMode.value).then(() => {
-      diffAnalysis.ensureFiles(folderFiles, contextMode.value);
-    });
   },
   { immediate: true },
 );

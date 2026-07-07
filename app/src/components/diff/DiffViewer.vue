@@ -13,10 +13,6 @@
 
         <span v-if="model" class="row-count">{{ rows.length }} rows</span>
 
-        <span v-if="analysisStatusMessage" class="analysis-status" :class="analysisStatusClass" :title="analysisStatusTitle">
-          {{ analysisStatusMessage }}
-        </span>
-
         <span v-if="hasNewChanges" class="update-status">
           New changes available
 
@@ -101,7 +97,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } 
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useRoute } from 'vue-router';
 import { useClient } from '../../lib/useClient';
-import { applyDiffAnalysis } from '../../lib/diffAnalysis';
 import type { DiffContextMode, LspDiagnostic, LspStatus, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { routeParamString } from '../../lib/workspaceRoutes';
 import {
@@ -115,7 +110,6 @@ import {
   useCursorStore,
 } from '../../stores/cursor';
 import { useDiffStore } from '../../stores/diff';
-import { useDiffAnalysisStore } from '../../stores/diffAnalysis';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
@@ -165,7 +159,6 @@ const inlineRef = ref<HTMLElement | null>(null);
 const route = useRoute();
 const client = useClient();
 const diff = useDiffStore();
-const diffAnalysis = useDiffAnalysisStore();
 const repo = useRepoStore();
 const review = useReviewStore();
 const cursor = useCursorStore();
@@ -209,8 +202,7 @@ const registeredDiffSurfaceIds = new Set<string>();
 const routeFileId = computed(() => routeParamString(route.params.fileId));
 const model = computed(() => diff.current);
 const activeFile = computed(() => repo.changedFiles.find((file) => file.id === model.value?.fileId));
-const activeAnalysis = computed(() => diffAnalysis.analysisForFile(model.value?.fileId, activeFile.value?.signature));
-const rows = computed(() => applyDiffAnalysis(model.value?.rows ?? [], activeAnalysis.value));
+const rows = computed(() => model.value?.rows ?? []);
 const navigableDiffSides = computed<SyntaxSide[]>(() => {
   if (!model.value || rows.value.length === 0) return [];
   const sides: SyntaxSide[] = [];
@@ -534,33 +526,6 @@ const lspDiagnosticsClass = computed(() => ({
   warning: lspDiagnosticsSummary.value.errors === 0 && lspDiagnosticsSummary.value.warnings > 0,
   loading: lspDiagnosticsLoading.value,
 }));
-
-const analysisStatus = computed(() => (activeFile.value ? diffAnalysis.statusForFile(activeFile.value.id) : undefined));
-const analysisStatusMessage = computed(() => {
-  if (!model.value || !activeFile.value) return undefined;
-  const status = analysisStatus.value?.status ?? 'missing';
-  if (status === 'ready') {
-    return 'Analysis ready';
-  }
-  if (status === 'queued') return 'Analysis queued';
-  if (status === 'analyzing') return 'Analyzing changes';
-  if (status === 'stale') return 'Analysis stale';
-  if (status === 'failed') return 'Analysis failed';
-  return 'Analysis pending';
-});
-const analysisStatusClass = computed(() => ({
-  ready: analysisStatus.value?.status === 'ready',
-  running: analysisStatus.value?.status === 'queued' || analysisStatus.value?.status === 'analyzing',
-  stale: analysisStatus.value?.status === 'stale' || analysisStatus.value?.status === 'missing',
-  failed: analysisStatus.value?.status === 'failed',
-}));
-const analysisStatusTitle = computed(() => {
-  const status = analysisStatus.value;
-  if (!status) return 'Complex diff analysis has not started yet';
-  return [status.status, status.message, activeAnalysis.value ? `${activeAnalysis.value.summary.changeGroups} change groups` : undefined]
-    .filter(Boolean)
-    .join('\n');
-});
 
 const loadLspStatus = async () => {
   const currentModel = model.value;
@@ -958,18 +923,6 @@ watch(
     if (!fileId) return;
     if (diff.current?.fileId === fileId && repo.changedFileIds.includes(fileId)) diff.markNewChanges();
   },
-);
-
-watch(
-  [() => activeFile.value?.id, () => activeFile.value?.signature, contextMode, () => JSON.stringify(target.value)],
-  () => {
-    const file = activeFile.value;
-    if (!file) return;
-    void diffAnalysis.refreshStatuses([file], contextMode.value).then(() => {
-      diffAnalysis.ensureFiles([file], contextMode.value);
-    });
-  },
-  { immediate: true },
 );
 
 const {
@@ -2468,7 +2421,6 @@ watch(
 }
 
 .syntax-status,
-.analysis-status,
 .lsp-status,
 .lsp-diagnostics,
 .update-status {
@@ -2487,34 +2439,6 @@ watch(
     background: currentColor;
     border-radius: var(--radius-pill);
     content: '';
-  }
-}
-
-.analysis-status {
-  color: var(--color-text-muted);
-  background: rgba(143, 151, 166, 0.1);
-  border-color: rgba(143, 151, 166, 0.18);
-
-  &.ready {
-    color: var(--color-ai);
-    background: var(--color-ai-muted);
-    border-color: rgba(143, 179, 255, 0.25);
-  }
-
-  &.running {
-    color: var(--color-info);
-    background: var(--color-info-muted);
-    border-color: rgba(77, 166, 255, 0.25);
-  }
-
-  &.stale {
-    color: var(--color-text-subtle);
-  }
-
-  &.failed {
-    color: var(--color-danger);
-    background: var(--color-danger-muted);
-    border-color: rgba(255, 107, 107, 0.25);
   }
 }
 

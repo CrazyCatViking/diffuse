@@ -44,14 +44,6 @@
                 </span>
 
                 <span
-                  v-if="analysisSummary(entry.model.fileId)"
-                  class="analysis-summary"
-                  :class="analysisSummary(entry.model.fileId)?.className"
-                >
-                  {{ analysisSummary(entry.model.fileId)?.label }}
-                </span>
-
-                <span
                   v-if="diagnosticSummary(entry.model.fileId)"
                   class="diagnostic-summary"
                   :class="diagnosticSummary(entry.model.fileId)?.className"
@@ -135,7 +127,6 @@ const props = defineProps<{
   lspHoverStyle: CSSProperties;
   diagnosticSummary: (fileId: string) => { label: string; className: string } | undefined;
   reviewSummary: (fileId: string) => { label: string; className: string } | undefined;
-  analysisSummary: (fileId: string) => { label: string; className: string } | undefined;
   measureFolderElement: (element: unknown) => void;
 }>();
 
@@ -287,7 +278,6 @@ const rowLayout = (entry: RenderedEntry, compositionMode: 'split' | 'inline') =>
 
 .file-row-count,
 .review-summary,
-.analysis-summary,
 .diagnostic-summary {
   flex: 0 0 auto;
   padding: var(--space-1) var(--space-3);
@@ -314,30 +304,6 @@ const rowLayout = (entry: RenderedEntry, compositionMode: 'split' | 'inline') =>
     color: var(--color-warning);
     background: var(--color-warning-muted);
     border-color: rgba(240, 184, 106, 0.18);
-  }
-}
-
-.analysis-summary {
-  color: var(--color-ai);
-  background: var(--color-ai-muted);
-  border-color: rgba(143, 179, 255, 0.18);
-
-  &.running {
-    color: var(--color-info);
-    background: var(--color-info-muted);
-    border-color: rgba(77, 166, 255, 0.18);
-  }
-
-  &.risk {
-    color: var(--color-warning);
-    background: var(--color-warning-muted);
-    border-color: rgba(240, 184, 106, 0.18);
-  }
-
-  &.failed {
-    color: var(--color-danger);
-    background: var(--color-danger-muted);
-    border-color: rgba(255, 107, 107, 0.18);
   }
 }
 

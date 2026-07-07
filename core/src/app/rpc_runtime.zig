@@ -10,25 +10,6 @@ pub const SearchJobState = struct {
     cancelled: bool = false,
 };
 
-pub const DiffAnalysisJobStatus = enum {
-    queued,
-    analyzing,
-    failed,
-};
-
-pub const DiffAnalysisJobState = struct {
-    status: DiffAnalysisJobStatus,
-    message: ?[]const u8 = null,
-
-    pub fn statusText(self: DiffAnalysisJobState) []const u8 {
-        return switch (self.status) {
-            .queued => "queued",
-            .analyzing => "analyzing",
-            .failed => "failed",
-        };
-    }
-};
-
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -41,12 +22,9 @@ pub const Runtime = struct {
     lsp_lock: std.Io.Mutex = .init,
     review_lock: std.Io.Mutex = .init,
     search_lock: std.Io.Mutex = .init,
-    diff_analysis_lock: std.Io.Mutex = .init,
     session_lock: std.Io.RwLock = .init,
     search_jobs: std.StringHashMap(SearchJobState),
-    diff_analysis_jobs: std.StringHashMap(DiffAnalysisJobState),
     search_group: std.Io.Group = .init,
-    diff_analysis_group: std.Io.Group = .init,
     outbound_buffer: [128][]u8 = undefined,
     outbound: std.Io.Queue([]u8),
 
@@ -61,12 +39,9 @@ pub const Runtime = struct {
         runtime.lsp_lock = .init;
         runtime.review_lock = .init;
         runtime.search_lock = .init;
-        runtime.diff_analysis_lock = .init;
         runtime.session_lock = .init;
         runtime.search_jobs = std.StringHashMap(SearchJobState).init(allocator);
-        runtime.diff_analysis_jobs = std.StringHashMap(DiffAnalysisJobState).init(allocator);
         runtime.search_group = .init;
-        runtime.diff_analysis_group = .init;
         runtime.outbound_buffer = undefined;
         runtime.outbound = .init(&runtime.outbound_buffer);
         runtime.repo_watcher = repository_watcher.RepositoryWatcher.init(allocator, io, &runtime.outbound);
@@ -74,9 +49,6 @@ pub const Runtime = struct {
 
     pub fn deinit(runtime: *Runtime) void {
         runtime.repo_watcher.deinit();
-        var analysis_key_iter = runtime.diff_analysis_jobs.keyIterator();
-        while (analysis_key_iter.next()) |key| runtime.allocator.free(key.*);
-        runtime.diff_analysis_jobs.deinit();
         runtime.search_jobs.deinit();
         runtime.lsp_manager.deinit(runtime.io);
         runtime.syntax_cache.deinit();
@@ -90,10 +62,6 @@ pub const Runtime = struct {
         runtime.search_lock.unlock(runtime.io);
 
         try runtime.search_group.await(runtime.io);
-    }
-
-    pub fn awaitDiffAnalysisJobs(runtime: *Runtime) !void {
-        try runtime.diff_analysis_group.await(runtime.io);
     }
 
     pub fn enqueue(runtime: *Runtime, message: []u8) (std.Io.QueueClosedError || std.Io.Cancelable)!void {

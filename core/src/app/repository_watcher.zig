@@ -262,7 +262,6 @@ fn clearChangedPaths(allocator: std.mem.Allocator, changed_paths: *std.ArrayList
 
 fn shouldIgnorePath(path: []const u8) bool {
     return std.mem.indexOf(u8, path, "node_modules") != null or
-        std.mem.indexOf(u8, path, ".diffuse/diff-analysis") != null or
         std.mem.indexOf(u8, path, ".zig-cache") != null or
         std.mem.indexOf(u8, path, "zig-out") != null or
         std.mem.indexOf(u8, path, ".git/objects") != null or

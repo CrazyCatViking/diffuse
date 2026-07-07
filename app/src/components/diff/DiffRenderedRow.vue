@@ -134,38 +134,4 @@ const emitToggleComments = (line: CodeLineModel | undefined) => {
 :global(.code-line.cursor-line) {
   box-shadow: inset 3px 0 0 var(--color-border-focus);
 }
-
-.diff-row.diff-moved {
-  box-shadow: inset 3px 0 0 var(--color-info);
-}
-
-.diff-row.diff-moved-from {
-  box-shadow: inset 3px 0 0 var(--color-warning);
-}
-
-.diff-row.diff-moved-to {
-  box-shadow: inset 3px 0 0 var(--color-info);
-}
-
-.diff-row.diff-analysis-semantic {
-  box-shadow: inset 2px 0 0 var(--color-review);
-}
-
-.diff-row.diff-analysis-risk {
-  box-shadow:
-    inset 2px 0 0 var(--color-warning),
-    inset 0 0 0 999px rgba(240, 184, 106, 0.035);
-}
-
-.diff-row.diff-analysis-noise {
-  opacity: 0.82;
-}
-
-.diff-row.diff-moved-from {
-  box-shadow: inset 3px 0 0 var(--color-warning);
-}
-
-.diff-row.diff-moved-to {
-  box-shadow: inset 3px 0 0 var(--color-info);
-}
 </style>

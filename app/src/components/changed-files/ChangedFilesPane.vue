@@ -123,13 +123,6 @@
 
       <template #actions="{ node }">
         <span v-if="node.data?.type === 'file'" class="file-meta">
-          <span
-            class="analysis-indicator"
-            :class="analysisStatusClass(node.data.file.id)"
-            :title="analysisStatusTitle(node.data.file.id)"
-            aria-hidden="true"
-          />
-
           <span class="counts">
             <span class="additions">+{{ node.data.file.additions }}</span>
 
@@ -166,7 +159,6 @@ import {
   useCursorStore,
 } from '../../stores/cursor';
 import { useDiffStore } from '../../stores/diff';
-import { useDiffAnalysisStore } from '../../stores/diffAnalysis';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import { useSearchStore } from '../../stores/search';
@@ -207,7 +199,6 @@ const route = useRoute();
 const router = useRouter();
 const repo = useRepoStore();
 const diff = useDiffStore();
-const diffAnalysis = useDiffAnalysisStore();
 const review = useReviewStore();
 const search = useSearchStore();
 const cursor = useCursorStore();
@@ -265,19 +256,6 @@ const fileNameRanges = (fileId: string): SearchMatchRange[] =>
     : [];
 
 const fileMetadata = (fileId: string): FileSearchMetadata | undefined => searchFilesById.value.get(fileId)?.metadata;
-
-const analysisStatusClass = (fileId: string) => `analysis-${diffAnalysis.statusKindForFile(fileId)}`;
-
-const analysisStatusTitle = (fileId: string) => {
-  const status = diffAnalysis.statusForFile(fileId);
-  if (!status) return 'Diff analysis not started';
-  if (status.status === 'ready') return 'Diff analysis ready';
-  if (status.status === 'queued') return 'Diff analysis queued';
-  if (status.status === 'analyzing') return 'Diff analysis running';
-  if (status.status === 'stale') return 'Diff analysis stale';
-  if (status.status === 'failed') return status.message ? `Diff analysis failed: ${status.message}` : 'Diff analysis failed';
-  return 'Diff analysis not started';
-};
 
 const selectOverview = async () => {
   cursor.setActiveSurface(fileTreeSurfaceId);
@@ -580,21 +558,6 @@ watch(
   { immediate: true },
 );
 
-watch(
-  [
-    () => files.value.map((file) => `${file.id}:${file.signature}`).join('\n'),
-    () => diff.contextMode,
-    () => JSON.stringify(repo.diffTarget),
-  ],
-  () => {
-    const currentFiles = files.value;
-    void diffAnalysis.refreshStatuses(currentFiles, diff.contextMode).then(() => {
-      diffAnalysis.ensureFiles(currentFiles, diff.contextMode);
-    });
-  },
-  { immediate: true },
-);
-
 onBeforeUnmount(() => {
   cursor.unregisterSurface(fileTreeSurfaceId);
 });
@@ -856,37 +819,6 @@ h2 {
   justify-content: flex-end;
   gap: var(--space-2);
   min-width: 0;
-}
-
-.analysis-indicator {
-  width: 9px;
-  height: 9px;
-  margin-top: 4px;
-  flex: 0 0 auto;
-  background: var(--color-text-disabled);
-  border-radius: var(--radius-pill);
-  box-shadow: 0 0 0 2px rgba(105, 115, 134, 0.12);
-}
-
-.analysis-ready {
-  background: var(--color-ai);
-  box-shadow: 0 0 0 2px var(--color-ai-muted);
-}
-
-.analysis-queued,
-.analysis-analyzing {
-  background: var(--color-info);
-  box-shadow: 0 0 0 2px var(--color-info-muted);
-}
-
-.analysis-stale,
-.analysis-missing {
-  background: var(--color-text-subtle);
-}
-
-.analysis-failed {
-  background: var(--color-danger);
-  box-shadow: 0 0 0 2px var(--color-danger-muted);
 }
 
 .counts {

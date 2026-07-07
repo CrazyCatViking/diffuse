@@ -1,8 +1,6 @@
 import type {
   BranchInfo,
   ChangedFile,
-  DiffAnalysis,
-  DiffAnalysisStatus,
   DiffRenderModel,
   DiffRenderOptions,
   DiffTarget,
@@ -41,9 +39,6 @@ export const coreMethodNames = [
   'listBranches',
   'listChangedFiles',
   'getDiffRenderModel',
-  'getDiffAnalysis',
-  'getDiffAnalysisStatuses',
-  'ensureDiffAnalysis',
   'getSyntaxSpans',
   'getLspConfigInfo',
   'getLspInstallInfo',
@@ -93,18 +88,6 @@ export type CoreMethods = {
   listBranches: { params: Record<string, never>; result: BranchInfo[] };
   listChangedFiles: { params: { target: DiffTarget }; result: ChangedFile[] };
   getDiffRenderModel: { params: { fileId: string; options: DiffRenderOptions; target: DiffTarget }; result: DiffRenderModel };
-  getDiffAnalysis: {
-    params: { fileId: string; signature: string; options: Pick<DiffRenderOptions, 'context'>; target: DiffTarget };
-    result: DiffAnalysis | null;
-  };
-  getDiffAnalysisStatuses: {
-    params: { files: { fileId: string; signature: string }[]; options: Pick<DiffRenderOptions, 'context'>; target: DiffTarget };
-    result: DiffAnalysisStatus[];
-  };
-  ensureDiffAnalysis: {
-    params: { fileId: string; signature: string; options: Pick<DiffRenderOptions, 'context'>; target: DiffTarget };
-    result: DiffAnalysisStatus;
-  };
   getSyntaxSpans: {
     params: {
       fileId: string;
@@ -210,11 +193,6 @@ export type SearchErrorEvent = {
   params: { searchId: string; message: string };
 };
 
-export type DiffAnalysisStatusChangedEvent = {
-  method: 'diffAnalysis/statusChanged';
-  params: DiffAnalysisStatus;
-};
-
 export type CoreEvent =
   | RepositoryChangedEvent
   | ReviewChangedEvent
@@ -225,5 +203,4 @@ export type CoreEvent =
   | SearchProgressEvent
   | SearchDoneEvent
   | SearchCancelledEvent
-  | SearchErrorEvent
-  | DiffAnalysisStatusChangedEvent;
+  | SearchErrorEvent;

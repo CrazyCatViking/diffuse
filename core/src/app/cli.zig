@@ -94,7 +94,6 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, process_args: std.process.A
             .context = "diff",
             .syntax = types.syntaxStatus(model.syntax_status),
             .rows = rows.items,
-            .annotations = types.diffAnnotations(model.annotations),
         });
         try stdout.writeByte('\n');
         try stdout.flush();

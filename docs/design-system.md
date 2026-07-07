@@ -177,17 +177,16 @@ Use existing diff primitives before creating new ones:
 - `DiffViewerOverlays.vue` for floating selection actions and LSP hover.
 - `InlineReviewBox.vue` and `DiffReviewRow.vue` for inline comments, AI chat, drafts, and thread actions.
 
-Do not add separate marker systems for review, diagnostics, search, or diff analysis. Extend `DiffScrollMarkerKind` and `buildDiffScrollMarkers` when a new scan marker belongs on the diff scrollbar.
+Do not add separate marker systems for review, diagnostics, or search. Extend `DiffScrollMarkerKind` and `buildDiffScrollMarkers` when a new scan marker belongs on the diff scrollbar.
 
-Diff analysis is layered over cheap Git rows. Keep base diff rows readable before analysis is ready, then add visual information in place:
+Diff rows are rendered from cheap Git rows returned by `getDiffRenderModel`. Keep the base rows readable and compute display-only replacement details in the renderer:
 
 - Use whole-token highlights only for partial line edits where the rest of the line remains readable as unchanged context.
-- Compute visible token highlights from the paired old/new line text in the renderer, not from semantic or move analysis groups.
+- Compute visible token highlights from the paired old/new line text in the renderer.
 - In split diffs, align deleted/added runs positionally and only render blank counterpart rows for the side-count difference.
 - Use old-side deleted-token color and new-side inserted-token color; avoid replaced/whitespace-specific colors until those modes are intentionally reintroduced.
 - Do not add token highlights for whole inserted or deleted rows; the row background already communicates that change.
-- Keep analysis status chips lifecycle-only while semantic, move, and cross-file grouping accuracy is being refined. Status language is `pending`, `queued`, `analyzing`, `ready`, `stale`, and `failed`.
-- Prefer durable model fields and existing row primitives over DOM-only drawing. Virtualized rows must be able to recreate the same visuals from `DiffAnalysis` and `DiffRow` data.
+- Prefer existing row primitives over DOM-only drawing. Virtualized rows must be able to recreate the same visuals from `DiffRow` data and renderer-owned derived state.
 
 Single-file diff keyboard navigation is rendered through the existing code row primitives. Cursor and visual-selection state should be model-driven from diff rows, not DOM-driven, because diff rows are virtualized. Add cursor or visual styling through `CodeTextHighlight`/`CodeLineModel` so syntax, search, review, cursor, and visual-selection styling share one text-fragment pipeline.
 

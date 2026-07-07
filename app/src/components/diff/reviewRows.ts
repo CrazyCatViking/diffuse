@@ -115,13 +115,6 @@ const pairedReplacementRow = (oldRow: DiffRow, newRow: DiffRow): DiffRow => ({
   newText: newRow.newText,
   oldSyntaxSpans: oldRow.oldSyntaxSpans,
   newSyntaxSpans: newRow.newSyntaxSpans,
-  oldDiffSpans: oldRow.oldDiffSpans,
-  newDiffSpans: newRow.newDiffSpans,
-  changeGroupId: newRow.changeGroupId ?? oldRow.changeGroupId,
-  changeRole: newRow.changeRole ?? oldRow.changeRole,
-  changeConfidence: Math.max(oldRow.changeConfidence ?? 0, newRow.changeConfidence ?? 0) || undefined,
-  symbol: newRow.symbol ?? oldRow.symbol,
-  semanticSummary: [oldRow.semanticSummary, newRow.semanticSummary].filter(Boolean).join('\n') || undefined,
 });
 
 export const buildReviewEntriesByEndLine = (options: BuildReviewEntriesOptions): Map<string, InlineReviewEntry[]> => {

@@ -100,38 +100,4 @@ const emitToggleComments = () => {
 .code-line.context {
   background: var(--color-bg-code);
 }
-
-.code-line.diff-moved {
-  box-shadow: inset 3px 0 0 var(--color-info);
-}
-
-.code-line.diff-moved-from {
-  box-shadow: inset 3px 0 0 var(--color-warning);
-}
-
-.code-line.diff-moved-to {
-  box-shadow: inset 3px 0 0 var(--color-info);
-}
-
-.code-line.diff-analysis-semantic {
-  box-shadow: inset 2px 0 0 var(--color-review);
-}
-
-.code-line.diff-analysis-risk {
-  box-shadow:
-    inset 2px 0 0 var(--color-warning),
-    inset 0 0 0 999px rgba(240, 184, 106, 0.035);
-}
-
-.code-line.diff-analysis-noise {
-  opacity: 0.82;
-}
-
-.code-line.diff-moved-from {
-  box-shadow: inset 3px 0 0 var(--color-warning);
-}
-
-.code-line.diff-moved-to {
-  box-shadow: inset 3px 0 0 var(--color-info);
-}
 </style>
