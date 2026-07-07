@@ -193,6 +193,7 @@ export const useRepoStore = defineStore('repo', () => {
       status: file.status,
       additions: file.additions,
       deletions: file.deletions,
+      signature: file.signature,
     });
   };
 

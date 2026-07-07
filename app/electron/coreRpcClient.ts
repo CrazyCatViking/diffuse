@@ -44,7 +44,9 @@ export class CoreRpcClient extends EventEmitter {
     });
 
     child.on('error', (error) => {
+      this.exited = true;
       this.rejectAll(error);
+      this.emit('exit', { code: null, signal: null });
     });
 
     child.on('exit', (code, signal) => {

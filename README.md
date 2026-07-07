@@ -47,6 +47,7 @@ These scripts are hosted directly in this repository and served by GitHub throug
 | Readable diffs        | Supports split and inline diff views with diff-only or full-file context.                        |
 | Folder review         | Select a folder in the changed-file tree to review all changed files under that folder together. |
 | Syntax awareness      | Uses Tree-sitter grammars for highlighting where available.                                      |
+| Token highlights      | Shows cheap Git diffs immediately and computes precise token highlights for partial line edits. |
 | LSP support           | Shows hover information and diagnostics from language servers.                                   |
 | Review state          | Stores review sessions, threads, progress, and chat as plain files under `.diffuse/reviews`.     |
 | AI review             | Can run opencode-based review agents and save their findings back into Diffuse.                  |

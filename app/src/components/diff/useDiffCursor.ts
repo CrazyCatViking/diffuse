@@ -591,8 +591,7 @@ export const useDiffCursor = (options: {
   ): DiffCursorLine | undefined => {
     if (!item) return undefined;
     if (item.kind === 'diff') {
-      const rowIndex = rowIndexFromDisplayKey(item.key);
-      if (rowIndex === undefined) return undefined;
+      const rowIndex = item.rowIndex;
       return side
         ? sideLineForRow(model.fileId, item.row, rowIndex, displayIndex, side)
         : inlineLineForRow(model.fileId, item.row, rowIndex, displayIndex);
@@ -749,11 +748,6 @@ export const useDiffCursor = (options: {
 
 const lineIndex = (lines: DiffCursorLine[], position: Pick<DiffCursorPosition, 'side' | 'line' | 'rowIndex'>) => {
   return lines.findIndex((line) => line.side === position.side && line.line === position.line && line.rowIndex === position.rowIndex);
-};
-
-const rowIndexFromDisplayKey = (key: string) => {
-  const value = Number(key.slice('diff:'.length));
-  return Number.isInteger(value) ? value : undefined;
 };
 
 const clampColumn = (column: number, text: string) => Math.max(0, Math.min(maxCursorColumn(text), column));

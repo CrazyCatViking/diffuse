@@ -158,6 +158,7 @@ import {
   type FileTreeSurface,
   useCursorStore,
 } from '../../stores/cursor';
+import { useDiffStore } from '../../stores/diff';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import { useSearchStore } from '../../stores/search';
@@ -197,6 +198,7 @@ type FolderSummary = {
 const route = useRoute();
 const router = useRouter();
 const repo = useRepoStore();
+const diff = useDiffStore();
 const review = useReviewStore();
 const search = useSearchStore();
 const cursor = useCursorStore();

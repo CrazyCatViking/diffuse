@@ -42,6 +42,7 @@ export type DiffContextMode = 'diff' | 'full';
 export type DiffRenderOptions = {
   mode: DiffViewMode;
   context: DiffContextMode;
+  intelligence?: 'basic';
 };
 
 export type DiffRenderModel = {
@@ -330,7 +331,7 @@ export type TreeSitterGrammar = {
 };
 
 export type DiffRow = {
-  kind: 'context' | 'added' | 'deleted' | 'hunk';
+  kind: 'context' | 'added' | 'deleted' | 'modified' | 'hunk';
   oldLine?: number;
   newLine?: number;
   oldText?: string;

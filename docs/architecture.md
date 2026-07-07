@@ -186,6 +186,7 @@ Changed files are assembled from `git diff` for the active `DiffTarget`:
 
 - `git diff --name-status -M` for paths and status.
 - `git diff --numstat` for addition/deletion counts.
+- `git diff --binary -- <path>` hashed with SHA-256 for each changed-file `signature`.
 
 The target supports two shapes:
 
@@ -215,7 +216,11 @@ The resulting unified diff is parsed into rows:
 - `deleted` rows for old-side lines.
 - `added` rows for new-side lines.
 
-Each row carries old/new line numbers and old/new text where applicable. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
+Each row carries old/new line numbers and old/new text where applicable. `getDiffRenderModel` is the cheap display path used by the renderer and is requested with `options.intelligence = "basic"` for interactive views. It returns parsed Git rows and syntax availability without running token, move, semantic, structural, cross-file, or background analysis.
+
+The renderer composes display-only relationships from the returned rows. Adjacent deleted/added runs are paired into `modified` rows in `app/src/components/diff/reviewRows.ts`, and `app/src/components/diff/diffRenderedRows.ts` computes whole-token `diff-deleted` and `diff-inserted` highlights from the paired old/new text. These highlights are renderer state, not persisted review data and not part of the core JSON contract.
+
+Git remains the correctness and fallback layer. The render model does not include analysis annotations, move groups, semantic groups, anchor remaps, or analysis cache state. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
 
 ## Syntax Highlighting
 

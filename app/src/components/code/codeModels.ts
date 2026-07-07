@@ -1,6 +1,6 @@
 import type { LspDiagnostic, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 
-export type CodeTextHighlightKind = 'review' | 'search' | 'active-search' | 'visual' | 'cursor';
+export type CodeTextHighlightKind = 'review' | 'search' | 'active-search' | 'visual' | 'cursor' | 'diff-inserted' | 'diff-deleted';
 
 export type CodeTextHighlight = {
   kind: CodeTextHighlightKind;
@@ -22,6 +22,7 @@ export type CodeLineModel = {
   selectable?: boolean;
   commentable?: boolean;
   title?: string;
+  explanation?: string;
   className?: string | string[] | Record<string, boolean>;
 };
 

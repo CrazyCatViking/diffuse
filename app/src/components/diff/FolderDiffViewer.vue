@@ -258,10 +258,16 @@ const markerKindsForFolderItem = (item: FolderVirtualItem): DiffScrollMarkerKind
 
   const kinds: DiffScrollMarkerKind[] = [];
   const row = displayDiffRow(item.item);
-  if (row?.kind === 'added' || row?.kind === 'deleted') kinds.push(row.kind);
+  if (row) kinds.push(...diffMarkerKinds(row.kind));
   const diagnostics = item.fileId && row?.newLine ? diagnosticsForLine(item.fileId, row.newLine) : [];
   if (diagnostics.length > 0) kinds.push(diagnosticMarkerKind(diagnostics));
   return kinds;
+};
+
+const diffMarkerKinds = (kind: string): DiffScrollMarkerKind[] => {
+  if (kind === 'added' || kind === 'deleted') return [kind];
+  if (kind === 'modified') return ['deleted', 'added'];
+  return [];
 };
 
 const diagnosticMarkerKind = (diagnostics: LspDiagnostic[]): DiffScrollMarkerKind => {
@@ -384,7 +390,11 @@ const loadFolderDiff = async () => {
   try {
     const loaded: DiffRenderModel[] = [];
     for (const file of files.value) {
-      const model = await client.getDiffRenderModel(file.id, { mode: viewMode.value, context: contextMode.value }, target.value);
+      const model = await client.getDiffRenderModel(
+        file.id,
+        { mode: viewMode.value, context: contextMode.value, intelligence: 'basic' },
+        target.value,
+      );
       if (generation !== loadGeneration) return;
       loaded.push(markRaw(model));
       models.value = [...loaded];
@@ -628,7 +638,12 @@ const {
 });
 
 watch(
-  () => [folderPath.value, files.value.map((file) => file.id).join('\n'), contextMode.value, JSON.stringify(target.value)],
+  () => [
+    folderPath.value,
+    files.value.map((file) => `${file.id}:${file.signature}`).join('\n'),
+    contextMode.value,
+    JSON.stringify(target.value),
+  ],
   () => {
     void loadFolderDiff();
   },

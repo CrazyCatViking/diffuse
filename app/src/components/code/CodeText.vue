@@ -117,6 +117,14 @@ const fragments = computed<Fragment[]>(() => {
       className = 'code-cursor';
       style.background = 'var(--color-text-primary)';
       style.color = 'var(--color-bg-code)';
+    } else if (highlight?.kind === 'diff-inserted') {
+      className = 'code-highlight';
+      style.background = 'rgba(75, 210, 118, 0.34)';
+      style.boxShadow = 'inset 0 -1px 0 rgba(141, 242, 177, 0.72)';
+    } else if (highlight?.kind === 'diff-deleted') {
+      className = 'code-highlight';
+      style.background = 'rgba(255, 123, 138, 0.32)';
+      style.boxShadow = 'inset 0 -1px 0 rgba(255, 123, 138, 0.72)';
     }
     result.push({
       text: props.text.slice(start, end),
@@ -135,7 +143,8 @@ const highlightForRange = (highlights: CodeTextHighlight[], start: number, end: 
     highlights.find((highlight) => highlight.kind === 'active-search' && highlight.startColumn < end && highlight.endColumn > start) ??
     highlights.find((highlight) => highlight.kind === 'search' && highlight.startColumn < end && highlight.endColumn > start) ??
     highlights.find((highlight) => highlight.kind === 'visual' && highlight.startColumn < end && highlight.endColumn > start) ??
-    highlights.find((highlight) => highlight.kind === 'review' && highlight.startColumn < end && highlight.endColumn > start)
+    highlights.find((highlight) => highlight.kind === 'review' && highlight.startColumn < end && highlight.endColumn > start) ??
+    highlights.find((highlight) => highlight.kind.startsWith('diff-') && highlight.startColumn < end && highlight.endColumn > start)
   );
 };
 

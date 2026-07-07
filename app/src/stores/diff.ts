@@ -17,6 +17,7 @@ export const useDiffStore = defineStore('diff', () => {
   const syncScroll = ref(true);
   const installingGrammar = ref(false);
   const grammarInstallStep = ref<string>();
+  let loadGeneration = 0;
 
   const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
     return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
@@ -32,23 +33,25 @@ export const useDiffStore = defineStore('diff', () => {
   });
 
   const loadDiff = async (fileId: string, options: { silent?: boolean } = {}) => {
+    const generation = ++loadGeneration;
     currentFileId.value = fileId;
     if (!options.silent) loading.value = true;
     error.value = undefined;
-
     try {
-      current.value = markRaw(
-        await client.getDiffRenderModel(
-          fileId,
-          {
-            mode: viewMode.value,
-            context: contextMode.value,
-          },
-          repo.diffTarget,
-        ),
+      const basic = await client.getDiffRenderModel(
+        fileId,
+        {
+          mode: viewMode.value,
+          context: contextMode.value,
+          intelligence: 'basic',
+        },
+        repo.diffTarget,
       );
+      if (generation !== loadGeneration) return;
+      current.value = markRaw(basic);
       hasNewChanges.value = false;
     } catch (err) {
+      if (generation !== loadGeneration) return;
       if (err instanceof Error) {
         error.value = err.message;
       } else {
@@ -57,7 +60,7 @@ export const useDiffStore = defineStore('diff', () => {
 
       if (!options.silent) current.value = undefined;
     } finally {
-      if (!options.silent) loading.value = false;
+      if (generation === loadGeneration && !options.silent) loading.value = false;
     }
   };
 

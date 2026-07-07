@@ -38,20 +38,7 @@ pub const DiffRenderModel = struct {
     pub fn deinit(self: *DiffRenderModel, allocator: std.mem.Allocator) void {
         allocator.free(self.file_id);
         self.syntax_status.deinit(allocator);
-        for (self.rows.items) |row| {
-            if (row.old_text) |text| allocator.free(text);
-            if (row.new_text) |text| allocator.free(text);
-            if (row.text) |text| allocator.free(text);
-            if (row.hunk_header) |text| allocator.free(text);
-            if (row.old_syntax_spans) |spans| {
-                for (spans) |span| allocator.free(span.scope);
-                allocator.free(spans);
-            }
-            if (row.new_syntax_spans) |spans| {
-                for (spans) |span| allocator.free(span.scope);
-                allocator.free(spans);
-            }
-        }
+        for (self.rows.items) |row| deinitRow(allocator, row);
         self.rows.deinit(allocator);
     }
 };
@@ -380,4 +367,19 @@ fn parseHunkHeader(line: []const u8) HunkStart {
 fn parseStart(value: []const u8) u32 {
     const end = std.mem.indexOfScalar(u8, value, ',') orelse value.len;
     return std.fmt.parseInt(u32, value[0..end], 10) catch 0;
+}
+
+fn deinitRow(allocator: std.mem.Allocator, row: DiffRow) void {
+    if (row.old_text) |text| allocator.free(text);
+    if (row.new_text) |text| allocator.free(text);
+    if (row.text) |text| allocator.free(text);
+    if (row.hunk_header) |text| allocator.free(text);
+    if (row.old_syntax_spans) |spans| {
+        for (spans) |span| allocator.free(span.scope);
+        allocator.free(spans);
+    }
+    if (row.new_syntax_spans) |spans| {
+        for (spans) |span| allocator.free(span.scope);
+        allocator.free(spans);
+    }
 }

@@ -201,6 +201,7 @@ const registeredDiffSurfaceIds = new Set<string>();
 
 const routeFileId = computed(() => routeParamString(route.params.fileId));
 const model = computed(() => diff.current);
+const activeFile = computed(() => repo.changedFiles.find((file) => file.id === model.value?.fileId));
 const rows = computed(() => model.value?.rows ?? []);
 const navigableDiffSides = computed<SyntaxSide[]>(() => {
   if (!model.value || rows.value.length === 0) return [];
@@ -326,7 +327,6 @@ const syntaxMessage = computed(() => {
   return `No ${syntax.language} grammar installed`;
 });
 
-const activeFile = computed(() => repo.changedFiles.find((file) => file.id === model.value?.fileId));
 const diffTargetFingerprint = () =>
   JSON.stringify({
     base: target.value.base,
@@ -805,16 +805,16 @@ const onRootPointerDown = (event: PointerEvent) => {
   }
   if (target?.closest('.diff-scrollbar')) return;
   if (isInteractiveTarget(event.target)) return;
-  const surfaceId = diffSurfaceIdForPointer(event) ?? activeDiffSurfaceId();
-  if (surfaceId) {
-    cursor.setActiveSurface(surfaceId, { activate: false });
-    const side = diffSurfaceSideFromId(surfaceId);
-    if (side) activateDiffSurface(surfaceId, side, 'default', Boolean(cursor.surface<DiffSurface>(surfaceId)));
-  }
+
+  const pointerPosition = pointerTextPosition(event);
+  const surfaceId =
+    pointerPosition && model.value ? diffSurfaceId(model.value.fileId, pointerPosition.side) : diffSurfaceIdForPointer(event);
+  if (surfaceId) cursor.setActiveSurface(surfaceId, { activate: false });
   rootRef.value?.focus({ preventScroll: true });
   diffCursor?.clearVisual();
   selectionDraft.value = undefined;
   clearNativeSelection();
+  if (pointerPosition) diffCursor?.moveCursorToLine(pointerPosition.side, pointerPosition.line, pointerPosition.column);
 };
 
 const isTextInputTarget = (target: EventTarget | null) => {
@@ -967,12 +967,22 @@ const scrollMarkersForRows = (items: DisplayRow[], side?: SyntaxSide): DiffScrol
 const markerKindsForDisplayRow = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarkerKind[] => {
   const kinds: DiffScrollMarkerKind[] = [];
   if (item.kind !== 'diff') return ['review'];
-  if (item.row.kind === 'added' || item.row.kind === 'deleted') kinds.push(item.row.kind);
+  kinds.push(...diffMarkerKinds(item.row.kind, side));
   const diagnostics = diagnosticsForMarkerRow(item, side);
   if (diagnostics.length > 0) kinds.push(diagnosticMarkerKind(diagnostics));
   const searchKind = searchMarkerKind(item, side);
   if (searchKind) kinds.push(searchKind);
   return kinds;
+};
+
+const diffMarkerKinds = (kind: string, side?: SyntaxSide): DiffScrollMarkerKind[] => {
+  if (kind === 'added' || kind === 'deleted') return [kind];
+  if (kind === 'modified') {
+    if (side === 'old') return ['deleted'];
+    if (side === 'new') return ['added'];
+    return ['deleted', 'added'];
+  }
+  return [];
 };
 
 const diagnosticsForMarkerRow = (item: DisplayRow, side?: SyntaxSide) => {
@@ -988,18 +998,13 @@ const diagnosticMarkerKind = (diagnostics: LspDiagnostic[]): DiffScrollMarkerKin
 
 const searchMarkerKind = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarkerKind | undefined => {
   if (item.kind !== 'diff') return undefined;
-  const rowIndex = rowIndexFromDisplayKey(item.key);
-  if (rowIndex === undefined) return undefined;
   const active = activeSearchMatch.value;
-  const rowMatches = searchMatchesByRow.value.get(rowIndex) ?? [];
+  const rowMatches = [item.rowIndex, item.pairedRowIndex]
+    .filter((index): index is number => index !== undefined)
+    .flatMap((rowIndex) => searchMatchesByRow.value.get(rowIndex) ?? []);
   const matches = side ? rowMatches.filter((match) => match.side === side) : rowMatches;
   if (matches.length === 0) return undefined;
   return active && matches.some((match) => sameSearchMatch(match, active)) ? 'active-search' : 'search';
-};
-
-const rowIndexFromDisplayKey = (key: string) => {
-  const value = Number(key.slice('diff:'.length));
-  return Number.isInteger(value) ? value : undefined;
 };
 
 const leftVirtualizer = useVirtualizer(
@@ -1217,7 +1222,9 @@ const scrollVirtualizerToMatch = (
   displayRows: DisplayRow[],
   match: SearchMatch,
 ) => {
-  const displayIndex = displayRows.findIndex((item) => item.kind === 'diff' && item.key === `diff:${match.rowIndex}`);
+  const displayIndex = displayRows.findIndex(
+    (item) => item.kind === 'diff' && (item.rowIndex === match.rowIndex || item.pairedRowIndex === match.rowIndex),
+  );
   if (displayIndex === -1) return;
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };

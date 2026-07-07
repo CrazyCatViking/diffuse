@@ -179,6 +179,15 @@ Use existing diff primitives before creating new ones:
 
 Do not add separate marker systems for review, diagnostics, or search. Extend `DiffScrollMarkerKind` and `buildDiffScrollMarkers` when a new scan marker belongs on the diff scrollbar.
 
+Diff rows are rendered from cheap Git rows returned by `getDiffRenderModel`. Keep the base rows readable and compute display-only replacement details in the renderer:
+
+- Use whole-token highlights only for partial line edits where the rest of the line remains readable as unchanged context.
+- Compute visible token highlights from the paired old/new line text in the renderer.
+- In split diffs, align deleted/added runs positionally and only render blank counterpart rows for the side-count difference.
+- Use old-side deleted-token color and new-side inserted-token color; avoid replaced/whitespace-specific colors until those modes are intentionally reintroduced.
+- Do not add token highlights for whole inserted or deleted rows; the row background already communicates that change.
+- Prefer existing row primitives over DOM-only drawing. Virtualized rows must be able to recreate the same visuals from `DiffRow` data and renderer-owned derived state.
+
 Single-file diff keyboard navigation is rendered through the existing code row primitives. Cursor and visual-selection state should be model-driven from diff rows, not DOM-driven, because diff rows are virtualized. Add cursor or visual styling through `CodeTextHighlight`/`CodeLineModel` so syntax, search, review, cursor, and visual-selection styling share one text-fragment pipeline.
 
 ### Folder Diff

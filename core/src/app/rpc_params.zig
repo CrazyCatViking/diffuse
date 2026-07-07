@@ -20,6 +20,7 @@ pub fn resolveGrammarRoot(allocator: std.mem.Allocator, environ_map: *const std.
 
 pub fn getDiffRenderOptions(request: json_rpc.Request) !DiffRenderOptions {
     const context = try getDiffContextText(request);
+    _ = try getDiffOptionEnum(request, "intelligence", &.{"basic"});
     return .{
         .mode = (try getDiffOptionEnum(request, "mode", &.{ "split", "inline" })) orelse "split",
         .context = context,
@@ -285,6 +286,21 @@ test "rpc params validates diff render options" {
     try std.testing.expectEqualStrings("inline", options.mode);
     try std.testing.expectEqualStrings("full", options.context);
     try std.testing.expectEqual(diff.DiffContextMode.full, options.diff_context);
+}
+
+test "rpc params validates basic diff intelligence option" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getDiffRenderModel\",\"params\":{\"options\":{\"intelligence\":\"basic\"}}}");
+    defer request.deinit();
+
+    const options = try getDiffRenderOptions(request);
+    try std.testing.expectEqual(diff.DiffContextMode.diff, options.diff_context);
+}
+
+test "rpc params rejects unsupported diff intelligence option" {
+    const request = try json_rpc.parseRequest(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getDiffRenderModel\",\"params\":{\"options\":{\"intelligence\":\"full\"}}}");
+    defer request.deinit();
+
+    try std.testing.expectError(error.InvalidParam, getDiffRenderOptions(request));
 }
 
 test "rpc params rejects invalid diff render option enum" {
