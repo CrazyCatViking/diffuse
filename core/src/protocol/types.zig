@@ -4,7 +4,7 @@ const diff = @import("../core/diff.zig");
 const lsp = @import("../core/lsp.zig");
 
 pub const app_name = "diffuse";
-pub const version = "0.1.20";
+pub const version = "0.1.21";
 
 const json_options: std.json.Stringify.Options = .{ .emit_null_optional_fields = false };
 
