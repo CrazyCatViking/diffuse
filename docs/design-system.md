@@ -181,8 +181,9 @@ Do not add separate marker systems for review, diagnostics, search, or diff anal
 
 Diff analysis is layered over cheap Git rows. Keep base diff rows readable before analysis is ready, then add visual information in place:
 
-- Use token highlights only for partial line edits where the rest of the line remains readable as unchanged context.
+- Use whole-token highlights only for partial line edits where the rest of the line remains readable as unchanged context.
 - Compute visible token highlights from the paired old/new line text in the renderer, not from semantic or move analysis groups.
+- In split diffs, align deleted/added runs positionally and only render blank counterpart rows for the side-count difference.
 - Use old-side deleted-token color and new-side inserted-token color; avoid replaced/whitespace-specific colors until those modes are intentionally reintroduced.
 - Do not add token highlights for whole inserted or deleted rows; the row background already communicates that change.
 - Keep analysis status chips lifecycle-only while semantic, move, and cross-file grouping accuracy is being refined. Status language is `pending`, `queued`, `analyzing`, `ready`, `stale`, and `failed`.

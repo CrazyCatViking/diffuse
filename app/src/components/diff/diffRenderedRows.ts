@@ -152,10 +152,8 @@ type InlineDiffHighlights = {
 
 type TextToken = {
   text: string;
-  normalized: string;
   startColumn: number;
   endColumn: number;
-  kind: 'word' | 'punctuation';
 };
 
 type TokenMatch = {
@@ -200,10 +198,8 @@ const diffTokens = (text: string): TextToken[] => {
     const startColumn = match.index ?? 0;
     tokens.push({
       text: token,
-      normalized: token.toLowerCase(),
       startColumn,
       endColumn: startColumn + token.length,
-      kind: /[\p{L}\p{N}_]/u.test(token) ? 'word' : 'punctuation',
     });
   }
   return tokens;
@@ -247,161 +243,12 @@ const appendChangedTokenGroup = (
   newHighlights: CodeTextHighlight[],
 ) => {
   if (oldTokens.length === 0 && newTokens.length === 0) return;
-
-  if (oldTokens.length === 1 && newTokens.length === 1 && oldTokens[0].kind === 'word' && newTokens[0].kind === 'word') {
-    appendWordReplacementHighlights(oldTokens[0], newTokens[0], oldHighlights, newHighlights);
-    return;
-  }
-
-  if (
-    oldTokens.length === newTokens.length &&
-    oldTokens.every((token) => token.kind === 'word') &&
-    newTokens.every((token) => token.kind === 'word')
-  ) {
-    for (let index = 0; index < oldTokens.length; index += 1) {
-      appendWordReplacementHighlights(oldTokens[index], newTokens[index], oldHighlights, newHighlights);
-    }
-    return;
-  }
-
   for (const token of oldTokens) appendTokenHighlight(oldHighlights, token, 'diff-deleted');
   for (const token of newTokens) appendTokenHighlight(newHighlights, token, 'diff-inserted');
 };
 
-const appendWordReplacementHighlights = (
-  oldToken: TextToken,
-  newToken: TextToken,
-  oldHighlights: CodeTextHighlight[],
-  newHighlights: CodeTextHighlight[],
-) => {
-  const segmentHighlights = wordSegmentHighlights(oldToken, newToken);
-  if (segmentHighlights.old.length > 0 || segmentHighlights.new.length > 0) {
-    oldHighlights.push(...segmentHighlights.old);
-    newHighlights.push(...segmentHighlights.new);
-    return;
-  }
-
-  const changedRange = changedAffixRange(oldToken.text, newToken.text);
-  if (changedRange.oldEnd > changedRange.oldStart) {
-    oldHighlights.push({
-      kind: 'diff-deleted',
-      startColumn: oldToken.startColumn + changedRange.oldStart,
-      endColumn: oldToken.startColumn + changedRange.oldEnd,
-    });
-  }
-  if (changedRange.newEnd > changedRange.newStart) {
-    newHighlights.push({
-      kind: 'diff-inserted',
-      startColumn: newToken.startColumn + changedRange.newStart,
-      endColumn: newToken.startColumn + changedRange.newEnd,
-    });
-  }
-};
-
 const appendTokenHighlight = (highlights: CodeTextHighlight[], token: TextToken, kind: CodeTextHighlight['kind']) => {
   highlights.push({ kind, startColumn: token.startColumn, endColumn: token.endColumn });
-};
-
-type WordSegment = {
-  text: string;
-  normalized: string;
-  startColumn: number;
-  endColumn: number;
-};
-
-const wordSegmentHighlights = (oldToken: TextToken, newToken: TextToken): InlineDiffHighlights => {
-  const oldSegments = wordSegments(oldToken);
-  const newSegments = wordSegments(newToken);
-  if (oldSegments.length <= 1 && newSegments.length <= 1) return emptyInlineDiffHighlights();
-
-  const matches = segmentMatches(oldSegments, newSegments);
-  if (matches.length === 0) return emptyInlineDiffHighlights();
-
-  const oldHighlights: CodeTextHighlight[] = [];
-  const newHighlights: CodeTextHighlight[] = [];
-  let oldIndex = 0;
-  let newIndex = 0;
-  for (const match of [...matches, { oldIndex: oldSegments.length, newIndex: newSegments.length }]) {
-    appendSegmentGroup(oldSegments.slice(oldIndex, match.oldIndex), oldHighlights, 'diff-deleted');
-    appendSegmentGroup(newSegments.slice(newIndex, match.newIndex), newHighlights, 'diff-inserted');
-    oldIndex = match.oldIndex + 1;
-    newIndex = match.newIndex + 1;
-  }
-
-  return { old: oldHighlights, new: newHighlights };
-};
-
-const wordSegments = (token: TextToken): WordSegment[] => {
-  const segments: WordSegment[] = [];
-  const pattern = /[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+|[0-9]+|_+/g;
-  for (const match of token.text.matchAll(pattern)) {
-    const text = match[0];
-    const startColumn = token.startColumn + (match.index ?? 0);
-    segments.push({ text, normalized: text.toLowerCase(), startColumn, endColumn: startColumn + text.length });
-  }
-  return segments.length > 0
-    ? segments
-    : [{ text: token.text, normalized: token.normalized, startColumn: token.startColumn, endColumn: token.endColumn }];
-};
-
-const segmentMatches = (oldSegments: WordSegment[], newSegments: WordSegment[]): TokenMatch[] => {
-  const width = newSegments.length + 1;
-  const table = new Array<number>((oldSegments.length + 1) * (newSegments.length + 1)).fill(0);
-  for (let oldIndex = 1; oldIndex <= oldSegments.length; oldIndex += 1) {
-    for (let newIndex = 1; newIndex <= newSegments.length; newIndex += 1) {
-      const cell = oldIndex * width + newIndex;
-      table[cell] =
-        oldSegments[oldIndex - 1].normalized === newSegments[newIndex - 1].normalized
-          ? table[(oldIndex - 1) * width + (newIndex - 1)] + 1
-          : Math.max(table[(oldIndex - 1) * width + newIndex], table[oldIndex * width + (newIndex - 1)]);
-    }
-  }
-
-  const matches: TokenMatch[] = [];
-  let oldIndex = oldSegments.length;
-  let newIndex = newSegments.length;
-  while (oldIndex > 0 && newIndex > 0) {
-    if (oldSegments[oldIndex - 1].normalized === newSegments[newIndex - 1].normalized) {
-      matches.push({ oldIndex: oldIndex - 1, newIndex: newIndex - 1 });
-      oldIndex -= 1;
-      newIndex -= 1;
-    } else if (table[(oldIndex - 1) * width + newIndex] >= table[oldIndex * width + (newIndex - 1)]) {
-      oldIndex -= 1;
-    } else {
-      newIndex -= 1;
-    }
-  }
-  return matches.reverse();
-};
-
-const appendSegmentGroup = (segments: WordSegment[], highlights: CodeTextHighlight[], kind: CodeTextHighlight['kind']) => {
-  if (segments.length === 0) return;
-  highlights.push({ kind, startColumn: segments[0].startColumn, endColumn: segments[segments.length - 1].endColumn });
-};
-
-const changedAffixRange = (oldText: string, newText: string) => {
-  const prefixLength = commonPrefixLength(oldText, newText);
-  const suffixLength = commonSuffixLength(oldText.slice(prefixLength), newText.slice(prefixLength));
-  return {
-    oldStart: prefixLength,
-    oldEnd: oldText.length - suffixLength,
-    newStart: prefixLength,
-    newEnd: newText.length - suffixLength,
-  };
-};
-
-const commonPrefixLength = (left: string, right: string) => {
-  const length = Math.min(left.length, right.length);
-  let index = 0;
-  while (index < length && left[index] === right[index]) index += 1;
-  return index;
-};
-
-const commonSuffixLength = (left: string, right: string) => {
-  const length = Math.min(left.length, right.length);
-  let offset = 0;
-  while (offset < length && left[left.length - 1 - offset] === right[right.length - 1 - offset]) offset += 1;
-  return offset;
 };
 
 const filteredInlineDiffHighlights = (

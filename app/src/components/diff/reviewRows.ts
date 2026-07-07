@@ -67,38 +67,15 @@ const pushReplacementRun = (
   reviewEntries: Map<string, InlineReviewEntry[]>,
 ) => {
   const pairCount = Math.min(addedStart - deletedStart, addedEnd - addedStart);
-  let pendingDeletedStart: number | undefined;
-  let pendingAddedStart: number | undefined;
-
-  const flushPendingUnpaired = (oldEnd: number, newEnd: number) => {
-    if (pendingDeletedStart === undefined || pendingAddedStart === undefined) return;
-    for (let oldIndex = pendingDeletedStart; oldIndex < oldEnd; oldIndex += 1) {
-      const oldRow = rows[oldIndex];
-      if (oldRow) pushDiffRow(result, oldRow, oldIndex, undefined, reviewEntries);
-    }
-    for (let newIndex = pendingAddedStart; newIndex < newEnd; newIndex += 1) {
-      const newRow = rows[newIndex];
-      if (newRow) pushDiffRow(result, newRow, newIndex, undefined, reviewEntries);
-    }
-    pendingDeletedStart = undefined;
-    pendingAddedStart = undefined;
-  };
-
   for (let offset = 0; offset < pairCount; offset += 1) {
     const oldIndex = deletedStart + offset;
     const newIndex = addedStart + offset;
     const oldRow = rows[oldIndex];
     const newRow = rows[newIndex];
-    if (oldRow && newRow && isReplacementPair(oldRow, newRow)) {
-      flushPendingUnpaired(oldIndex, newIndex);
+    if (oldRow && newRow) {
       pushDiffRow(result, pairedReplacementRow(oldRow, newRow), oldIndex, newIndex, reviewEntries);
-    } else {
-      pendingDeletedStart ??= oldIndex;
-      pendingAddedStart ??= newIndex;
     }
   }
-
-  flushPendingUnpaired(deletedStart + pairCount, addedStart + pairCount);
 
   for (let oldIndex = deletedStart + pairCount; oldIndex < addedStart; oldIndex += 1) {
     const oldRow = rows[oldIndex];
@@ -130,13 +107,6 @@ const pushDiffRow = (
   result.push(...oldEntries, ...newEntries);
 };
 
-const isReplacementPair = (oldRow: DiffRow, newRow: DiffRow) => {
-  if (oldRow.kind !== 'deleted' || newRow.kind !== 'added') return false;
-  const oldText = oldRow.oldText ?? '';
-  const newText = newRow.newText ?? '';
-  return replacementScore(oldText, newText) >= 0.58;
-};
-
 const pairedReplacementRow = (oldRow: DiffRow, newRow: DiffRow): DiffRow => ({
   kind: 'modified',
   oldLine: oldRow.oldLine,
@@ -153,63 +123,6 @@ const pairedReplacementRow = (oldRow: DiffRow, newRow: DiffRow): DiffRow => ({
   symbol: newRow.symbol ?? oldRow.symbol,
   semanticSummary: [oldRow.semanticSummary, newRow.semanticSummary].filter(Boolean).join('\n') || undefined,
 });
-
-const replacementScore = (oldText: string, newText: string) => {
-  const oldTrimmed = oldText.trim();
-  const newTrimmed = newText.trim();
-  if (!oldTrimmed || !newTrimmed) return 0;
-
-  const lengthRatio = Math.min(oldTrimmed.length, newTrimmed.length) / Math.max(oldTrimmed.length, newTrimmed.length);
-  if (lengthRatio < 0.35) return 0;
-
-  const oldTokens = semanticTokens(oldText);
-  const newTokens = semanticTokens(newText);
-  if (oldTokens.length === 0 || newTokens.length === 0) return 0;
-  const shared = lcsLength(oldTokens, newTokens);
-  const tokenSimilarity = (shared * 2) / (oldTokens.length + newTokens.length);
-  const affixSimilarity = commonAffixSimilarity(oldTrimmed, newTrimmed);
-  const score = Math.max(tokenSimilarity, affixSimilarity, (tokenSimilarity + affixSimilarity + lengthRatio) / 3);
-  if (tokenSimilarity < 0.34 && affixSimilarity < 0.28) return 0;
-  return score;
-};
-
-const semanticTokens = (text: string) => (text.match(/[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]/gu) ?? []).map((token) => token.toLowerCase());
-
-const commonAffixSimilarity = (oldText: string, newText: string) => {
-  const prefixLength = commonPrefixLength(oldText, newText);
-  const suffixLength = commonSuffixLength(oldText.slice(prefixLength), newText.slice(prefixLength));
-  return (prefixLength + suffixLength) / Math.max(oldText.length, newText.length);
-};
-
-const commonPrefixLength = (left: string, right: string) => {
-  const length = Math.min(left.length, right.length);
-  let index = 0;
-  while (index < length && left[index] === right[index]) index += 1;
-  return index;
-};
-
-const commonSuffixLength = (left: string, right: string) => {
-  const length = Math.min(left.length, right.length);
-  let offset = 0;
-  while (offset < length && left[left.length - 1 - offset] === right[right.length - 1 - offset]) offset += 1;
-  return offset;
-};
-
-const lcsLength = (left: string[], right: string[]) => {
-  if (left.length * right.length > 2048) return 0;
-  const width = right.length + 1;
-  const table = new Array<number>((left.length + 1) * (right.length + 1)).fill(0);
-  for (let oldIndex = 1; oldIndex <= left.length; oldIndex += 1) {
-    for (let newIndex = 1; newIndex <= right.length; newIndex += 1) {
-      const cell = oldIndex * width + newIndex;
-      table[cell] =
-        left[oldIndex - 1] === right[newIndex - 1]
-          ? table[(oldIndex - 1) * width + (newIndex - 1)] + 1
-          : Math.max(table[(oldIndex - 1) * width + newIndex], table[oldIndex * width + (newIndex - 1)]);
-    }
-  }
-  return table[left.length * width + right.length];
-};
 
 export const buildReviewEntriesByEndLine = (options: BuildReviewEntriesOptions): Map<string, InlineReviewEntry[]> => {
   const entries = new Map<string, InlineReviewEntry[]>();
