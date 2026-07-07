@@ -138,3 +138,14 @@ pub fn emitSearchError(runtime: *Runtime, search_id: []const u8, error_message: 
 
     try runtime.enqueue(try message.toOwnedSlice());
 }
+
+pub fn emitDiffAnalysisStatus(runtime: *Runtime, status: @import("../core/diff_analysis.zig").StatusRecord) !void {
+    var message = std.Io.Writer.Allocating.init(runtime.allocator);
+    errdefer message.deinit();
+
+    try message.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"diffAnalysis/statusChanged\",\"params\":");
+    try types.writeJson(&message.writer, status);
+    try message.writer.writeAll("}\n");
+
+    try runtime.enqueue(try message.toOwnedSlice());
+}

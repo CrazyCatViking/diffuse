@@ -22,6 +22,10 @@ export type DiffScrollMarkerKind =
   | 'diagnostic-error'
   | 'diagnostic-warning'
   | 'diagnostic-info'
+  | 'analysis-move'
+  | 'analysis-semantic'
+  | 'analysis-risk'
+  | 'analysis-noise'
   | 'search'
   | 'active-search';
 
@@ -95,6 +99,33 @@ const emit = defineEmits<{
 
   &.diagnostic-info {
     background: var(--color-info);
+  }
+
+  &.analysis-move,
+  &.analysis-semantic,
+  &.analysis-risk,
+  &.analysis-noise {
+    left: 7px;
+    width: 4px;
+    min-height: 5px;
+  }
+
+  &.analysis-move {
+    background: var(--color-ai);
+  }
+
+  &.analysis-semantic {
+    background: var(--color-review);
+  }
+
+  &.analysis-risk {
+    background: var(--color-warning);
+    box-shadow: 0 0 8px rgba(240, 184, 106, 0.36);
+  }
+
+  &.analysis-noise {
+    background: var(--color-text-subtle);
+    opacity: 0.72;
   }
 
   &.search,

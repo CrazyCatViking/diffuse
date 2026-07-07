@@ -54,6 +54,50 @@ export type DiffRenderModel = {
   annotations?: DiffAnnotations;
 };
 
+export type DiffAnalysisStatusKind = 'missing' | 'queued' | 'analyzing' | 'ready' | 'stale' | 'failed' | 'skipped' | string;
+
+export type DiffAnalysisStatus = {
+  fileId: string;
+  signature: string;
+  status: DiffAnalysisStatusKind;
+  updatedAtMs: number;
+  message?: string;
+};
+
+export type DiffAnalysisSummary = {
+  tokenChanges: number;
+  changeGroups: number;
+  movedBlocks: number;
+  semanticGroups: number;
+  crossFileLinks: number;
+  formatterOnlyGroups: number;
+  highImpactGroups: number;
+};
+
+export type DiffAnalysis = {
+  version: number;
+  fileId: string;
+  signature: string;
+  targetKey: string;
+  generatedAtMs: number;
+  summary: DiffAnalysisSummary;
+  annotations: DiffAnnotations;
+  rows: DiffAnalysisRow[];
+};
+
+export type DiffAnalysisRow = {
+  kind: DiffRow['kind'];
+  oldLine?: number;
+  newLine?: number;
+  oldDiffSpans?: DiffTokenSpan[];
+  newDiffSpans?: DiffTokenSpan[];
+  changeGroupId?: string;
+  changeRole?: string;
+  changeConfidence?: number;
+  symbol?: string;
+  semanticSummary?: string;
+};
+
 export type DiffAnnotations = {
   columnUnit: 'utf16' | string;
   linePairs: DiffLinePair[];
@@ -400,7 +444,7 @@ export type TreeSitterGrammar = {
 };
 
 export type DiffRow = {
-  kind: 'context' | 'added' | 'deleted' | 'hunk';
+  kind: 'context' | 'added' | 'deleted' | 'modified' | 'hunk';
   oldLine?: number;
   newLine?: number;
   oldText?: string;

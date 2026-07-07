@@ -1,6 +1,8 @@
 import {
   BranchInfo,
   ChangedFile,
+  DiffAnalysis,
+  DiffAnalysisStatus,
   DiffRenderModel,
   DiffRenderOptions,
   DiffTarget,
@@ -68,6 +70,36 @@ export const useClient = () => {
 
   const getDiffRenderModel = async (fileId: string, options: DiffRenderOptions, target: DiffTarget): Promise<DiffRenderModel> => {
     return window.diffuse.coreRequest('getDiffRenderModel', { fileId, options, target: plainDiffTarget(target) });
+  };
+
+  const getDiffAnalysis = async (
+    fileId: string,
+    signature: string,
+    options: Pick<DiffRenderOptions, 'context'>,
+    target: DiffTarget,
+  ): Promise<DiffAnalysis | null> => {
+    return window.diffuse.coreRequest('getDiffAnalysis', { fileId, signature, options, target: plainDiffTarget(target) });
+  };
+
+  const getDiffAnalysisStatuses = async (
+    files: Pick<ChangedFile, 'id' | 'signature'>[],
+    options: Pick<DiffRenderOptions, 'context'>,
+    target: DiffTarget,
+  ): Promise<DiffAnalysisStatus[]> => {
+    return window.diffuse.coreRequest('getDiffAnalysisStatuses', {
+      files: files.map((file) => ({ fileId: file.id, signature: file.signature })),
+      options,
+      target: plainDiffTarget(target),
+    });
+  };
+
+  const ensureDiffAnalysis = async (
+    fileId: string,
+    signature: string,
+    options: Pick<DiffRenderOptions, 'context'>,
+    target: DiffTarget,
+  ): Promise<DiffAnalysisStatus> => {
+    return window.diffuse.coreRequest('ensureDiffAnalysis', { fileId, signature, options, target: plainDiffTarget(target) });
   };
 
   const getSyntaxSpans = async (
@@ -263,6 +295,9 @@ export const useClient = () => {
     listBranches,
     listChangedFiles,
     getDiffRenderModel,
+    getDiffAnalysis,
+    getDiffAnalysisStatuses,
+    ensureDiffAnalysis,
     getSyntaxSpans,
     getLspConfigInfo,
     getLspInstallInfo,

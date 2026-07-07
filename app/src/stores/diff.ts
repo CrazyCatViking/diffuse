@@ -7,9 +7,6 @@ import { useRepoStore } from './repo';
 export const useDiffStore = defineStore('diff', () => {
   const client = useClient();
   const repo = useRepoStore();
-  const maxEnrichedCacheEntries = 40;
-  const enrichedModelCache = new Map<string, DiffRenderModel>();
-  const pendingEnrichment = new Map<string, Promise<DiffRenderModel>>();
   const current = shallowRef<DiffRenderModel>();
   const loading = ref(false);
   const error = ref<string>();
@@ -40,15 +37,6 @@ export const useDiffStore = defineStore('diff', () => {
     currentFileId.value = fileId;
     if (!options.silent) loading.value = true;
     error.value = undefined;
-    const cacheKey = diffCacheKey(fileId);
-    const cached = enrichedModelCache.get(cacheKey);
-    if (cached) {
-      current.value = markRaw(cached);
-      hasNewChanges.value = false;
-      if (!options.silent) loading.value = false;
-      return;
-    }
-
     try {
       const basic = await client.getDiffRenderModel(
         fileId,
@@ -59,10 +47,9 @@ export const useDiffStore = defineStore('diff', () => {
         },
         repo.diffTarget,
       );
-      if (generation !== loadGeneration || cacheKey !== diffCacheKey(fileId)) return;
+      if (generation !== loadGeneration) return;
       current.value = markRaw(basic);
       hasNewChanges.value = false;
-      void loadEnrichedDiff(fileId, cacheKey, generation);
     } catch (err) {
       if (generation !== loadGeneration) return;
       if (err instanceof Error) {
@@ -77,69 +64,6 @@ export const useDiffStore = defineStore('diff', () => {
     }
   };
 
-  const loadEnrichedDiff = async (fileId: string, cacheKey: string, generation: number) => {
-    try {
-      const enriched = await enrichedModelFor(fileId, cacheKey);
-      if (generation !== loadGeneration || currentFileId.value !== fileId || cacheKey !== diffCacheKey(fileId)) return;
-      current.value = markRaw(enriched);
-    } catch {
-      // Keep the basic diff usable if semantic enrichment is slow or fails.
-    }
-  };
-
-  const enrichedModelFor = async (fileId: string, cacheKey: string) => {
-    const cached = enrichedModelCache.get(cacheKey);
-    if (cached) return cached;
-
-    const pending =
-      pendingEnrichment.get(cacheKey) ??
-      client
-        .getDiffRenderModel(
-          fileId,
-          {
-            mode: viewMode.value,
-            context: contextMode.value,
-            intelligence: 'full',
-          },
-          repo.diffTarget,
-        )
-        .then((model) => {
-          rememberEnrichedModel(cacheKey, model);
-          return model;
-        })
-        .finally(() => pendingEnrichment.delete(cacheKey));
-    pendingEnrichment.set(cacheKey, pending);
-    return pending;
-  };
-
-  const rememberEnrichedModel = (cacheKey: string, model: DiffRenderModel) => {
-    enrichedModelCache.delete(cacheKey);
-    enrichedModelCache.set(cacheKey, markRaw(model));
-    while (enrichedModelCache.size > maxEnrichedCacheEntries) {
-      const oldest = enrichedModelCache.keys().next().value;
-      if (!oldest) break;
-      enrichedModelCache.delete(oldest);
-    }
-  };
-
-  const diffCacheKey = (fileId: string) => {
-    const file = repo.changedFiles.find((candidate) => candidate.id === fileId);
-    return JSON.stringify({
-      root: repo.repository?.root,
-      head: repo.repository?.head,
-      fileId,
-      signature: file?.signature,
-      mode: viewMode.value,
-      context: contextMode.value,
-      target: {
-        base: repo.diffTarget.base,
-        compare: repo.diffTarget.compare,
-        includeStaged: repo.diffTarget.includeStaged,
-        includeUnstaged: repo.diffTarget.includeUnstaged,
-      },
-    });
-  };
-
   const installMissingGrammar = async () => {
     const language = current.value?.syntax.language;
     if (!language || installingGrammar.value) return;
@@ -151,7 +75,6 @@ export const useDiffStore = defineStore('diff', () => {
     try {
       const result = await client.installTreeSitterGrammar(language);
       if (!result.installed) throw new Error(result.message ?? `Failed to install ${language} grammar`);
-      enrichedModelCache.clear();
       if (currentFileId.value) await loadDiff(currentFileId.value);
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
@@ -166,8 +89,6 @@ export const useDiffStore = defineStore('diff', () => {
     currentFileId.value = undefined;
     error.value = undefined;
     hasNewChanges.value = false;
-    enrichedModelCache.clear();
-    pendingEnrichment.clear();
   };
 
   const markNewChanges = () => {

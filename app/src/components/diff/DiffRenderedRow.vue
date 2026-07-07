@@ -80,6 +80,8 @@ const emit = defineEmits<{
 const sideLine = computed(() => (props.mode === 'old' ? props.row.oldLine : props.mode === 'new' ? props.row.newLine : undefined));
 
 const sideKind = computed(() => {
+  if (props.row.kind === 'modified' && props.mode === 'old') return 'deleted';
+  if (props.row.kind === 'modified' && props.mode === 'new') return 'added';
   if (props.mode === 'old' && props.row.kind === 'added') return 'context';
   if (props.mode === 'new' && props.row.kind === 'deleted') return 'context';
   return props.row.kind;
@@ -124,6 +126,10 @@ const emitToggleComments = (line: CodeLineModel | undefined) => {
   background: var(--color-bg-code);
 }
 
+.diff-row.modified {
+  background: var(--color-bg-code);
+}
+
 .diff-row.cursor-line,
 :global(.code-line.cursor-line) {
   box-shadow: inset 3px 0 0 var(--color-border-focus);
@@ -131,6 +137,28 @@ const emitToggleComments = (line: CodeLineModel | undefined) => {
 
 .diff-row.diff-moved {
   box-shadow: inset 3px 0 0 var(--color-info);
+}
+
+.diff-row.diff-moved-from {
+  box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.diff-row.diff-moved-to {
+  box-shadow: inset 3px 0 0 var(--color-info);
+}
+
+.diff-row.diff-analysis-semantic {
+  box-shadow: inset 2px 0 0 var(--color-review);
+}
+
+.diff-row.diff-analysis-risk {
+  box-shadow:
+    inset 2px 0 0 var(--color-warning),
+    inset 0 0 0 999px rgba(240, 184, 106, 0.035);
+}
+
+.diff-row.diff-analysis-noise {
+  opacity: 0.82;
 }
 
 .diff-row.diff-moved-from {

@@ -136,6 +136,7 @@ The server keeps shared runtime state in `core/src/app/rpc_runtime.zig`:
 - `session_lock` protects repository session access.
 - `review_lock` serializes review persistence writes and read-modify-write updates under `.diffuse/reviews`.
 - `search_lock`, `search_jobs`, and `search_group` own active core search jobs and cooperative cancellation state.
+- `diff_analysis_lock`, `diff_analysis_jobs`, and `diff_analysis_group` own background diff-analysis jobs and de-duplicate concurrent requests for the same file signature.
 - `syntax_cache` stores dynamically loaded Tree-sitter parser libraries and queries.
 - `syntax_cache_lock` protects the syntax cache.
 - `repo_watcher` watches the opened repository and emits `repository/changed` or `review/changed` notifications on Linux.
@@ -148,6 +149,7 @@ Requests can run concurrently. Responses and notifications are serialized throug
 
 - `repository_handlers.zig` owns version, repository open, branch, target-default, and changed-file RPCs.
 - `diff_handlers.zig` owns diff render model RPCs.
+- `diff_analysis_handlers.zig` owns cache-backed diff-analysis status, loading, and background job RPCs.
 - `syntax_handlers.zig` owns syntax span and Tree-sitter grammar RPCs.
 - `lsp_handlers.zig` owns language-server status, install, hover, diagnostics, and restart RPCs.
 - `review_handlers.zig` owns review persistence and agent review state RPCs.
@@ -186,6 +188,7 @@ Changed files are assembled from `git diff` for the active `DiffTarget`:
 
 - `git diff --name-status -M` for paths and status.
 - `git diff --numstat` for addition/deletion counts.
+- `git diff --binary -- <path>` hashed with SHA-256 for each changed-file `signature`.
 
 The target supports two shapes:
 
@@ -215,7 +218,17 @@ The resulting unified diff is parsed into rows:
 - `deleted` rows for old-side lines.
 - `added` rows for new-side lines.
 
-Each row carries old/new line numbers and old/new text where applicable. After parsing, the core enriches the row model with a conservative diff intelligence pass:
+Each row carries old/new line numbers and old/new text where applicable. `getDiffRenderModel` is the cheap display path used by the renderer and should be requested with `options.intelligence = "basic"` for interactive views. It returns parsed Git rows and syntax availability without running token, move, semantic, structural, or cross-file analysis.
+
+Complex diff intelligence is owned by the separate diff-analysis flow:
+
+- The renderer calls `getDiffAnalysisStatuses` for visible/current changed files.
+- The renderer calls `ensureDiffAnalysis` for files that are missing, stale, or failed and should be analyzed in the background.
+- The core de-duplicates active jobs by repository root, target key, file id, signature, and context.
+- The core emits `diffAnalysis/statusChanged` notifications for `queued`, `analyzing`, `ready`, and `failed` state changes.
+- The renderer calls `getDiffAnalysis` when a file is ready and overlays the returned analysis rows onto the already-visible cheap render model.
+
+The background analysis pass is conservative and includes:
 
 - Adjacent deleted/added blocks are paired as replacement candidates in `annotations.linePairs`.
 - Paired replacement lines receive `oldDiffSpans` and `newDiffSpans` token ranges for inserted, deleted, replaced, or whitespace-only text.
@@ -228,9 +241,9 @@ Each row carries old/new line numbers and old/new text where applicable. After p
 - `annotations.anchorRemaps` contains advisory old-line to new-line mapping hints for replacements, moves, moved-and-edited lines, renames, and cross-file moves. These hints help future review/comment remapping, but they do not mutate persisted review anchors.
 - `annotations.columnUnit` is currently `utf16`; all diff token span columns are emitted as JavaScript string indexes rather than byte offsets so renderer slicing stays correct for non-ASCII text.
 
-Git remains the correctness and fallback layer. These annotations explain relationships for review UI rendering, but they do not replace Git patch semantics or review anchors. The renderer converts token spans into inline highlights, moved rows into side accents, and available group/token metadata into native line tooltips. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
+Git remains the correctness and fallback layer. These annotations explain relationships for review UI rendering, but they do not replace Git patch semantics or review anchors. The renderer converts token spans into inline highlights, moved rows into side accents, semantic/risk/noise row accents, and analysis overview markers on the diff scrollbar. `core/src/protocol/types.zig` converts the Zig model into the camelCase JSON shape used by TypeScript in `app/src/lib/protocol.ts`.
 
-The renderer requests diff models in two phases so large files can show quickly. The first `getDiffRenderModel` call uses `options.intelligence = "basic"`, which returns parsed Git rows without semantic enrichment. A background call with `options.intelligence = "full"` computes token spans, move detection, structural symbols, semantic groups, cross-file hints, and anchor remaps, then replaces the displayed model if the user is still looking at the same file/target state. Single-file and folder views keep bounded in-memory caches of full models keyed by repository root/head, diff target, file id, file diff signature, view mode, and context mode. Cache hits render the enriched model immediately; signature or target changes naturally select a different key.
+Analysis results are persisted under the platform user cache directory, not under `.diffuse/reviews`, because they are recomputable UI acceleration data rather than review state. The cache path is namespaced by analysis version, repository root hash, target key hash, and file id hash. Each cached JSON record stores the current changed-file `signature`; signature or analysis-version mismatches are reported as stale and re-analyzed. This makes analysis survive app restarts while keeping review sessions portable and human-authored.
 
 Diff intelligence regression fixtures live under `core/src/testdata/diff-intelligence`. They cover renamed identifiers, moved blocks, moved-and-edited blocks, formatter-only changes, wrapper additions, import reorders, non-ASCII text, and larger rewrites. Core tests embed these fixtures so parsing and enrichment failures are caught by `zig build test`.
 

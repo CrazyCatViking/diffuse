@@ -36,6 +36,7 @@
       :lsp-hover-style="lspHoverStyle"
       :diagnostic-summary="diagnosticSummary"
       :review-summary="reviewSummary"
+      :analysis-summary="analysisSummary"
       :measure-folder-element="measureFolderElement"
       @scroll-ref="setFolderScrollRef"
       @scroll="onFolderScroll"
@@ -57,10 +58,12 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRe
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useRoute, useRouter } from 'vue-router';
 import type { DiffRenderModel, DiffRow, LspDiagnostic, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
+import { applyDiffAnalysis } from '../../lib/diffAnalysis';
 import { useClient } from '../../lib/useClient';
 import { filesForFolderPath, overviewRoute, routeParamString } from '../../lib/workspaceRoutes';
 import { folderDiffSurfaceId, type FolderDiffSurface, useCursorStore } from '../../stores/cursor';
 import { useDiffStore } from '../../stores/diff';
+import { useDiffAnalysisStore } from '../../stores/diffAnalysis';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { InlineReviewEntry } from './InlineReviewBox.vue';
@@ -90,6 +93,7 @@ const route = useRoute();
 const router = useRouter();
 const repo = useRepoStore();
 const diff = useDiffStore();
+const diffAnalysis = useDiffAnalysisStore();
 const review = useReviewStore();
 const cursor = useCursorStore();
 const models = shallowRef<DiffRenderModel[]>([]);
@@ -100,9 +104,6 @@ const diagnosticsByFile = shallowRef<Record<string, LspDiagnostic[]>>({});
 const draftBody = ref('');
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
-const maxEnrichedModelCacheEntries = 80;
-const enrichedModelCache = new Map<string, DiffRenderModel>();
-const pendingEnrichment = new Map<string, Promise<DiffRenderModel>>();
 let loadGeneration = 0;
 let activeFolderSurfaceId: string | undefined;
 
@@ -165,6 +166,7 @@ const {
   requireSameFile: true,
 });
 const folderVirtualItems = computed<FolderVirtualItem[]>(() => {
+  diffAnalysis.revision;
   return models.value.flatMap((model, fileIndex) => {
     const items: FolderVirtualItem[] = [{ kind: 'file', key: `file:${model.fileId}`, model, fileIndex }];
     if (model.rows.length === 0) items.push({ kind: 'empty', key: `empty:${model.fileId}`, fileId: model.fileId, fileIndex });
@@ -261,10 +263,16 @@ const markerKindsForFolderItem = (item: FolderVirtualItem): DiffScrollMarkerKind
 
   const kinds: DiffScrollMarkerKind[] = [];
   const row = displayDiffRow(item.item);
-  if (row?.kind === 'added' || row?.kind === 'deleted') kinds.push(row.kind);
+  if (row) kinds.push(...diffMarkerKinds(row.kind));
   const diagnostics = item.fileId && row?.newLine ? diagnosticsForLine(item.fileId, row.newLine) : [];
   if (diagnostics.length > 0) kinds.push(diagnosticMarkerKind(diagnostics));
   return kinds;
+};
+
+const diffMarkerKinds = (kind: string): DiffScrollMarkerKind[] => {
+  if (kind === 'added' || kind === 'deleted') return [kind];
+  if (kind === 'modified') return ['deleted', 'added'];
+  return [];
 };
 
 const diagnosticMarkerKind = (diagnostics: LspDiagnostic[]): DiffScrollMarkerKind => {
@@ -305,7 +313,6 @@ const buildFolderRenderedRows = (virtualRows: VirtualRow[]): FolderRenderedRow[]
       commentsExpandedForLine: (side, line) => expandedCommentStarts.value.has(fileCommentStartKey(fileId, side, line)),
       reviewHighlightsForLine: (side, line, textLength) => reviewHighlightsForLine(fileId, side, line, textLength),
       diagnosticsForLine: (_side, line) => diagnosticsForLine(fileId, line),
-      changeGroupForId: (id) => model.annotations?.changeGroups.find((group) => group.id === id),
       renderTarget: viewMode.value === 'split' ? 'split' : 'inline',
     });
     const reviewRow = displayReviewRow(item.item);
@@ -355,6 +362,16 @@ const reviewSummary = (fileId: string) => {
   };
 };
 
+const analysisSummary = (fileId: string) => {
+  const file = files.value.find((candidate) => candidate.id === fileId);
+  const status = diffAnalysis.statusForFile(fileId);
+  const analysis = diffAnalysis.analysisForFile(fileId, file?.signature);
+  if (status?.status === 'queued' || status?.status === 'analyzing') return { label: 'Analyzing', className: 'running' };
+  if (status?.status === 'failed') return { label: 'Analysis failed', className: 'failed' };
+  if (!analysis) return undefined;
+  return { label: 'Analyzed', className: 'ready' };
+};
+
 const emptyModel = (): DiffRenderModel => ({
   fileId: '',
   mode: viewMode.value,
@@ -389,21 +406,16 @@ const loadFolderDiff = async () => {
   try {
     const loaded: DiffRenderModel[] = [];
     for (const file of files.value) {
-      const cacheKey = folderDiffCacheKey(file.id, file.signature);
-      const cached = enrichedModelCache.get(cacheKey);
-      const model =
-        cached ??
-        (await client.getDiffRenderModel(
-          file.id,
-          { mode: viewMode.value, context: contextMode.value, intelligence: 'basic' },
-          target.value,
-        ));
+      const model = await client.getDiffRenderModel(
+        file.id,
+        { mode: viewMode.value, context: contextMode.value, intelligence: 'basic' },
+        target.value,
+      );
       if (generation !== loadGeneration) return;
       loaded.push(markRaw(model));
       models.value = [...loaded];
       void loadSyntaxForModel(model, generation);
       void loadDiagnosticsForModel(model, generation);
-      if (!cached) void loadEnrichedFolderModel(file.id, file.signature, generation);
     }
   } catch (err) {
     if (generation === loadGeneration) error.value = err instanceof Error ? err.message : JSON.stringify(err);
@@ -411,67 +423,6 @@ const loadFolderDiff = async () => {
     if (generation === loadGeneration) loading.value = false;
   }
 };
-
-const loadEnrichedFolderModel = async (fileId: string, signature: string, generation: number) => {
-  const cacheKey = folderDiffCacheKey(fileId, signature);
-  try {
-    const enriched = await enrichedFolderModel(fileId, cacheKey);
-    if (generation !== loadGeneration || cacheKey !== folderDiffCacheKey(fileId, signature)) return;
-
-    const index = models.value.findIndex((model) => model.fileId === fileId);
-    if (index === -1) return;
-    const next = [...models.value];
-    next[index] = markRaw(enriched);
-    models.value = next;
-    void loadSyntaxForModel(enriched, generation);
-    void loadDiagnosticsForModel(enriched, generation);
-  } catch {
-    // Basic folder diffs stay usable when semantic enrichment fails.
-  }
-};
-
-const enrichedFolderModel = async (fileId: string, cacheKey: string) => {
-  const cached = enrichedModelCache.get(cacheKey);
-  if (cached) return cached;
-
-  const pending =
-    pendingEnrichment.get(cacheKey) ??
-    client
-      .getDiffRenderModel(fileId, { mode: viewMode.value, context: contextMode.value, intelligence: 'full' }, target.value)
-      .then((model) => {
-        rememberEnrichedModel(cacheKey, model);
-        return model;
-      })
-      .finally(() => pendingEnrichment.delete(cacheKey));
-  pendingEnrichment.set(cacheKey, pending);
-  return pending;
-};
-
-const rememberEnrichedModel = (cacheKey: string, model: DiffRenderModel) => {
-  enrichedModelCache.delete(cacheKey);
-  enrichedModelCache.set(cacheKey, markRaw(model));
-  while (enrichedModelCache.size > maxEnrichedModelCacheEntries) {
-    const oldest = enrichedModelCache.keys().next().value;
-    if (!oldest) break;
-    enrichedModelCache.delete(oldest);
-  }
-};
-
-const folderDiffCacheKey = (fileId: string, signature?: string) =>
-  JSON.stringify({
-    root: repo.repository?.root,
-    head: repo.repository?.head,
-    fileId,
-    signature,
-    mode: viewMode.value,
-    context: contextMode.value,
-    target: {
-      base: target.value.base,
-      compare: target.value.compare,
-      includeStaged: target.value.includeStaged,
-      includeUnstaged: target.value.includeUnstaged,
-    },
-  });
 
 const loadDiagnosticsForModel = async (model: DiffRenderModel, generation: number) => {
   if (!supportsLspFile(model.fileId)) return;
@@ -538,8 +489,11 @@ const syntaxForInlineRow = (fileId: string, row: DiffRow) => {
 const syntaxKey = (fileId: string, side: SyntaxSide, line: number) => `${fileId}:${side}:${line}`;
 
 const displayRowsForModel = (model: DiffRenderModel): DisplayRow[] => {
+  const file = files.value.find((candidate) => candidate.id === model.fileId);
+  const analysis = diffAnalysis.analysisForFile(model.fileId, file?.signature);
+  const rows = applyDiffAnalysis(model.rows, analysis);
   return buildReviewDisplayRows(
-    model.rows,
+    rows,
     buildReviewEntriesByEndLine({
       fileId: model.fileId,
       threads: fileThreads(model.fileId),
@@ -703,9 +657,30 @@ const {
 });
 
 watch(
-  () => [folderPath.value, files.value.map((file) => file.id).join('\n'), contextMode.value, JSON.stringify(target.value)],
+  () => [
+    folderPath.value,
+    files.value.map((file) => `${file.id}:${file.signature}`).join('\n'),
+    contextMode.value,
+    JSON.stringify(target.value),
+  ],
   () => {
     void loadFolderDiff();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [
+    folderPath.value,
+    files.value.map((file) => `${file.id}:${file.signature}`).join('\n'),
+    contextMode.value,
+    JSON.stringify(target.value),
+  ],
+  () => {
+    const folderFiles = files.value;
+    void diffAnalysis.refreshStatuses(folderFiles, contextMode.value).then(() => {
+      diffAnalysis.ensureFiles(folderFiles, contextMode.value);
+    });
   },
   { immediate: true },
 );

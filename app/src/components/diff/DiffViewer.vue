@@ -13,6 +13,10 @@
 
         <span v-if="model" class="row-count">{{ rows.length }} rows</span>
 
+        <span v-if="analysisStatusMessage" class="analysis-status" :class="analysisStatusClass" :title="analysisStatusTitle">
+          {{ analysisStatusMessage }}
+        </span>
+
         <span v-if="hasNewChanges" class="update-status">
           New changes available
 
@@ -97,6 +101,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } 
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useRoute } from 'vue-router';
 import { useClient } from '../../lib/useClient';
+import { applyDiffAnalysis } from '../../lib/diffAnalysis';
 import type { DiffContextMode, LspDiagnostic, LspStatus, ReviewAnchor, SyntaxSide, SyntaxSpan } from '../../lib/protocol';
 import { routeParamString } from '../../lib/workspaceRoutes';
 import {
@@ -110,6 +115,7 @@ import {
   useCursorStore,
 } from '../../stores/cursor';
 import { useDiffStore } from '../../stores/diff';
+import { useDiffAnalysisStore } from '../../stores/diffAnalysis';
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import type { ReviewTextHighlight, SearchTextHighlight } from './HighlightedCode.vue';
@@ -159,6 +165,7 @@ const inlineRef = ref<HTMLElement | null>(null);
 const route = useRoute();
 const client = useClient();
 const diff = useDiffStore();
+const diffAnalysis = useDiffAnalysisStore();
 const repo = useRepoStore();
 const review = useReviewStore();
 const cursor = useCursorStore();
@@ -201,8 +208,9 @@ const registeredDiffSurfaceIds = new Set<string>();
 
 const routeFileId = computed(() => routeParamString(route.params.fileId));
 const model = computed(() => diff.current);
-const rows = computed(() => model.value?.rows ?? []);
-const changeGroupsById = computed(() => new Map((model.value?.annotations?.changeGroups ?? []).map((group) => [group.id, group])));
+const activeFile = computed(() => repo.changedFiles.find((file) => file.id === model.value?.fileId));
+const activeAnalysis = computed(() => diffAnalysis.analysisForFile(model.value?.fileId, activeFile.value?.signature));
+const rows = computed(() => applyDiffAnalysis(model.value?.rows ?? [], activeAnalysis.value));
 const navigableDiffSides = computed<SyntaxSide[]>(() => {
   if (!model.value || rows.value.length === 0) return [];
   const sides: SyntaxSide[] = [];
@@ -327,7 +335,6 @@ const syntaxMessage = computed(() => {
   return `No ${syntax.language} grammar installed`;
 });
 
-const activeFile = computed(() => repo.changedFiles.find((file) => file.id === model.value?.fileId));
 const diffTargetFingerprint = () =>
   JSON.stringify({
     base: target.value.base,
@@ -528,6 +535,33 @@ const lspDiagnosticsClass = computed(() => ({
   loading: lspDiagnosticsLoading.value,
 }));
 
+const analysisStatus = computed(() => (activeFile.value ? diffAnalysis.statusForFile(activeFile.value.id) : undefined));
+const analysisStatusMessage = computed(() => {
+  if (!model.value || !activeFile.value) return undefined;
+  const status = analysisStatus.value?.status ?? 'missing';
+  if (status === 'ready') {
+    return 'Analysis ready';
+  }
+  if (status === 'queued') return 'Analysis queued';
+  if (status === 'analyzing') return 'Analyzing changes';
+  if (status === 'stale') return 'Analysis stale';
+  if (status === 'failed') return 'Analysis failed';
+  return 'Analysis pending';
+});
+const analysisStatusClass = computed(() => ({
+  ready: analysisStatus.value?.status === 'ready',
+  running: analysisStatus.value?.status === 'queued' || analysisStatus.value?.status === 'analyzing',
+  stale: analysisStatus.value?.status === 'stale' || analysisStatus.value?.status === 'missing',
+  failed: analysisStatus.value?.status === 'failed',
+}));
+const analysisStatusTitle = computed(() => {
+  const status = analysisStatus.value;
+  if (!status) return 'Complex diff analysis has not started yet';
+  return [status.status, status.message, activeAnalysis.value ? `${activeAnalysis.value.summary.changeGroups} change groups` : undefined]
+    .filter(Boolean)
+    .join('\n');
+});
+
 const loadLspStatus = async () => {
   const currentModel = model.value;
   const generation = ++lspStatusGeneration;
@@ -695,7 +729,6 @@ const buildRenderedRows = (virtualRows: VirtualRow[], displayRows: DisplayRow[],
       cursorStateForLine: (side, line, textLength) =>
         diffSurfaceActive ? (diffCursor?.lineStateForLine(side, line, textLength) ?? {}) : {},
       diagnosticsForLine,
-      changeGroupForId: (id) => changeGroupsById.value.get(id),
       renderTarget,
     });
     return {
@@ -927,6 +960,18 @@ watch(
   },
 );
 
+watch(
+  [() => activeFile.value?.id, () => activeFile.value?.signature, contextMode, () => JSON.stringify(target.value)],
+  () => {
+    const file = activeFile.value;
+    if (!file) return;
+    void diffAnalysis.refreshStatuses([file], contextMode.value).then(() => {
+      diffAnalysis.ensureFiles([file], contextMode.value);
+    });
+  },
+  { immediate: true },
+);
+
 const {
   hover: lspHover,
   hoverStyle: lspHoverStyle,
@@ -969,12 +1014,22 @@ const scrollMarkersForRows = (items: DisplayRow[], side?: SyntaxSide): DiffScrol
 const markerKindsForDisplayRow = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarkerKind[] => {
   const kinds: DiffScrollMarkerKind[] = [];
   if (item.kind !== 'diff') return ['review'];
-  if (item.row.kind === 'added' || item.row.kind === 'deleted') kinds.push(item.row.kind);
+  kinds.push(...diffMarkerKinds(item.row.kind, side));
   const diagnostics = diagnosticsForMarkerRow(item, side);
   if (diagnostics.length > 0) kinds.push(diagnosticMarkerKind(diagnostics));
   const searchKind = searchMarkerKind(item, side);
   if (searchKind) kinds.push(searchKind);
   return kinds;
+};
+
+const diffMarkerKinds = (kind: string, side?: SyntaxSide): DiffScrollMarkerKind[] => {
+  if (kind === 'added' || kind === 'deleted') return [kind];
+  if (kind === 'modified') {
+    if (side === 'old') return ['deleted'];
+    if (side === 'new') return ['added'];
+    return ['deleted', 'added'];
+  }
+  return [];
 };
 
 const diagnosticsForMarkerRow = (item: DisplayRow, side?: SyntaxSide) => {
@@ -990,18 +1045,13 @@ const diagnosticMarkerKind = (diagnostics: LspDiagnostic[]): DiffScrollMarkerKin
 
 const searchMarkerKind = (item: DisplayRow, side?: SyntaxSide): DiffScrollMarkerKind | undefined => {
   if (item.kind !== 'diff') return undefined;
-  const rowIndex = rowIndexFromDisplayKey(item.key);
-  if (rowIndex === undefined) return undefined;
   const active = activeSearchMatch.value;
-  const rowMatches = searchMatchesByRow.value.get(rowIndex) ?? [];
+  const rowMatches = [item.rowIndex, item.pairedRowIndex]
+    .filter((index): index is number => index !== undefined)
+    .flatMap((rowIndex) => searchMatchesByRow.value.get(rowIndex) ?? []);
   const matches = side ? rowMatches.filter((match) => match.side === side) : rowMatches;
   if (matches.length === 0) return undefined;
   return active && matches.some((match) => sameSearchMatch(match, active)) ? 'active-search' : 'search';
-};
-
-const rowIndexFromDisplayKey = (key: string) => {
-  const value = Number(key.slice('diff:'.length));
-  return Number.isInteger(value) ? value : undefined;
 };
 
 const leftVirtualizer = useVirtualizer(
@@ -1219,7 +1269,9 @@ const scrollVirtualizerToMatch = (
   displayRows: DisplayRow[],
   match: SearchMatch,
 ) => {
-  const displayIndex = displayRows.findIndex((item) => item.kind === 'diff' && item.key === `diff:${match.rowIndex}`);
+  const displayIndex = displayRows.findIndex(
+    (item) => item.kind === 'diff' && (item.rowIndex === match.rowIndex || item.pairedRowIndex === match.rowIndex),
+  );
   if (displayIndex === -1) return;
   virtualizer.scrollToIndex(displayIndex, { align: 'center' });
 };
@@ -2416,6 +2468,7 @@ watch(
 }
 
 .syntax-status,
+.analysis-status,
 .lsp-status,
 .lsp-diagnostics,
 .update-status {
@@ -2434,6 +2487,34 @@ watch(
     background: currentColor;
     border-radius: var(--radius-pill);
     content: '';
+  }
+}
+
+.analysis-status {
+  color: var(--color-text-muted);
+  background: rgba(143, 151, 166, 0.1);
+  border-color: rgba(143, 151, 166, 0.18);
+
+  &.ready {
+    color: var(--color-ai);
+    background: var(--color-ai-muted);
+    border-color: rgba(143, 179, 255, 0.25);
+  }
+
+  &.running {
+    color: var(--color-info);
+    background: var(--color-info-muted);
+    border-color: rgba(77, 166, 255, 0.25);
+  }
+
+  &.stale {
+    color: var(--color-text-subtle);
+  }
+
+  &.failed {
+    color: var(--color-danger);
+    background: var(--color-danger-muted);
+    border-color: rgba(255, 107, 107, 0.25);
   }
 }
 

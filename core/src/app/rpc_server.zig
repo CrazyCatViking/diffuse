@@ -54,6 +54,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.pro
 
     try request_group.await(io);
     try runtime.cancelAndAwaitSearchJobs();
+    try runtime.awaitDiffAnalysisJobs();
     runtime.outbound.close(io);
     try writer_group.await(io);
 }
