@@ -37,6 +37,16 @@ uninstall:
     ./scripts/install.ps1 uninstall
 
 [unix]
+apparmor:
+    ./scripts/apparmor.sh install \
+      "$HOME/.local/share/diffuse/app/node_modules/.pnpm/electron@*/node_modules/electron/dist/electron" \
+      "$(pwd)/app/node_modules/.pnpm/electron@*/node_modules/electron/dist/electron"
+
+[unix]
+apparmor-status:
+    ./scripts/apparmor.sh status
+
+[unix]
 install-completions:
     ./scripts/install.sh completions
 

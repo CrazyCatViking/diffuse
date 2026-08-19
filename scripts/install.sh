@@ -27,17 +27,27 @@ install_diffuse() {
   ensure_path
   install_desktop_file
   install_completions
+  install_apparmor_profile
   echo "Installed Diffuse to $install_root"
   echo "Command: $bin_path"
 }
 
 uninstall_diffuse() {
+  "$root/scripts/apparmor.sh" uninstall
   rm -rf "$install_root" "$bin_path"
   rm -f "$HOME/.local/share/applications/diffuse.desktop"
   rm -f "$HOME/.local/share/bash-completion/completions/diffuse"
   rm -f "$HOME/.zfunc/_diffuse"
   rm -f "$HOME/.config/fish/completions/diffuse.fish"
   echo "Uninstalled Diffuse"
+}
+
+install_apparmor_profile() {
+  [[ "$(uname -s)" == "Linux" ]] || return 0
+  electron_glob="app/node_modules/.pnpm/electron@*/node_modules/electron/dist/electron"
+  "$root/scripts/apparmor.sh" install \
+    "$install_root/$electron_glob" \
+    "$root/$electron_glob"
 }
 
 install_completions() {

@@ -120,6 +120,53 @@ EOF
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
   fi
+
+  # Ubuntu 24.04+ blocks unconfined binaries from creating unprivileged user
+  # namespaces, which Electron needs for its sandbox. Install an AppArmor
+  # profile granting just that permission. See scripts/apparmor.sh.
+  apparmor_profile="/etc/apparmor.d/diffuse"
+  if [ -d /etc/apparmor.d ] &&
+     command -v apparmor_parser >/dev/null 2>&1 &&
+     [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+    staged="${XDG_CACHE_HOME:-$HOME/.cache}/diffuse/apparmor-diffuse"
+    mkdir -p "$(dirname "$staged")"
+    cat > "$staged" <<PROFILE
+# Managed by Diffuse. Regenerated on install.
+#
+# Grants only the userns permission needed for Electron's namespace sandbox.
+# The binary stays otherwise unconfined, matching /etc/apparmor.d/chrome.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile diffuse "$app" flags=(unconfined) {
+  userns,
+  @{exec_path} mr,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/diffuse>
+}
+PROFILE
+    if [ "$(id -u)" = "0" ]; then
+      install -m 644 "$staged" "$apparmor_profile"
+      apparmor_parser -r "$apparmor_profile"
+      echo "Installed AppArmor profile at $apparmor_profile"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sudo install -m 644 "$staged" "$apparmor_profile"
+      sudo apparmor_parser -r "$apparmor_profile"
+      echo "Installed AppArmor profile at $apparmor_profile"
+    elif [ -r "$apparmor_profile" ] && cmp -s "$staged" "$apparmor_profile"; then
+      :
+    else
+      echo ""
+      echo "Diffuse needs an AppArmor profile to run its Electron sandbox on this system."
+      echo "Root is required once. Run:"
+      echo ""
+      echo "  sudo install -m 644 \"$staged\" $apparmor_profile && sudo apparmor_parser -r $apparmor_profile"
+      echo ""
+      echo "Until then Diffuse will fail to start with a chrome-sandbox error."
+    fi
+  fi
 else
   apps_dir="${DIFFUSE_APPLICATIONS_DIR:-$HOME/Applications}"
   mkdir -p "$apps_dir"
