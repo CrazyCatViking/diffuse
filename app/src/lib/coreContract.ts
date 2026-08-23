@@ -82,10 +82,10 @@ export const coreMethodNames = [
 export type CoreMethod = (typeof coreMethodNames)[number];
 
 export type CoreMethods = {
-  getVersion: { params: Record<string, never>; result: VersionInfo };
+  getVersion: { params: undefined; result: VersionInfo };
   openRepository: { params: { path: string }; result: OpenRepositoryResult };
-  getDiffTargetDefaults: { params: Record<string, never>; result: DiffTargetDefaults };
-  listBranches: { params: Record<string, never>; result: BranchInfo[] };
+  getDiffTargetDefaults: { params: undefined; result: DiffTargetDefaults };
+  listBranches: { params: undefined; result: BranchInfo[] };
   listChangedFiles: { params: { target: DiffTarget }; result: ChangedFile[] };
   getDiffRenderModel: { params: { fileId: string; options: DiffRenderOptions; target: DiffTarget }; result: DiffRenderModel };
   getSyntaxSpans: {
@@ -99,17 +99,17 @@ export type CoreMethods = {
     };
     result: SyntaxLineSpans[];
   };
-  getLspConfigInfo: { params: Record<string, never>; result: LspConfigInfo };
+  getLspConfigInfo: { params: undefined; result: LspConfigInfo };
   getLspInstallInfo: { params: { serverId: string; command: string }; result: LspInstallInfo };
   installLspServer: { params: { serverId: string; command: string }; result: InstallLspServerResult };
   restartLspServer: { params: { serverId: string }; result: RestartLspServerResult };
   getLspStatus: { params: { fileId: string; side: SyntaxSide; target: DiffTarget }; result: LspStatus };
   getLspHover: { params: { fileId: string; side: SyntaxSide; line: number; column: number; target: DiffTarget }; result: LspHover };
   getLspDiagnostics: { params: { fileId: string; side: SyntaxSide; target: DiffTarget }; result: LspDiagnostics };
-  getReviewConfig: { params: Record<string, never>; result: ReviewConfig };
+  getReviewConfig: { params: undefined; result: ReviewConfig };
   saveReviewConfig: { params: { config: ReviewConfig }; result: ReviewConfig };
-  getActiveReviewSession: { params: Record<string, never>; result: ReviewSession | null };
-  listReviewSessions: { params: Record<string, never>; result: ReviewSession[] };
+  getActiveReviewSession: { params: undefined; result: ReviewSession | null };
+  listReviewSessions: { params: undefined; result: ReviewSession[] };
   createReviewSession: { params: { session: ReviewSession }; result: ReviewSession };
   getReviewProgress: { params: { sessionId: string }; result: ReviewProgress | null };
   saveReviewProgress: { params: { sessionId: string; progress: ReviewProgress }; result: ReviewProgress };
@@ -130,7 +130,7 @@ export type CoreMethods = {
   addReviewCommentPayload: { params: { sessionId: string; runId: string; comment: unknown }; result: ReviewThread };
   addReviewComment: { params: { sessionId: string; comment: ReviewThread }; result: ReviewThread };
   saveReviewThread: { params: { sessionId: string; thread: ReviewThread }; result: ReviewThread };
-  listTreeSitterGrammars: { params: Record<string, never>; result: TreeSitterGrammar[] };
+  listTreeSitterGrammars: { params: undefined; result: TreeSitterGrammar[] };
   syncTreeSitterRegistry: { params: { gitUrl?: string }; result: SyncTreeSitterRegistryResult };
   installTreeSitterGrammar: { params: { language: string }; result: InstallTreeSitterGrammarResult };
   uninstallTreeSitterGrammar: { params: { language: string }; result: UninstallTreeSitterGrammarResult };
@@ -141,66 +141,142 @@ export type CoreMethods = {
   cancelSearch: { params: { searchId: string }; result: { cancelled: boolean } };
 };
 
-export type CoreRequest = <M extends CoreMethod>(method: M, params?: CoreMethods[M]['params']) => Promise<CoreMethods[M]['result']>;
+type RequiredKeys<T> = {
+  [K in keyof T]-?: object extends Pick<T, K> ? never : K;
+}[keyof T];
 
-export type RepositoryChangedEvent = {
-  method: 'repository/changed';
-  params: { root: string; paths: string[] };
+type CoreRequestArgs<P> = [P] extends [undefined] ? [] : RequiredKeys<P> extends never ? [params?: P] : [params: P];
+
+export type CoreRequest = <M extends CoreMethod>(
+  method: M,
+  ...args: CoreRequestArgs<CoreMethods[M]['params']>
+) => Promise<CoreMethods[M]['result']>;
+
+export const coreEventNames = [
+  'repository/changed',
+  'review/changed',
+  'treeSitter/installProgress',
+  'lsp/installProgress',
+  'search/started',
+  'search/results',
+  'search/progress',
+  'search/done',
+  'search/cancelled',
+  'search/error',
+] as const;
+
+export type CoreEventMap = {
+  'repository/changed': { root: string; paths: string[] };
+  'review/changed': { root: string; paths?: string[]; sessionId?: string; change?: string };
+  'treeSitter/installProgress': { language: string; step: string };
+  'lsp/installProgress': { serverId: string; step: string };
+  'search/started': { searchId: string };
+  'search/results': { searchId: string; results: SearchResult[] };
+  'search/progress': { searchId: string; scannedFiles: number; totalFiles: number; emittedResults: number };
+  'search/done': { searchId: string; totalResults: number; scannedFiles: number };
+  'search/cancelled': { searchId: string; scannedFiles: number; emittedResults: number };
+  'search/error': { searchId: string; message: string };
 };
 
-export type ReviewChangedEvent = {
-  method: 'review/changed';
-  params: { root: string; paths?: string[]; sessionId?: string; change?: string };
-};
+export type CoreEventName = (typeof coreEventNames)[number];
 
-export type TreeSitterInstallProgressEvent = {
-  method: 'treeSitter/installProgress';
-  params: { language: string; step: string };
-};
+export type CoreEvent = {
+  [K in CoreEventName]: { jsonrpc?: '2.0'; method: K; params: CoreEventMap[K] };
+}[CoreEventName];
 
-export type LspInstallProgressEvent = {
-  method: 'lsp/installProgress';
-  params: { serverId: string; step: string };
-};
+const coreEventNameSet = new Set<string>(coreEventNames);
 
-export type SearchStartedEvent = {
-  method: 'search/started';
-  params: { searchId: string };
-};
+export function isCoreEvent(value: unknown): value is CoreEvent {
+  if (!isRecord(value) || (value.jsonrpc !== undefined && value.jsonrpc !== '2.0')) return false;
+  if (typeof value.method !== 'string' || !coreEventNameSet.has(value.method)) return false;
 
-export type SearchResultsEvent = {
-  method: 'search/results';
-  params: { searchId: string; results: SearchResult[] };
-};
+  switch (value.method as CoreEventName) {
+    case 'repository/changed':
+      return isRootAndPaths(value.params, true);
+    case 'review/changed':
+      return isReviewChangedParams(value.params);
+    case 'treeSitter/installProgress':
+      return hasStrings(value.params, 'language', 'step');
+    case 'lsp/installProgress':
+      return hasStrings(value.params, 'serverId', 'step');
+    case 'search/started':
+      return hasStrings(value.params, 'searchId');
+    case 'search/results':
+      return isSearchResultsParams(value.params);
+    case 'search/progress':
+      return hasSearchIdAndNumbers(value.params, 'scannedFiles', 'totalFiles', 'emittedResults');
+    case 'search/done':
+      return hasSearchIdAndNumbers(value.params, 'totalResults', 'scannedFiles');
+    case 'search/cancelled':
+      return hasSearchIdAndNumbers(value.params, 'scannedFiles', 'emittedResults');
+    case 'search/error':
+      return hasStrings(value.params, 'searchId', 'message');
+  }
+}
 
-export type SearchProgressEvent = {
-  method: 'search/progress';
-  params: { searchId: string; scannedFiles: number; totalFiles: number; emittedResults: number };
-};
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
-export type SearchDoneEvent = {
-  method: 'search/done';
-  params: { searchId: string; totalResults: number; scannedFiles: number };
-};
+function hasStrings(value: unknown, ...keys: string[]): value is Record<string, string> {
+  return isRecord(value) && keys.every((key) => typeof value[key] === 'string');
+}
 
-export type SearchCancelledEvent = {
-  method: 'search/cancelled';
-  params: { searchId: string; scannedFiles: number; emittedResults: number };
-};
+function hasSearchIdAndNumbers(value: unknown, ...keys: string[]): boolean {
+  return hasStrings(value, 'searchId') && keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]));
+}
 
-export type SearchErrorEvent = {
-  method: 'search/error';
-  params: { searchId: string; message: string };
-};
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
 
-export type CoreEvent =
-  | RepositoryChangedEvent
-  | ReviewChangedEvent
-  | TreeSitterInstallProgressEvent
-  | LspInstallProgressEvent
-  | SearchStartedEvent
-  | SearchResultsEvent
-  | SearchProgressEvent
-  | SearchDoneEvent
-  | SearchCancelledEvent
-  | SearchErrorEvent;
+function isRootAndPaths(value: unknown, pathsRequired: boolean): boolean {
+  if (!isRecord(value) || typeof value.root !== 'string') return false;
+  return pathsRequired ? isStringArray(value.paths) : value.paths === undefined || isStringArray(value.paths);
+}
+
+function isReviewChangedParams(value: unknown): boolean {
+  if (!isRootAndPaths(value, false) || !isRecord(value)) return false;
+  return (
+    (value.sessionId === undefined || typeof value.sessionId === 'string') &&
+    (value.change === undefined || typeof value.change === 'string')
+  );
+}
+
+function isSearchResultsParams(value: unknown): boolean {
+  return isRecord(value) && typeof value.searchId === 'string' && Array.isArray(value.results) && value.results.every(isSearchResult);
+}
+
+function isSearchResult(value: unknown): value is SearchResult {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string' || typeof value.title !== 'string' || typeof value.rank !== 'number' || !Array.isArray(value.matches)) {
+    return false;
+  }
+  if (!['file', 'comment', 'content', 'symbol'].includes(String(value.kind))) return false;
+  if (value.kind === 'file') return typeof value.fileId === 'string' && typeof value.path === 'string' && isRecord(value.file);
+  if (value.kind === 'comment') {
+    return (
+      typeof value.fileId === 'string' &&
+      typeof value.path === 'string' &&
+      typeof value.threadId === 'string' &&
+      typeof value.body === 'string'
+    );
+  }
+  if (value.kind === 'content') {
+    return (
+      typeof value.fileId === 'string' &&
+      typeof value.path === 'string' &&
+      typeof value.line === 'number' &&
+      (value.side === 'old' || value.side === 'new') &&
+      typeof value.preview === 'string'
+    );
+  }
+  return (
+    typeof value.fileId === 'string' &&
+    typeof value.path === 'string' &&
+    typeof value.line === 'number' &&
+    (value.side === 'old' || value.side === 'new') &&
+    typeof value.symbolName === 'string' &&
+    typeof value.symbolKind === 'string'
+  );
+}

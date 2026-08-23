@@ -163,6 +163,10 @@ Use `TreeList.vue` for shared hierarchy behavior: indentation, collapse state, a
 
 ## Feature UI Patterns
 
+### Workspace Workbench (Planned)
+
+The target Agent Workbench uses one primary desktop window with a compact workspace rail, a global overview, and one rendered workspace at a time. Workspace identity, switching, attention priority, acknowledgement, keyboard behavior, accessibility, and narrow-layout requirements are specified in [`agent-workbench-design.md`](agent-workbench-design.md). Do not implement one `BrowserWindow` per workspace or let merely selecting a workspace clear its pending attention.
+
 ### Diff Viewer
 
 The diff viewer is optimized for scan speed.

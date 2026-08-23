@@ -50,6 +50,10 @@ jobs:
         working-directory: core
         run: zig build -Doptimize=ReleaseSafe
 
+      - name: Test core
+        working-directory: core
+        run: zig build test
+
       - name: Install app dependencies
         working-directory: app
         run: pnpm install --frozen-lockfile

@@ -252,6 +252,19 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
+Run core, app unit, and deterministic RPC integration tests:
+
+```sh
+cd core
+zig build test
+zig build
+
+cd ../app
+pnpm install --frozen-lockfile
+pnpm test
+pnpm test:integration
+```
+
 The Electron app looks for the core binary in `core/zig-out/bin/diffuse`. You can point it at a custom binary with:
 
 ```sh

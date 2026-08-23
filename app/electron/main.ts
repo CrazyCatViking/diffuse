@@ -29,6 +29,8 @@ function getCore(state: WindowState): CoreRpcClient {
   state.core.on('event', (event: CoreEvent) => {
     if (!state.window.isDestroyed()) state.window.webContents.send('core:event', event);
   });
+  state.core.on('rpcError', (error: Error) => console.error('Diffuse core reported a JSON-RPC error:', error));
+  state.core.on('protocolError', (error: Error) => console.error('Invalid message from Diffuse core:', error));
   state.core.once('exit', () => {
     state.core = null;
   });

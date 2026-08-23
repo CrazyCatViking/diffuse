@@ -1,10 +1,9 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { CoreEvent, CoreRequest } from '../src/lib/coreContract';
+import type { DesktopBridge, ReviewAgentChatRequest, ReviewAgentStartRequest } from '../src/lib/desktopBridge';
 
-export type DiffuseBridge = typeof bridge;
-
-const coreRequest: CoreRequest = (method, params) => {
-  return ipcRenderer.invoke('core:request', { method, params });
+const coreRequest: CoreRequest = (method, ...args) => {
+  return ipcRenderer.invoke('core:request', { method, params: args[0] });
 };
 
 const onCoreEvent = (listener: (event: CoreEvent) => void) => {
@@ -25,7 +24,7 @@ const openLspConfig = (configPath?: string) => {
   return ipcRenderer.invoke('lsp:openConfig', { configPath });
 };
 
-const startReviewAgent = (request: unknown) => {
+const startReviewAgent = (request: ReviewAgentStartRequest) => {
   return ipcRenderer.invoke('review-agent:start', request);
 };
 
@@ -33,7 +32,7 @@ const stopReviewAgent = () => {
   return ipcRenderer.invoke('review-agent:stop');
 };
 
-const chatWithReviewAgent = (request: unknown) => {
+const chatWithReviewAgent = (request: ReviewAgentChatRequest) => {
   return ipcRenderer.invoke('review-agent:chat', request);
 };
 
@@ -46,6 +45,6 @@ const bridge = {
   startReviewAgent,
   stopReviewAgent,
   chatWithReviewAgent,
-};
+} satisfies DesktopBridge;
 
 contextBridge.exposeInMainWorld('diffuse', bridge);

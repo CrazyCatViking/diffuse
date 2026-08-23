@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 
-import type { DiffuseBridge } from '../electron/preload';
+import type { DesktopBridge } from './lib/desktopBridge';
 
 declare global {
   interface Window {
-    diffuse: DiffuseBridge;
+    diffuse: DesktopBridge;
   }
 }

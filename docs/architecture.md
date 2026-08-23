@@ -2,6 +2,8 @@
 
 This document gives internal contributors a high-level map of how Diffuse is put together. Keep it current when feature work changes process boundaries, data flow, persistence, or major UI/core responsibilities.
 
+This document describes the current implementation. The proposed single-window Electron/Vue workbench, application-wide Rust core, N-API boundary, multi-workspace attention model, ACP integration, and migration sequence are specified in [`agent-workbench-design.md`](agent-workbench-design.md). Update this document phase by phase as that design becomes implemented behavior.
+
 ## System Shape
 
 Diffuse is split into two cooperating programs:
@@ -13,7 +15,7 @@ The app talks to the core over line-delimited JSON-RPC on each core process `std
 
 ```text
 Vue renderer
-  -> window.diffuse preload bridge
+  -> renderer-owned DesktopBridge implemented by window.diffuse preload bridge
   -> Electron ipcMain handlers
   -> CoreRpcClient
   -> spawned Zig process: core/zig-out/bin/diffuse rpc
@@ -56,11 +58,11 @@ diffuse rpc
 { "jsonrpc": "2.0", "id": 1, "method": "listChangedFiles", "params": {} }
 ```
 
-The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits messages without an `id` as events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
+The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits only validated, known notifications as events. JSON-RPC errors with `id: null` use a separate error channel and are never forwarded as renderer events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
 
-The renderer and Electron process share the TypeScript contract in `app/src/lib/coreContract.ts`. That file defines the `CoreMethods` param/result map, the runtime `coreMethodNames` list used by Electron's whitelist, and the typed core event union consumed by the renderer. Zig remains the runtime authority for validation; TypeScript contracts keep the frontend, preload bridge, and Electron whitelist synchronized.
+The renderer owns the shell-neutral `DesktopBridge` interface in `app/src/lib/desktopBridge.ts`; Electron preload implements that interface and exposes it as `window.diffuse`. The renderer and Electron process share the TypeScript RPC contract in `app/src/lib/coreContract.ts`. That file defines the `CoreMethods` param/result map, the runtime `coreMethodNames` list used by Electron's whitelist, and the typed and runtime-validated core event map consumed by the renderer. Required RPC parameters are required by the TypeScript call signature, while parameterless methods accept no payload. Zig remains the runtime authority for validation; TypeScript contracts keep the frontend, preload bridge, Electron whitelist, and test fixtures synchronized.
 
-`scripts/check-rpc-contract.mjs` compares Zig `server.handle(...)` registrations in `core/src/app/*_handlers.zig` with `coreMethodNames` in `app/src/lib/coreContract.ts`. It runs as part of `just build` and `pnpm build` so app/core method drift fails verification early.
+`scripts/check-rpc-contract.mjs` rejects duplicate RPC names, compares Zig `server.handle(...)` registrations with both `coreMethodNames` and `CoreMethods`, and compares Zig event producers with both `coreEventNames` and `CoreEventMap`. It runs as part of `just build` and `pnpm build` so method-map and event-name drift fail verification early.
 
 Core maps JSON-RPC failures to standard error classes where possible:
 

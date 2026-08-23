@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import readline from 'node:readline';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { CoreEvent } from '../src/lib/coreContract';
+import { isCoreEvent } from '../src/lib/coreContract';
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -24,6 +24,16 @@ export class CoreRequestTimeoutError extends Error {
   constructor(method: string) {
     super(`Core request timed out: ${method}`);
     this.name = 'CoreRequestTimeoutError';
+  }
+}
+
+export class CoreRpcProtocolError extends Error {
+  constructor(
+    message: string,
+    readonly payload?: unknown,
+  ) {
+    super(message);
+    this.name = 'CoreRpcProtocolError';
   }
 }
 
@@ -121,16 +131,34 @@ export class CoreRpcClient extends EventEmitter {
   private handleLine(line: string): void {
     if (!line.trim()) return;
 
-    let message: any;
+    let message: unknown;
     try {
       message = JSON.parse(line);
     } catch (error) {
-      console.error('Invalid core JSON-RPC line', line, error);
+      this.emit('protocolError', new CoreRpcProtocolError('Invalid core JSON-RPC line', { line, error }));
+      return;
+    }
+
+    if (!isRecord(message) || message.jsonrpc !== '2.0') {
+      this.emit('protocolError', new CoreRpcProtocolError('Invalid core JSON-RPC message', message));
+      return;
+    }
+
+    if (!('id' in message)) {
+      if (isCoreEvent(message)) this.emit('event', message);
+      else this.emit('protocolError', new CoreRpcProtocolError('Invalid core notification', message));
+      return;
+    }
+
+    if (message.id === null) {
+      const error = parseRpcError(message.error);
+      if (error) this.emit('rpcError', error);
+      else this.emit('protocolError', new CoreRpcProtocolError('Invalid null-id core error', message));
       return;
     }
 
     if (typeof message.id !== 'number') {
-      this.emit('event', message as CoreEvent);
+      this.emit('protocolError', new CoreRpcProtocolError('Invalid core response id', message));
       return;
     }
 
@@ -140,10 +168,22 @@ export class CoreRpcClient extends EventEmitter {
     clearTimeout(pending.timer);
     this.pending.delete(message.id);
 
-    if (message.error) {
-      pending.reject(new CoreRpcError(message.error.code ?? -32000, message.error.message ?? 'Core request failed', message.error.data));
-    } else {
+    if ('error' in message) {
+      const rpcError = parseRpcError(message.error);
+      pending.reject(rpcError ?? new CoreRpcProtocolError('Invalid core error response', message));
+    } else if ('result' in message) {
       pending.resolve(message.result);
+    } else {
+      pending.reject(new CoreRpcProtocolError('Core response has neither result nor error', message));
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseRpcError(value: unknown): CoreRpcError | null {
+  if (!isRecord(value) || typeof value.code !== 'number' || typeof value.message !== 'string') return null;
+  return new CoreRpcError(value.code, value.message, value.data);
 }
