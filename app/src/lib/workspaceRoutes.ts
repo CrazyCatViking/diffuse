@@ -1,13 +1,21 @@
+import type { RouteLocationNormalizedLoaded, RouteLocationRaw } from 'vue-router';
 import type { ChangedFile, ReviewThread, SyntaxSide } from './protocol';
 import type { SearchResult } from './search/searchTypes';
 
 export const workspaceRouteNames = {
-  overview: 'overview',
-  diff: 'diff',
-  folderDiff: 'folder-diff',
+  workbench: 'workbench',
+  overview: 'workspace-review',
+  diff: 'workspace-file',
+  folderDiff: 'workspace-folder',
 } as const;
 
 export type WorkspaceRouteName = (typeof workspaceRouteNames)[keyof typeof workspaceRouteNames];
+
+export type WorkspaceRouteState = {
+  name: Exclude<WorkspaceRouteName, 'workbench'>;
+  params: Record<string, string>;
+  query: Record<string, string>;
+};
 
 let revealRequestId = 0;
 
@@ -16,34 +24,68 @@ export const routeParamString = (value: string | string[] | undefined) => {
   return value ?? '';
 };
 
-export const overviewRoute = () => ({ name: workspaceRouteNames.overview });
+export const workbenchRoute = () => ({ name: workspaceRouteNames.workbench });
 
-export const diffRoute = (fileId: string, query: Record<string, string | undefined> = {}) => ({
+export const overviewRoute = (workspaceId: string) => ({ name: workspaceRouteNames.overview, params: { workspaceId } });
+
+export const diffRoute = (workspaceId: string, fileId: string, query: Record<string, string | undefined> = {}) => ({
   name: workspaceRouteNames.diff,
-  params: { fileId },
+  params: { workspaceId, fileId },
   query: withoutEmptyQueryValues(query),
 });
 
-export const folderDiffRoute = (folderPath: string) => ({
+export const folderDiffRoute = (workspaceId: string, folderPath: string) => ({
   name: workspaceRouteNames.folderDiff,
-  params: { folderPath },
+  params: { workspaceId, folderPath },
 });
 
-export const threadDiffRoute = (thread: ReviewThread) =>
-  diffRoute(thread.fileId, {
+export const threadDiffRoute = (workspaceId: string, thread: ReviewThread) =>
+  diffRoute(workspaceId, thread.fileId, {
     threadId: thread.id,
     requestId: nextRevealRequestId(),
   });
 
-export const searchResultDiffRoute = (result: SearchResult, query: string) => {
+export const searchResultDiffRoute = (workspaceId: string, result: SearchResult, query: string) => {
   if (!result.fileId) return undefined;
   const target = searchResultTarget(result);
-  return diffRoute(result.fileId, {
+  return diffRoute(workspaceId, result.fileId, {
     search: query.trim() || undefined,
     line: target?.line === undefined ? undefined : String(target.line),
     side: target?.side,
     requestId: target ? nextRevealRequestId() : undefined,
   });
+};
+
+export const workspaceIdFromRoute = (route: RouteLocationNormalizedLoaded): string => routeParamString(route.params.workspaceId);
+
+export const captureWorkspaceRoute = (route: RouteLocationNormalizedLoaded): WorkspaceRouteState | undefined => {
+  if (
+    route.name !== workspaceRouteNames.overview &&
+    route.name !== workspaceRouteNames.diff &&
+    route.name !== workspaceRouteNames.folderDiff
+  ) {
+    return undefined;
+  }
+  return {
+    name: route.name,
+    params: Object.fromEntries(
+      Object.entries(route.params).map(([key, value]) => [key, routeParamString(value as string | string[] | undefined)]),
+    ),
+    query: Object.fromEntries(
+      Object.entries(route.query)
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        .map(([key, value]) => [key, value]),
+    ),
+  };
+};
+
+export const restoreWorkspaceRoute = (workspaceId: string, state?: WorkspaceRouteState): RouteLocationRaw => {
+  if (!state) return overviewRoute(workspaceId);
+  return {
+    name: state.name,
+    params: { ...state.params, workspaceId },
+    query: state.query,
+  };
 };
 
 export const changedFilePath = (file: ChangedFile) => file.newPath ?? file.oldPath ?? file.id;

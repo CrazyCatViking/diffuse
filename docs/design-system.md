@@ -163,9 +163,13 @@ Use `TreeList.vue` for shared hierarchy behavior: indentation, collapse state, a
 
 ## Feature UI Patterns
 
-### Workspace Workbench (Planned)
+### Workspace Workbench
 
-The target Agent Workbench uses one primary desktop window with a compact workspace rail, a global overview, and one rendered workspace at a time. Workspace identity, switching, attention priority, acknowledgement, keyboard behavior, accessibility, and narrow-layout requirements are specified in [`agent-workbench-design.md`](agent-workbench-design.md). Do not implement one `BrowserWindow` per workspace or let merely selecting a workspace clear its pending attention.
+The Agent Workbench uses one primary desktop window with a `76px` workspace rail, a global overview, and one rendered workspace at a time. At the existing `900px` layout boundary the rail uses its `52px` compact token and secondary labels become accessible-only. Changed files and pinned search results become foreground drawers rather than permanently reducing the diff.
+
+`WorkspaceRail.vue` uses a vertical tablist with roving focus. Overview and workspace tabs support arrows, Home, End, Enter, and Space while ordinary Tab enters and exits the rail normally. `WorkspaceSwitcher.vue` is the searchable listbox surface for open and recent workspaces; it traps modal focus and restores focus when dismissed. Status always includes text exposed to assistive technology and never relies only on the rail marker color.
+
+Workbench layout sizes use `--size-workspace-rail`, `--size-workspace-rail-narrow`, `--size-workspace-rail-item`, and `--size-workspace-status`. Keep workspace controls under `app/src/components/workbench/`; they are application-domain components rather than generic UI primitives. Workspace identity, attention priority, acknowledgement, and future durable status behavior remain specified in [`agent-workbench-design.md`](agent-workbench-design.md). Merely selecting a workspace must never clear attention.
 
 ### Diff Viewer
 

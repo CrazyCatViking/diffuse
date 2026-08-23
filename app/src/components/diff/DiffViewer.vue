@@ -162,7 +162,12 @@ const diff = useDiffStore();
 const repo = useRepoStore();
 const review = useReviewStore();
 const cursor = useCursorStore();
-const draftBody = ref('');
+const draftBody = computed({
+  get: () => review.draftBody,
+  set: (value: string) => {
+    review.draftBody = value;
+  },
+});
 const flashingThreadId = ref<string>();
 const searchOpen = ref(false);
 const searchQuery = ref('');

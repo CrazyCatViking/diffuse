@@ -3,10 +3,10 @@
     <SettingsSectionHeader
       title-id="keyboard-settings-title"
       title="Keyboard"
-      description="Customize single-file diff navigation and review actions. Use comma-separated bindings such as h, &lt;Left&gt;."
+      description="Customize workbench commands and single-file diff navigation. Use comma-separated bindings."
     >
       <template #actions>
-        <Button :disabled="!keybindingDraftsChanged || !keybindingValidation.valid" @click="applyKeybindings">Apply</Button>
+        <Button :disabled="!keybindingDraftsChanged || !allKeybindingsValid" @click="applyKeybindings">Apply</Button>
 
         <Button variant="secondary" @click="resetKeybindingDrafts">Reset to Defaults</Button>
       </template>
@@ -19,6 +19,40 @@
     </div>
 
     <div class="keybinding-groups">
+      <Panel padding="none" class="keybinding-group">
+        <header class="group-header">
+          <div>
+            <h3>Workbench</h3>
+
+            <p>Workspace switching and global navigation</p>
+          </div>
+        </header>
+
+        <label v-for="definition in workbenchKeybindingDefinitions" :key="definition.command" class="keybinding-row">
+          <span class="keybinding-meta">
+            <span class="keybinding-label">{{ definition.label }}</span>
+
+            <span class="keybinding-description">{{ definition.description }}</span>
+          </span>
+
+          <span class="keybinding-editor">
+            <input
+              class="keybinding-input"
+              type="text"
+              :value="workbenchDrafts[definition.command]"
+              spellcheck="false"
+              :aria-label="`${definition.label} keybindings`"
+              :aria-invalid="Boolean(workbenchValidation.errors[definition.command])"
+              @input="updateWorkbenchDraft(definition.command, $event)"
+            />
+
+            <span v-if="workbenchValidation.errors[definition.command]" class="keybinding-error">
+              {{ workbenchValidation.errors[definition.command] }}
+            </span>
+          </span>
+        </label>
+      </Panel>
+
       <Panel v-for="group in keybindingGroups" :key="group.name" padding="none" class="keybinding-group">
         <header class="group-header">
           <div>
@@ -68,6 +102,14 @@ import {
   type DiffKeybindingMap,
 } from '../../lib/diffKeybindings';
 import { useSettingsStore } from '../../stores/settings';
+import {
+  normalizeWorkbenchBindingList,
+  validateWorkbenchKeybindings,
+  workbenchCommandIds,
+  workbenchKeybindingDefinitions,
+  type WorkbenchCommand,
+  type WorkbenchKeybindingMap,
+} from '../../lib/workbenchKeybindings';
 import Button from '../Button.vue';
 import Panel from '../ui/Panel.vue';
 import SettingsSectionHeader from './SettingsSectionHeader.vue';
@@ -75,6 +117,7 @@ import SettingsSectionHeader from './SettingsSectionHeader.vue';
 const settings = useSettingsStore();
 const keybindingDrafts = ref<Record<DiffKeybindingAction, string>>(keybindingDraftsFromMap(settings.diffKeybindings));
 const keybindingSaved = ref(false);
+const workbenchDrafts = ref<Record<WorkbenchCommand, string>>(workbenchDraftsFromMap(settings.workbenchKeybindings));
 let keybindingSavedTimer: number | undefined;
 
 const keybindingGroups = computed(() => {
@@ -92,8 +135,20 @@ const keybindingDraftMap = computed<DiffKeybindingMap>(() => {
   ) as DiffKeybindingMap;
 });
 const keybindingValidation = computed(() => validateDiffKeybindingMap(keybindingDraftMap.value));
-const keybindingDraftsChanged = computed(() => JSON.stringify(keybindingDraftMap.value) !== JSON.stringify(settings.diffKeybindings));
-const validationErrors = computed(() => Object.values(keybindingValidation.value.errors).filter(Boolean));
+const workbenchDraftMap = computed<WorkbenchKeybindingMap>(() => {
+  return Object.fromEntries(
+    workbenchCommandIds.map((command) => [command, normalizeWorkbenchBindingList(workbenchDrafts.value[command] ?? '')]),
+  ) as WorkbenchKeybindingMap;
+});
+const workbenchValidation = computed(() => validateWorkbenchKeybindings(workbenchDraftMap.value));
+const workbenchDraftsChanged = computed(() => JSON.stringify(workbenchDraftMap.value) !== JSON.stringify(settings.workbenchKeybindings));
+const allKeybindingsValid = computed(() => keybindingValidation.value.valid && workbenchValidation.value.valid);
+const keybindingDraftsChanged = computed(
+  () => JSON.stringify(keybindingDraftMap.value) !== JSON.stringify(settings.diffKeybindings) || workbenchDraftsChanged.value,
+);
+const validationErrors = computed(() =>
+  [...Object.values(keybindingValidation.value.errors), ...Object.values(workbenchValidation.value.errors)].filter(Boolean),
+);
 
 const updateKeybindingDraft = (action: DiffKeybindingAction, event: Event) => {
   const input = event.target as HTMLInputElement;
@@ -101,23 +156,40 @@ const updateKeybindingDraft = (action: DiffKeybindingAction, event: Event) => {
   keybindingSaved.value = false;
 };
 
+const updateWorkbenchDraft = (command: WorkbenchCommand, event: Event) => {
+  workbenchDrafts.value = { ...workbenchDrafts.value, [command]: (event.target as HTMLInputElement).value };
+  keybindingSaved.value = false;
+};
+
 const applyKeybindings = () => {
   const validation = settings.setDiffKeybindings(keybindingDraftMap.value);
   if (!validation.valid) return;
+  const workbenchResult = settings.setWorkbenchKeybindings(workbenchDraftMap.value);
+  if (!workbenchResult.valid) return;
 
   keybindingDrafts.value = keybindingDraftsFromMap(settings.diffKeybindings);
+  workbenchDrafts.value = workbenchDraftsFromMap(settings.workbenchKeybindings);
   showKeybindingSaved();
 };
 
 const resetKeybindingDrafts = () => {
   settings.resetDiffKeybindings();
+  settings.resetWorkbenchKeybindings();
   keybindingDrafts.value = keybindingDraftsFromMap(settings.diffKeybindings);
+  workbenchDrafts.value = workbenchDraftsFromMap(settings.workbenchKeybindings);
   showKeybindingSaved();
 };
 
 function keybindingDraftsFromMap(keybindings: DiffKeybindingMap): Record<DiffKeybindingAction, string> {
   return Object.fromEntries(diffKeybindingActionIds.map((action) => [action, keybindings[action].join(', ')])) as Record<
     DiffKeybindingAction,
+    string
+  >;
+}
+
+function workbenchDraftsFromMap(keybindings: WorkbenchKeybindingMap): Record<WorkbenchCommand, string> {
+  return Object.fromEntries(workbenchCommandIds.map((command) => [command, keybindings[command].join(', ')])) as Record<
+    WorkbenchCommand,
     string
   >;
 }

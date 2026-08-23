@@ -7,6 +7,12 @@ import {
   type DiffKeybindingMap,
   type DiffKeybindingValidation,
 } from '../lib/diffKeybindings';
+import {
+  cloneDefaultWorkbenchKeybindings,
+  mergeWorkbenchKeybindings,
+  validateWorkbenchKeybindings,
+  type WorkbenchKeybindingMap,
+} from '../lib/workbenchKeybindings';
 
 export type SyntaxThemeId = 'github-dark' | 'solarized-dark' | 'nord' | 'high-contrast' | 'custom';
 
@@ -38,6 +44,7 @@ export type SyntaxTheme = {
 const syntaxThemeStorageKey = 'diffuse.syntaxTheme';
 const customSyntaxThemeStorageKey = 'diffuse.customSyntaxTheme';
 const diffKeybindingsStorageKey = 'diffuse.diffKeybindings.v1';
+const workbenchKeybindingsStorageKey = 'diffuse.workbenchKeybindings.v1';
 
 export const builtInSyntaxThemes: SyntaxTheme[] = [
   {
@@ -108,6 +115,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const selectedSyntaxThemeId = ref<SyntaxThemeId>(loadThemeId());
   const customSyntaxTheme = ref<SyntaxThemeColors>(loadCustomTheme());
   const diffKeybindings = ref<DiffKeybindingMap>(loadDiffKeybindings());
+  const workbenchKeybindings = ref<WorkbenchKeybindingMap>(loadWorkbenchKeybindings());
 
   const syntaxTheme = computed<SyntaxTheme>(() => {
     if (selectedSyntaxThemeId.value === 'custom') return { id: 'custom', name: 'Custom', colors: customSyntaxTheme.value };
@@ -138,15 +146,31 @@ export const useSettingsStore = defineStore('settings', () => {
     window.localStorage.setItem(diffKeybindingsStorageKey, JSON.stringify(diffKeybindings.value));
   };
 
+  const setWorkbenchKeybindings = (keybindings: WorkbenchKeybindingMap) => {
+    const validation = validateWorkbenchKeybindings(keybindings);
+    if (!validation.valid) return validation;
+    workbenchKeybindings.value = cloneWorkbenchKeybindings(keybindings);
+    window.localStorage.setItem(workbenchKeybindingsStorageKey, JSON.stringify(workbenchKeybindings.value));
+    return validation;
+  };
+
+  const resetWorkbenchKeybindings = () => {
+    workbenchKeybindings.value = cloneDefaultWorkbenchKeybindings();
+    window.localStorage.setItem(workbenchKeybindingsStorageKey, JSON.stringify(workbenchKeybindings.value));
+  };
+
   return {
     selectedSyntaxThemeId,
     customSyntaxTheme,
     diffKeybindings,
+    workbenchKeybindings,
     syntaxTheme,
     setSyntaxTheme,
     setCustomSyntaxColor,
     setDiffKeybindings,
     resetDiffKeybindings,
+    setWorkbenchKeybindings,
+    resetWorkbenchKeybindings,
   };
 });
 
@@ -182,4 +206,17 @@ const loadDiffKeybindings = (): DiffKeybindingMap => {
 
 const cloneDiffKeybindings = (keybindings: DiffKeybindingMap): DiffKeybindingMap => {
   return Object.fromEntries(Object.entries(keybindings).map(([action, bindings]) => [action, [...bindings]])) as DiffKeybindingMap;
+};
+
+const loadWorkbenchKeybindings = (): WorkbenchKeybindingMap => {
+  try {
+    const raw = window.localStorage.getItem(workbenchKeybindingsStorageKey);
+    return raw ? mergeWorkbenchKeybindings(JSON.parse(raw)) : cloneDefaultWorkbenchKeybindings();
+  } catch {
+    return cloneDefaultWorkbenchKeybindings();
+  }
+};
+
+const cloneWorkbenchKeybindings = (keybindings: WorkbenchKeybindingMap): WorkbenchKeybindingMap => {
+  return Object.fromEntries(Object.entries(keybindings).map(([command, bindings]) => [command, [...bindings]])) as WorkbenchKeybindingMap;
 };

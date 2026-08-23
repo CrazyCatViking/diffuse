@@ -35,9 +35,12 @@ export const useReviewStore = defineStore('review', () => {
   const draftAnchor = ref<ReviewAnchor>();
   const draftFile = ref<ChangedFile>();
   const draftMode = ref<'comment' | 'chat'>('comment');
+  const draftBody = ref('');
+  const replyDrafts = ref<Record<string, string>>({});
   const pendingAgentChatKeys = ref(new Set<string>());
   let reviewedFilesMutation = Promise.resolve();
   let reviewedFilesVersion = 0;
+  let workspaceEpoch = 0;
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
   const activeRun = computed(() => {
@@ -56,23 +59,32 @@ export const useReviewStore = defineStore('review', () => {
     if (event.kind !== 'review/changed' || !isActiveWorkspace(event)) return;
     if (event.payload.root !== repo.repository?.root) return;
     if (event.payload.sessionId && session.value?.id && event.payload.sessionId !== session.value.id) return;
-    void refreshReviewState();
+    const epoch = workspaceEpoch;
+    void refreshReviewState().catch((err) => {
+      if (epoch === workspaceEpoch) error.value = err instanceof Error ? err.message : JSON.stringify(err);
+    });
   });
 
   const ensureSession = async () => {
     if (!repo.repository) return;
+    const epoch = workspaceEpoch;
+    const repository = repo.repository;
     loading.value = true;
     error.value = undefined;
 
     try {
       const active = await client.getActiveReviewSession();
-      session.value = active ?? (await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget)));
-      await client.recoverStaleReviewRuns(session.value.id);
+      const next = active ?? (await client.createReviewSession(newSession(repository.root, repository.head, repo.diffTarget)));
+      if (epoch !== workspaceEpoch) return;
+      session.value = next;
+      await client.recoverStaleReviewRuns(next.id);
+      if (epoch !== workspaceEpoch) return;
       await refreshReviewState();
     } catch (err) {
+      if (epoch !== workspaceEpoch) return;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
     } finally {
-      loading.value = false;
+      if (epoch === workspaceEpoch) loading.value = false;
     }
   };
 
@@ -82,7 +94,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    threads.value = await client.getReviewThreads(session.value.id);
+    const epoch = workspaceEpoch;
+    const loaded = await client.getReviewThreads(session.value.id);
+    if (epoch === workspaceEpoch) threads.value = loaded;
   };
 
   const loadChatMessages = async () => {
@@ -91,9 +105,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    chatMessages.value = (await client.getReviewChatMessages(session.value.id)).sort((first, second) =>
-      first.createdAt.localeCompare(second.createdAt),
-    );
+    const epoch = workspaceEpoch;
+    const loaded = await client.getReviewChatMessages(session.value.id);
+    if (epoch === workspaceEpoch) chatMessages.value = loaded.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   };
 
   const loadSessions = async () => {
@@ -102,7 +116,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    sessions.value = await client.listReviewSessions();
+    const epoch = workspaceEpoch;
+    const loaded = await client.listReviewSessions();
+    if (epoch === workspaceEpoch) sessions.value = loaded;
   };
 
   const loadProgress = async () => {
@@ -111,7 +127,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    progress.value = await client.getReviewProgress(session.value.id);
+    const epoch = workspaceEpoch;
+    const loaded = await client.getReviewProgress(session.value.id);
+    if (epoch === workspaceEpoch) progress.value = loaded;
   };
 
   const loadReviewedFiles = async () => {
@@ -121,10 +139,11 @@ export const useReviewStore = defineStore('review', () => {
     }
 
     const sessionId = session.value.id;
+    const epoch = workspaceEpoch;
     await reviewedFilesMutation.catch(() => undefined);
     const version = reviewedFilesVersion;
     const loaded = await client.getReviewedFiles(sessionId);
-    if (session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = loaded;
+    if (epoch === workspaceEpoch && session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = loaded;
   };
 
   const loadRuns = async () => {
@@ -133,7 +152,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    runs.value = await client.getReviewRuns(session.value.id);
+    const epoch = workspaceEpoch;
+    const loaded = await client.getReviewRuns(session.value.id);
+    if (epoch === workspaceEpoch) runs.value = loaded;
   };
 
   const loadAgentStates = async () => {
@@ -142,7 +163,9 @@ export const useReviewStore = defineStore('review', () => {
       return;
     }
 
-    agentStates.value = await client.getReviewAgentStates(session.value.id);
+    const epoch = workspaceEpoch;
+    const loaded = await client.getReviewAgentStates(session.value.id);
+    if (epoch === workspaceEpoch) agentStates.value = loaded;
   };
 
   const refreshReviewState = async () => {
@@ -159,52 +182,63 @@ export const useReviewStore = defineStore('review', () => {
 
   const startNewSession = async () => {
     if (!repo.repository) return false;
+    const epoch = workspaceEpoch;
+    const repository = repo.repository;
     loading.value = true;
     error.value = undefined;
 
     try {
-      session.value = await client.createReviewSession(newSession(repo.repository.root, repo.repository.head, repo.diffTarget));
+      const created = await client.createReviewSession(newSession(repository.root, repository.head, repo.diffTarget));
+      if (epoch !== workspaceEpoch) return false;
+      session.value = created;
       await refreshReviewState();
       cancelDraft();
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     } finally {
-      loading.value = false;
+      if (epoch === workspaceEpoch) loading.value = false;
     }
   };
 
   const startAgentReview = async () => {
     if (!repo.repository) return false;
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value) return false;
+    if (epoch !== workspaceEpoch || !session.value) return false;
 
     loading.value = true;
     error.value = undefined;
     try {
       await client.startReviewAgent(repo.repository.root, session.value.id, repo.changedFiles);
+      if (epoch !== workspaceEpoch) return false;
       await refreshReviewState();
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       await loadRuns();
       return false;
     } finally {
-      loading.value = false;
+      if (epoch === workspaceEpoch) loading.value = false;
     }
   };
 
   const stopAgentReview = async () => {
+    const epoch = workspaceEpoch;
     loading.value = true;
     error.value = undefined;
     try {
       await client.stopReviewAgent();
+      if (epoch !== workspaceEpoch) return;
       await refreshReviewState();
     } catch (err) {
+      if (epoch !== workspaceEpoch) return;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
     } finally {
-      loading.value = false;
+      if (epoch === workspaceEpoch) loading.value = false;
     }
   };
 
@@ -218,11 +252,13 @@ export const useReviewStore = defineStore('review', () => {
     draftFile.value = undefined;
     draftAnchor.value = undefined;
     draftMode.value = 'comment';
+    draftBody.value = '';
   };
 
   const createThread = async (body: string) => {
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value || !draftFile.value || !draftAnchor.value) return false;
+    if (epoch !== workspaceEpoch || !session.value || !draftFile.value || !draftAnchor.value) return false;
     const text = body.trim();
     if (!text) return false;
 
@@ -248,11 +284,13 @@ export const useReviewStore = defineStore('review', () => {
 
     try {
       const saved = await client.saveReviewThread(session.value.id, thread);
+      if (epoch !== workspaceEpoch) return false;
       threads.value = [...threads.value.filter((item) => item.id !== saved.id), saved];
       cancelDraft();
       error.value = undefined;
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     }
@@ -262,6 +300,7 @@ export const useReviewStore = defineStore('review', () => {
     if (!session.value) return false;
     const text = body.trim();
     if (!text) return false;
+    const epoch = workspaceEpoch;
 
     const now = new Date().toISOString();
     const message: ReviewMessage = {
@@ -279,10 +318,12 @@ export const useReviewStore = defineStore('review', () => {
 
     try {
       const saved = await client.saveReviewThread(session.value.id, updated);
+      if (epoch !== workspaceEpoch) return false;
       threads.value = threads.value.map((item) => (item.id === saved.id ? saved : item));
       error.value = undefined;
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     }
@@ -307,8 +348,9 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const markFileReviewed = async (file: ChangedFile) => {
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value) return false;
+    if (epoch !== workspaceEpoch || !session.value) return false;
 
     const reviewedAt = new Date().toISOString();
     return updateReviewedFiles({
@@ -329,8 +371,9 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const setFilesReviewed = async (files: ChangedFile[], reviewed: boolean) => {
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value) return false;
+    if (epoch !== workspaceEpoch || !session.value) return false;
 
     const now = new Date().toISOString();
     const update: ReviewedFilesUpdate = reviewed ? { files: {} } : { removeFileIds: [] };
@@ -353,16 +396,20 @@ export const useReviewStore = defineStore('review', () => {
   const updateReviewedFiles = async (update: ReviewedFilesUpdate) => {
     if (!session.value) return false;
     const sessionId = session.value.id;
+    const epoch = workspaceEpoch;
     try {
       reviewedFilesMutation = reviewedFilesMutation.then(async () => {
+        if (epoch !== workspaceEpoch) return;
         const version = (reviewedFilesVersion += 1);
         const updated = await client.updateReviewedFiles(sessionId, update);
-        if (session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = updated;
+        if (epoch === workspaceEpoch && session.value?.id === sessionId && reviewedFilesVersion === version) reviewedFiles.value = updated;
       });
       await reviewedFilesMutation;
+      if (epoch !== workspaceEpoch) return false;
       error.value = undefined;
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       reviewedFilesMutation = Promise.resolve();
       return false;
@@ -370,8 +417,9 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const saveChatMessage = async (role: ReviewChatMessage['role'], body: string, context?: ReviewChatMessage['context']) => {
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value) return false;
+    if (epoch !== workspaceEpoch || !session.value) return false;
     const text = body.trim();
     if (!text) return false;
 
@@ -386,12 +434,14 @@ export const useReviewStore = defineStore('review', () => {
 
     try {
       const saved = await client.saveReviewChatMessage(session.value.id, message);
+      if (epoch !== workspaceEpoch) return false;
       chatMessages.value = [...chatMessages.value.filter((item) => item.id !== saved.id), saved].sort((first, second) =>
         first.createdAt.localeCompare(second.createdAt),
       );
       error.value = undefined;
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     }
@@ -399,8 +449,9 @@ export const useReviewStore = defineStore('review', () => {
 
   const askAgentInThread = async (thread: ReviewThread, body: string) => {
     if (!repo.repository) return false;
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value) return false;
+    if (epoch !== workspaceEpoch || !session.value) return false;
     const text = body.trim();
     if (!text) return false;
 
@@ -435,6 +486,7 @@ export const useReviewStore = defineStore('review', () => {
     try {
       const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
       const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
+      if (epoch !== workspaceEpoch) return false;
       chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
       const assistant = await client.chatWithReviewAgent(
         repo.repository.root,
@@ -445,14 +497,17 @@ export const useReviewStore = defineStore('review', () => {
         savedUser.id,
         savedPending.id,
       );
+      if (epoch !== workspaceEpoch) return false;
       chatMessages.value = [...chatMessages.value.filter((item) => item.id !== assistant.id), assistant].sort((first, second) =>
         first.createdAt.localeCompare(second.createdAt),
       );
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     } finally {
+      if (epoch !== workspaceEpoch) return;
       const nextPending = new Set(pendingAgentChatKeys.value);
       nextPending.delete(chatKey);
       pendingAgentChatKeys.value = nextPending;
@@ -462,8 +517,9 @@ export const useReviewStore = defineStore('review', () => {
 
   const askAgentAtDraft = async (body: string) => {
     if (!repo.repository) return false;
+    const epoch = workspaceEpoch;
     if (!session.value) await ensureSession();
-    if (!session.value || !draftFile.value || !draftAnchor.value) return false;
+    if (epoch !== workspaceEpoch || !session.value || !draftFile.value || !draftAnchor.value) return false;
     const text = body.trim();
     if (!text) return false;
 
@@ -512,6 +568,7 @@ export const useReviewStore = defineStore('review', () => {
     try {
       const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
       const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
+      if (epoch !== workspaceEpoch) return false;
       chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
       cancelDraft();
       const assistant = await client.chatWithReviewAgent(
@@ -523,12 +580,15 @@ export const useReviewStore = defineStore('review', () => {
         savedUser.id,
         savedPending.id,
       );
+      if (epoch !== workspaceEpoch) return false;
       chatMessages.value = upsertChatMessages(chatMessages.value, [assistant]);
       return true;
     } catch (err) {
+      if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
     } finally {
+      if (epoch !== workspaceEpoch) return;
       const nextPending = new Set(pendingAgentChatKeys.value);
       nextPending.delete(chatThreadId);
       pendingAgentChatKeys.value = nextPending;
@@ -543,6 +603,9 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   const clear = () => {
+    workspaceEpoch += 1;
+    reviewedFilesVersion += 1;
+    reviewedFilesMutation = Promise.resolve();
     session.value = null;
     sessions.value = [];
     progress.value = null;
@@ -553,7 +616,30 @@ export const useReviewStore = defineStore('review', () => {
     chatMessages.value = [];
     pendingAgentChatKeys.value = new Set();
     error.value = undefined;
+    replyDrafts.value = {};
     cancelDraft();
+  };
+
+  const captureDraftState = () => ({
+    file: draftFile.value,
+    anchor: draftAnchor.value,
+    mode: draftMode.value,
+    body: draftBody.value,
+    replies: { ...replyDrafts.value },
+  });
+
+  const restoreDraftState = (state?: {
+    file?: ChangedFile;
+    anchor?: ReviewAnchor;
+    mode: 'comment' | 'chat';
+    body: string;
+    replies?: Record<string, string>;
+  }) => {
+    draftFile.value = state?.file;
+    draftAnchor.value = state?.anchor;
+    draftMode.value = state?.mode ?? 'comment';
+    draftBody.value = state?.body ?? '';
+    replyDrafts.value = { ...(state?.replies ?? {}) };
   };
 
   return {
@@ -573,6 +659,8 @@ export const useReviewStore = defineStore('review', () => {
     draftAnchor,
     draftFile,
     draftMode,
+    draftBody,
+    replyDrafts,
     pendingAgentChatKeys,
     ensureSession,
     startNewSession,
@@ -588,6 +676,8 @@ export const useReviewStore = defineStore('review', () => {
     loadThreads,
     startDraft,
     cancelDraft,
+    captureDraftState,
+    restoreDraftState,
     createThread,
     addMessage,
     resolveThread,

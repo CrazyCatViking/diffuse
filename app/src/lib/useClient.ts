@@ -40,8 +40,12 @@ import type {
 import type { CoreMethods, CoreRequestArgs } from './coreContract';
 
 let activeWorkspace: WorkspaceReference | undefined;
+let activationEpoch = 0;
 
 export function setActiveWorkspace(reference: WorkspaceReference | undefined): void {
+  if (activeWorkspace?.workspaceId !== reference?.workspaceId || activeWorkspace?.workspaceGeneration !== reference?.workspaceGeneration) {
+    activationEpoch += 1;
+  }
   activeWorkspace = reference ? { ...reference } : undefined;
 }
 
@@ -73,6 +77,7 @@ export const useClient = () => {
     ...args: CoreRequestArgs<CoreMethods[M]['params']>
   ): Promise<CoreMethods[M]['result']> => {
     const context = requestContext();
+    const requestActivationEpoch = activationEpoch;
     const response = await window.diffuse.workspaceRequest(context, method, ...args);
     if (
       response.context.workspaceId !== context.workspaceId ||
@@ -81,7 +86,9 @@ export const useClient = () => {
     ) {
       throw new Error(`Workspace response context mismatch for ${method}`);
     }
-    if (!isActiveWorkspace(context)) throw new Error(`Workspace changed while ${method} was running`);
+    if (!isActiveWorkspace(context) || requestActivationEpoch !== activationEpoch) {
+      throw new Error(`Workspace changed while ${method} was running`);
+    }
     return response.result;
   };
 
@@ -105,9 +112,9 @@ export const useClient = () => {
     return snapshot;
   };
 
-  const activateWorkspace = async (reference: WorkspaceReference): Promise<WorkspaceSnapshot> => {
+  const activateWorkspace = async (reference: WorkspaceReference | null): Promise<WorkspaceSnapshot | null> => {
     const snapshot = await window.diffuse.activateWorkspace(reference);
-    setActiveWorkspace(snapshot.summary);
+    setActiveWorkspace(snapshot?.summary);
     return snapshot;
   };
 

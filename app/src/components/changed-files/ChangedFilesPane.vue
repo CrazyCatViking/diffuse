@@ -222,6 +222,7 @@ const activeFolderPath = computed(() =>
   route.name === workspaceRouteNames.folderDiff ? routeParamString(route.params.folderPath) : undefined,
 );
 const overviewActive = computed(() => route.name === workspaceRouteNames.overview);
+const workspaceId = computed(() => routeParamString(route.params.workspaceId) || repo.workspace?.workspaceId || '');
 const reviewedFileIdSet = computed(() => new Set(repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id)));
 const filteredFiles = computed(() => {
   if (!search.treeHasActiveSearch) return files.value;
@@ -260,19 +261,19 @@ const fileMetadata = (fileId: string): FileSearchMetadata | undefined => searchF
 const selectOverview = async () => {
   cursor.setActiveSurface(fileTreeSurfaceId);
   setFileTreePosition({ key: 'overview', target: 'overview' });
-  await router.push(overviewRoute());
+  if (workspaceId.value) await router.push(overviewRoute(workspaceId.value));
 };
 
 const selectFolderNode = async (folder: TreeFolder) => {
   cursor.setActiveSurface(fileTreeSurfaceId);
   setFileTreePosition({ key: folder.key, target: 'folder', folderPath: folder.path });
-  await router.push(folderDiffRoute(folder.path));
+  if (workspaceId.value) await router.push(folderDiffRoute(workspaceId.value, folder.path));
 };
 
 const selectFileNode = async (file: TreeFile) => {
   cursor.setActiveSurface(fileTreeSurfaceId);
   setFileTreePosition({ key: file.key, target: 'file', fileId: file.file.id });
-  await router.push(diffRoute(file.file.id));
+  if (workspaceId.value) await router.push(diffRoute(workspaceId.value, file.file.id));
 };
 
 const folderReviewed = (folder: TreeFolder) => {

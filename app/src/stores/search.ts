@@ -366,6 +366,47 @@ export const useSearchStore = defineStore('search', () => {
     coreResults.value = [];
   };
 
+  const captureRestorationState = () => ({
+    query: query.value,
+    treeQuery: treeQuery.value,
+    mode: mode.value,
+    activeFilters: [...activeFilters.value],
+    treeActiveFilters: [...treeActiveFilters.value],
+    selectedIndex: selectedIndex.value,
+    drawerOpen: drawerOpen.value,
+    pinnedQuery: pinnedQuery.value,
+    pinnedResults: [...pinnedSnapshotResults.value],
+    pinnedRemovedResultIds: [...pinnedRemovedResultIds.value],
+    pinnedSelectedIndex: pinnedSelectedIndex.value,
+  });
+
+  const restoreRestorationState = (state?: ReturnType<typeof captureRestorationState>) => {
+    resetCoreResults();
+    query.value = state?.query ?? '';
+    treeQuery.value = state?.treeQuery ?? '';
+    mode.value = state?.mode ?? 'all';
+    activeFilters.value = [...(state?.activeFilters ?? [])];
+    treeActiveFilters.value = [...(state?.treeActiveFilters ?? [])];
+    selectedIndex.value = state?.selectedIndex ?? 0;
+    drawerOpen.value = state?.drawerOpen ?? false;
+    pinnedQuery.value = state?.pinnedQuery ?? '';
+    pinnedSnapshotResults.value = [...(state?.pinnedResults ?? [])];
+    pinnedRemovedResultIds.value = [...(state?.pinnedRemovedResultIds ?? [])];
+    pinnedSelectedIndex.value = state?.pinnedSelectedIndex ?? 0;
+    overlayOpen.value = false;
+    searchLoading.value = false;
+    activeSearchId.value = undefined;
+    error.value = undefined;
+    searchProgress.value = { scannedFiles: 0, totalFiles: 0, emittedResults: 0 };
+  };
+
+  const deactivate = () => {
+    if (searchTimer !== undefined) window.clearTimeout(searchTimer);
+    searchTimer = undefined;
+    void cancelActiveSearch();
+    restoreRestorationState();
+  };
+
   watch([() => query.value, () => mode.value, () => activeFilters.value, searchScopeKey], scheduleCoreSearch);
   watch(
     () => results.value.length,
@@ -421,6 +462,9 @@ export const useSearchStore = defineStore('search', () => {
     selectPinnedResult,
     removePinnedResult,
     rememberQuery,
+    captureRestorationState,
+    restoreRestorationState,
+    deactivate,
   };
 });
 

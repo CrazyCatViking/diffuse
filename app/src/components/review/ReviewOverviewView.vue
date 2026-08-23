@@ -534,11 +534,13 @@ const loadDiagnostics = async () => {
 };
 
 const openFile = async (fileId: string) => {
-  await router.push(diffRoute(fileId));
+  const workspaceId = repo.workspace?.workspaceId;
+  if (workspaceId) await router.push(diffRoute(workspaceId, fileId));
 };
 
 const openThread = async (thread: ReviewThread) => {
-  await router.push(threadDiffRoute(thread));
+  const workspaceId = repo.workspace?.workspaceId;
+  if (workspaceId) await router.push(threadDiffRoute(workspaceId, thread));
 };
 
 watch(diagnosticScanKey, () => void loadDiagnostics(), { immediate: true });

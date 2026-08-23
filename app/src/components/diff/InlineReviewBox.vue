@@ -104,6 +104,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { ReviewAnchor, ReviewChatMessage, ReviewThread } from '../../lib/protocol';
+import { useReviewStore } from '../../stores/review';
 
 export type InlineReviewEntry =
   | {
@@ -146,7 +147,14 @@ const emit = defineEmits<{
   reopen: [thread: ReviewThread];
 }>();
 
-const replyBody = ref('');
+const review = useReviewStore();
+const replyBody = computed({
+  get: () => (props.entry.kind === 'thread' ? (review.replyDrafts[props.entry.thread.id] ?? '') : ''),
+  set: (value: string) => {
+    if (props.entry.kind !== 'thread') return;
+    review.replyDrafts = { ...review.replyDrafts, [props.entry.thread.id]: value };
+  },
+});
 const draftTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const replyTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const agentResponding = computed(() => props.agentResponding ?? false);

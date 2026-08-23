@@ -97,7 +97,12 @@ const loading = ref(false);
 const error = ref<string>();
 const syntaxSpans = shallowRef<Record<string, SyntaxSpan[]>>({});
 const diagnosticsByFile = shallowRef<Record<string, LspDiagnostic[]>>({});
-const draftBody = ref('');
+const draftBody = computed({
+  get: () => review.draftBody,
+  set: (value: string) => {
+    review.draftBody = value;
+  },
+});
 const collapsedCommentStarts = ref(new Set<string>());
 const expandedResolvedCommentStarts = ref(new Set<string>());
 let loadGeneration = 0;
@@ -656,7 +661,7 @@ watch(
   () => [folderPath.value, files.value.length] as const,
   ([path, count]) => {
     if (!path || count > 0) return;
-    void router.replace(overviewRoute());
+    if (repo.workspace?.workspaceId) void router.replace(overviewRoute(repo.workspace.workspaceId));
   },
 );
 

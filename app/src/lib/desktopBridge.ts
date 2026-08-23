@@ -39,7 +39,7 @@ export interface DesktopBridge {
   getVersion(): Promise<VersionInfo>;
   getWorkbenchSnapshot(): Promise<WorkbenchSnapshot>;
   openWorkspace(path: string): Promise<WorkspaceSnapshot>;
-  activateWorkspace(reference: WorkspaceReference): Promise<WorkspaceSnapshot>;
+  activateWorkspace(reference: WorkspaceReference | null): Promise<WorkspaceSnapshot | null>;
   closeWorkspace(reference: WorkspaceReference): Promise<WorkspaceSummary>;
   workspaceRequest: WorkspaceRequest;
   onWorkbenchEvent(listener: (event: WorkbenchEvent) => void): () => void;

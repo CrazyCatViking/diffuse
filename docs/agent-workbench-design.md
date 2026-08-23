@@ -689,7 +689,7 @@ Exit criteria:
 
 Purpose: remove per-window identity assumptions before replacing Zig.
 
-Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. Workspace IDs remain in-memory until Phase 3 adds SQLite persistence; workspace-keyed renderer restoration and the rail remain Phase 2 work.
+Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. Workspace IDs remain in-memory until Phase 3 adds SQLite persistence.
 
 Work:
 
@@ -712,6 +712,8 @@ Exit criteria:
 ### Phase 2: Single-Window Workbench UI
 
 Purpose: deliver and validate the final workspace interaction model while the legacy backend remains available.
+
+Implementation status: Complete. `useWorkbenchStore()` owns summaries, stable rail order, active presentation, event sequence, restore state, and bounded workspace-keyed UI records. The `76px` rail compacts to `52px` near the `900px` boundary; changed files and pinned search become drawers there. Workspace-prefixed routes, global overview, searchable switcher, roving tablist focus, configurable navigation commands, one active heavy component tree, route/diff/search/cursor/draft/focus restoration, renderer reload capture, and hide/reopen/tray lifecycle are implemented. Full input/error/unread attention counts remain Phase 5 because Phase 1 does not yet expose those durable entities.
 
 Work:
 
@@ -922,7 +924,6 @@ Exit criteria:
 
 These choices do not block the architecture and should be resolved from prototypes and measurements:
 
-- Exact compact rail width and repository identity treatment.
 - Whether optional grammar WASM ships in the first Rust release or follows bundled trusted parsers.
 - Exact idle time before evicting LSP sessions and native caches.
 - Adapter-specific ACP host pooling policies.

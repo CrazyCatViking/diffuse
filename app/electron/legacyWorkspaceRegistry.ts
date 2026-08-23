@@ -61,11 +61,13 @@ export class LegacyWorkspaceRegistry {
   private activeWorkspaceId: string | null = null;
   private sequence = 0;
   private openQueue: Promise<unknown> = Promise.resolve();
+  private presentationIntent = 0;
 
   constructor(private readonly options: LegacyWorkspaceRegistryOptions) {}
 
   openWorkspace(path: string): Promise<WorkspaceSnapshot> {
-    const operation = this.openQueue.then(() => this.openWorkspaceNow(path));
+    const intent = ++this.presentationIntent;
+    const operation = this.openQueue.then(() => this.openWorkspaceNow(path, intent));
     this.openQueue = operation.catch(() => undefined);
     return operation;
   }
@@ -94,11 +96,21 @@ export class LegacyWorkspaceRegistry {
   }
 
   activateWorkspace(reference: WorkspaceReference): WorkspaceSnapshot {
+    this.presentationIntent += 1;
+    return this.activateWorkspaceNow(reference);
+  }
+
+  private activateWorkspaceNow(reference: WorkspaceReference): WorkspaceSnapshot {
     const entry = this.requireEntry(reference);
     this.activeWorkspaceId = entry.workspaceId;
     const snapshot = this.snapshot(entry);
     this.publish('workspace/activated', snapshot, entry);
     return snapshot;
+  }
+
+  deactivateWorkspace(): void {
+    this.presentationIntent += 1;
+    this.activeWorkspaceId = null;
   }
 
   getWorkspaceSnapshot(reference: WorkspaceReference): WorkspaceSnapshot {
@@ -138,7 +150,7 @@ export class LegacyWorkspaceRegistry {
     this.activeWorkspaceId = null;
   }
 
-  private async openWorkspaceNow(path: string): Promise<WorkspaceSnapshot> {
+  private async openWorkspaceNow(path: string, intent: number): Promise<WorkspaceSnapshot> {
     if (!path.trim()) throw new Error('Workspace path is required');
 
     const candidate = this.options.createClient();
@@ -160,7 +172,7 @@ export class LegacyWorkspaceRegistry {
     const known = this.roots.get(canonicalRoot);
     if (known?.state === 'ready') {
       candidate.dispose();
-      return this.activateWorkspace(known);
+      return intent === this.presentationIntent ? this.activateWorkspaceNow(known) : this.snapshot(known);
     }
 
     const entry: WorkspaceEntry = known ?? {
@@ -183,11 +195,12 @@ export class LegacyWorkspaceRegistry {
     this.entries.set(entry.workspaceId, entry);
     this.roots.set(canonicalRoot, entry);
     this.bindClient(entry, candidate, entry.workspaceGeneration);
-    this.activeWorkspaceId = entry.workspaceId;
-
     const snapshot = this.snapshot(entry);
     this.publish('workspace/added', snapshot.summary, entry);
-    this.publish('workspace/activated', snapshot, entry);
+    if (intent === this.presentationIntent) {
+      this.activeWorkspaceId = entry.workspaceId;
+      this.publish('workspace/activated', snapshot, entry);
+    }
     return snapshot;
   }
 

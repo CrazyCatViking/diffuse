@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type Input, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray, type Input, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -14,6 +14,7 @@ import {
   type WorkspaceRequestContext,
 } from '../src/lib/workbenchContract';
 import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
+import { windowCloseDisposition } from './windowLifecycle';
 
 const workspaceMethodNames = coreMethodNames.filter(
   (method): method is WorkspaceCoreMethod => method !== 'getVersion' && method !== 'openRepository',
@@ -22,6 +23,8 @@ const allowedWorkspaceMethods = new Set<WorkspaceCoreMethod>(workspaceMethodName
 let primaryWindow: BrowserWindow | null = null;
 let initialWorkspaceOpen: Promise<unknown> = Promise.resolve();
 let reviewAgentOwner: { context: WorkspaceRequestContext; runner: ReviewAgentRunner } | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 
 const registry = new LegacyWorkspaceRegistry({
   createClient: startCoreProcess,
@@ -74,6 +77,17 @@ function createWindow(): BrowserWindow {
     console.error(`Failed to load preload script ${preloadPath}:`, error);
   });
   installKeyboardDefaultGuards(window);
+  window.on('close', (event) => {
+    const disposition = windowCloseDisposition(isQuitting, Boolean(tray));
+    if (disposition === 'close') return;
+    if (disposition === 'quit') {
+      isQuitting = true;
+      app.quit();
+      return;
+    }
+    event.preventDefault();
+    window.hide();
+  });
   window.on('closed', () => {
     if (primaryWindow === window) primaryWindow = null;
   });
@@ -84,6 +98,46 @@ function createWindow(): BrowserWindow {
     void window.loadFile(join(__dirname, '../renderer/index.html'));
   }
   return window;
+}
+
+function showPrimaryWindow(): BrowserWindow {
+  const window = createWindow();
+  focusWindow(window);
+  return window;
+}
+
+function createTray(): void {
+  if (tray) return;
+  try {
+    const svg = [
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
+      '<rect width="32" height="32" rx="7" fill="#4b7bec"/>',
+      '<path d="M9 7h7.5C22.4 7 26 10.4 26 16s-3.6 9-9.5 9H9V7zm6 5v8h1.3c2.6 0 4.2-1.3 4.2-4s-1.6-4-4.2-4H15z" fill="white"/>',
+      '</svg>',
+    ].join('');
+    const icon = nativeImage
+      .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+      .resize({ width: 18, height: 18 });
+    tray = new Tray(icon);
+    tray.setToolTip('Diffuse');
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'Show Diffuse', click: () => showPrimaryWindow() },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
+      ]),
+    );
+    tray.on('click', () => showPrimaryWindow());
+  } catch (error) {
+    tray = null;
+    console.error('Could not create Diffuse tray icon:', error);
+  }
 }
 
 function installKeyboardDefaultGuards(window: BrowserWindow): void {
@@ -144,13 +198,13 @@ export function parseLaunchRepository(args: string[], cwd = process.cwd()): stri
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
+  createTray();
   createWindow();
   const launchPath = parseLaunchRepository(process.argv);
   if (launchPath) initialWorkspaceOpen = openWorkspaceFromMain(launchPath);
 
   app.on('activate', () => {
-    const window = createWindow();
-    focusWindow(window);
+    showPrimaryWindow();
   });
 });
 
@@ -158,8 +212,7 @@ app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
   const cwd = isCwdPayload(additionalData) ? additionalData.cwd : workingDirectory;
   const launchPath = parseLaunchRepository(argv, cwd);
   const handleInvocation = async () => {
-    const window = createWindow();
-    focusWindow(window);
+    showPrimaryWindow();
     if (launchPath) await openWorkspaceFromMain(launchPath);
   };
   if (app.isReady()) void handleInvocation();
@@ -178,14 +231,15 @@ async function openWorkspaceFromMain(path: string): Promise<void> {
   }
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => undefined);
 
 app.on('before-quit', () => {
+  isQuitting = true;
   reviewAgentOwner?.runner.dispose();
   reviewAgentOwner = null;
   registry.dispose();
+  tray?.destroy();
+  tray = null;
 });
 
 function getRequestWindow(event: IpcMainInvokeEvent): BrowserWindow {
@@ -248,6 +302,10 @@ ipcMain.handle('workspace:open', async (event, request: unknown) => {
 
 ipcMain.handle('workspace:activate', async (event, reference: unknown) => {
   getRequestWindow(event);
+  if (reference === null) {
+    registry.deactivateWorkspace();
+    return null;
+  }
   if (!isWorkspaceReference(reference)) throw new Error('Invalid workspace reference');
   return registry.activateWorkspace(reference);
 });

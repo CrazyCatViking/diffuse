@@ -3,20 +3,20 @@
     <Row justify="between">
       <Row justify="start">
         <div class="brand">
-          <span class="brand-mark">D</span>
+          <span class="brand-mark" aria-hidden="true">D</span>
 
           <span>Diffuse</span>
         </div>
 
         <Button size="sm" :disabled="loading" @click="$emit('openRepository')">
-          {{ loading ? 'Opening...' : 'Open Repository' }}
+          {{ loading ? 'Opening...' : 'Workspaces' }}
         </Button>
 
         <div v-if="$slots['repository-controls']" class="repository-controls">
           <slot name="repository-controls" />
         </div>
 
-        <div class="repo-path" :title="repoPath ?? ''">{{ repoPath ?? 'No repository selected' }}</div>
+        <div class="repo-path" :title="repoPath ?? ''">{{ repoPath ?? 'Workbench overview' }}</div>
       </Row>
 
       <Row justify="end">
@@ -90,5 +90,16 @@ defineEmits<{
 .repository-controls {
   flex: 0 0 auto;
   min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .repo-path,
+  .brand > span:last-child {
+    display: none;
+  }
+
+  .brand {
+    gap: 0;
+  }
 }
 </style>

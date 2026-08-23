@@ -74,6 +74,13 @@ type CursorHistoryEntry = {
   surface: CursorSurface;
 };
 
+export type CursorRestorationState = {
+  activeSurfaceId?: string;
+  surfaces: CursorSurface[];
+  history: CursorHistoryEntry[];
+  historyIndex: number;
+};
+
 type ParsedBinding = {
   action: DiffKeybindingAction;
   tokens: string[];
@@ -87,6 +94,8 @@ export const reviewOverviewSurfaceId = 'review-overview';
 
 export const diffSurfaceId = (fileId: string, side: 'old' | 'new') => `diff:${encodeURIComponent(fileId)}:${side}`;
 export const folderDiffSurfaceId = (folderPath: string) => `folder-diff:${encodeURIComponent(folderPath)}`;
+const maxRestoredCursorEntries = 200;
+let cursorWorkspaceId: string | undefined;
 
 export const useCursorStore = defineStore('cursor', () => {
   const settings = useSettingsStore();
@@ -409,6 +418,39 @@ export const useCursorStore = defineStore('cursor', () => {
     countDigits = '';
   };
 
+  const captureRestorationState = (): CursorRestorationState => {
+    const historyStart = Math.max(0, surfacePositionHistory.length - maxRestoredCursorEntries);
+    return {
+      activeSurfaceId: activeSurfaceId.value,
+      surfaces: [...surfaces.values()].slice(-maxRestoredCursorEntries).map((surfaceRef) => cloneSurface(surfaceRef.value)),
+      history: surfacePositionHistory
+        .slice(historyStart)
+        .map((entry) => ({ surfaceId: entry.surfaceId, surface: cloneSurface(entry.surface) })),
+      historyIndex: Math.max(-1, surfacePositionHistoryIndex - historyStart),
+    };
+  };
+
+  const restoreRestorationState = (workspaceId: string, state?: CursorRestorationState) => {
+    cursorWorkspaceId = workspaceId || undefined;
+    activeSurfaceId.value = state?.activeSurfaceId;
+    surfaces.clear();
+    openSurfaceIds.clear();
+    surfaceMounts.clear();
+    pendingActivationReasons.clear();
+    surfacePositionHistory.splice(0);
+    for (const surface of state?.surfaces ?? []) surfaces.set(surface.id, ref(cloneSurface(surface)) as Ref<CursorSurface>);
+    surfacePositionHistory.push(
+      ...(state?.history ?? []).map((entry) => ({ surfaceId: entry.surfaceId, surface: cloneSurface(entry.surface) })),
+    );
+    surfacePositionHistoryIndex = state?.historyIndex ?? -1;
+    clearPending();
+  };
+
+  const clearWorkspace = () => {
+    cursorWorkspaceId = undefined;
+    restoreRestorationState('', undefined);
+  };
+
   return {
     activeSurfaceId,
     handleKeyDown,
@@ -420,6 +462,9 @@ export const useCursorStore = defineStore('cursor', () => {
     setNavigator,
     surface,
     unregisterSurface,
+    captureRestorationState,
+    restoreRestorationState,
+    clearWorkspace,
   };
 });
 
@@ -465,7 +510,7 @@ const sameHistoryEntry = (first: CursorHistoryEntry | undefined, second: CursorH
 
 const routeForSurfaceId = (surfaceId: string): RouteLocationRaw | undefined => {
   const diff = parseDiffSurfaceId(surfaceId);
-  return diff ? diffRoute(diff.fileId) : undefined;
+  return diff && cursorWorkspaceId ? diffRoute(cursorWorkspaceId, diff.fileId) : undefined;
 };
 
 const parseDiffSurfaceId = (surfaceId: string): { fileId: string; side: 'old' | 'new' } | undefined => {

@@ -67,15 +67,45 @@ describe('LegacyWorkspaceRegistry', () => {
     expect(events.some((event) => event.kind === 'search/started' && event.payload.searchId === 'stale-search')).toBe(false);
     await expect(registry.request(context(first, 'old-generation'), 'listBranches', undefined)).rejects.toBeInstanceOf(StaleWorkspaceError);
   });
+
+  it('does not let a slow open override a newer activation intent', async () => {
+    const events: WorkbenchEvent[] = [];
+    const clients: FakeCoreClient[] = [];
+    const openSecond = deferred<unknown>();
+    let id = 0;
+    const registry = new LegacyWorkspaceRegistry({
+      createClient: () => {
+        const client = new FakeCoreClient();
+        if (clients.length === 1) client.openRepositoryResponse = openSecond.promise;
+        clients.push(client);
+        return client;
+      },
+      canonicalizeRoot: async (root) => root,
+      createId: () => `intent-${++id}`,
+      onEvent: (event) => events.push(event),
+    });
+    const first = await registry.openWorkspace('/repo-a');
+    const slowOpen = registry.openWorkspace('/repo-b');
+    await Promise.resolve();
+
+    registry.activateWorkspace(first.summary);
+    openSecond.resolve({ root: '/repo-b', head: 'head-b' });
+    await slowOpen;
+
+    expect(registry.getWorkbenchSnapshot().activeWorkspaceId).toBe(first.summary.workspaceId);
+    expect(events.filter((event) => event.kind === 'workspace/activated').at(-1)?.workspaceId).toBe(first.summary.workspaceId);
+  });
 });
 
 class FakeCoreClient extends EventEmitter {
   isRunning = true;
   disposed = false;
   readonly responses = new Map<string, unknown | Promise<unknown>>();
+  openRepositoryResponse?: Promise<unknown>;
 
   async request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (method === 'openRepository') {
+      if (this.openRepositoryResponse) return (await this.openRepositoryResponse) as T;
       const root = String(params.path);
       return { root, head: `head:${root}` } as T;
     }

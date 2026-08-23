@@ -30,7 +30,7 @@ const openWorkspace = (path: string) => {
   return ipcRenderer.invoke('workspace:open', { path });
 };
 
-const activateWorkspace = (reference: WorkspaceReference) => {
+const activateWorkspace = (reference: WorkspaceReference | null) => {
   return ipcRenderer.invoke('workspace:activate', reference);
 };
 

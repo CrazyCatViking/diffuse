@@ -78,10 +78,23 @@ export const useDiffStore = defineStore('diff', () => {
   };
 
   const clear = () => {
+    loadGeneration += 1;
     current.value = undefined;
     currentFileId.value = undefined;
     error.value = undefined;
     hasNewChanges.value = false;
+  };
+
+  const captureRestorationState = () => ({
+    viewMode: viewMode.value,
+    contextMode: contextMode.value,
+    syncScroll: syncScroll.value,
+  });
+
+  const restoreRestorationState = (state?: { viewMode: DiffViewMode; contextMode: DiffContextMode; syncScroll: boolean }) => {
+    viewMode.value = state?.viewMode ?? 'split';
+    contextMode.value = state?.contextMode ?? 'diff';
+    syncScroll.value = state?.syncScroll ?? true;
   };
 
   const markNewChanges = () => {
@@ -115,6 +128,8 @@ export const useDiffStore = defineStore('diff', () => {
     loadDiff,
     installMissingGrammar,
     clear,
+    captureRestorationState,
+    restoreRestorationState,
     markNewChanges,
     setViewMode,
     setContextMode,

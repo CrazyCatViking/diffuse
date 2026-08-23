@@ -65,17 +65,11 @@ export const useRepoStore = defineStore('repo', () => {
   let refreshInFlight = false;
   let refreshQueued = false;
   let workspaceLoadGeneration = 0;
+  let refreshEpoch = 0;
 
   const activeFile = computed(() => changedFiles.value.find((file) => file.id === activeFileId.value) ?? null);
 
   window.diffuse.onWorkbenchEvent((event) => {
-    if (event.kind === 'workspace/activated') {
-      setActiveWorkspace(event.payload.summary);
-      void loadWorkspace(event.payload).catch((err) => {
-        if (isActiveWorkspace(event.payload.summary)) error.value = err instanceof Error ? err.message : JSON.stringify(err);
-      });
-      return;
-    }
     if (event.kind !== 'repository/changed' || !isActiveWorkspace(event)) return;
     if (event.payload.root !== repository.value?.root) return;
     void refreshChangedFiles({ selectFallback: false, trackChangedIds: true, changedPaths: event.payload.paths });
@@ -118,8 +112,11 @@ export const useRepoStore = defineStore('repo', () => {
     if (snapshot.activeWorkspace) await loadWorkspace(snapshot.activeWorkspace);
   };
 
-  const loadWorkspace = async (snapshot: WorkspaceSnapshot) => {
+  const loadWorkspace = async (snapshot: WorkspaceSnapshot, restoredTarget?: DiffTarget) => {
     const generation = ++workspaceLoadGeneration;
+    refreshEpoch += 1;
+    refreshInFlight = false;
+    refreshQueued = false;
     workspace.value = snapshot.summary;
     repository.value = snapshot.repository;
     setActiveWorkspace(snapshot.summary);
@@ -131,8 +128,25 @@ export const useRepoStore = defineStore('repo', () => {
     if (generation !== workspaceLoadGeneration || !isActiveWorkspace(snapshot.summary)) return;
     diffTargetDefaults.value = defaults;
     branches.value = nextBranches;
-    diffTarget.value = targetFromDefaults(defaults);
+    diffTarget.value = restoredTarget ? normalizeTarget(restoredTarget) : targetFromDefaults(defaults);
     await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
+  };
+
+  const clearActiveWorkspace = () => {
+    workspaceLoadGeneration += 1;
+    refreshEpoch += 1;
+    refreshInFlight = false;
+    refreshQueued = false;
+    workspace.value = undefined;
+    repository.value = undefined;
+    diffTarget.value = { includeStaged: true, includeUnstaged: true };
+    diffTargetDefaults.value = undefined;
+    branches.value = [];
+    changedFiles.value = [];
+    activeFileId.value = undefined;
+    changedFileIds.value = [];
+    loading.value = false;
+    error.value = undefined;
   };
 
   const refreshChangedFiles = async (options: { selectFallback?: boolean; trackChangedIds?: boolean; changedPaths?: string[] } = {}) => {
@@ -143,8 +157,10 @@ export const useRepoStore = defineStore('repo', () => {
     }
 
     refreshInFlight = true;
+    const epoch = refreshEpoch;
     try {
       const files = await withContext('list changed files', () => client.listChangedFiles(diffTarget.value));
+      if (epoch !== refreshEpoch) return;
       const previousActiveFileId = activeFileId.value;
       changedFileIds.value =
         options.trackChangedIds === false ? [] : changedFileIdsBetween(changedFiles.value, files, options.changedPaths ?? []);
@@ -156,8 +172,10 @@ export const useRepoStore = defineStore('repo', () => {
       }
       changeRevision.value += 1;
     } catch (err) {
+      if (epoch !== refreshEpoch) return;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
     } finally {
+      if (epoch !== refreshEpoch) return;
       refreshInFlight = false;
       if (refreshQueued) {
         refreshQueued = false;
@@ -274,6 +292,8 @@ export const useRepoStore = defineStore('repo', () => {
 
     loadVersion,
     restoreWorkbench,
+    loadWorkspace,
+    clearActiveWorkspace,
     pickAndOpenRepository,
     openRepository,
     refreshChangedFiles,

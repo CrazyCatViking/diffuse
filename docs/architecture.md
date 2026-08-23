@@ -82,6 +82,8 @@ The Electron RPC client preserves `error.code`, `error.message`, and optional `e
 
 Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event. Main shows the existing primary window and asks the registry to add or activate the canonical workspace; it never creates another workspace window.
 
+Closing the primary window hides it when the tray is available instead of disposing renderer-independent workspace runtimes. Tray Show and a second invocation restore and focus the same window. Only tray Quit or another explicit application quit sets the quitting state, allows window destruction, and disposes the review runner plus registry. If tray creation fails, close falls back to quitting rather than leaving an invisible process.
+
 ## Renderer State
 
 The Vue app starts in `app/src/main.ts`, installs Pinia and Vue Router with memory history, and renders `App.vue`.
@@ -92,10 +94,13 @@ The main page is organized around stores:
 - `useDiffStore()` owns the current diff model, view mode, context mode, synchronized scrolling, grammar install state, and diff errors.
 - `useSearchStore()` owns the renderer-side search query, mode, active filters, grouped results, global palette state, pinned drawer snapshot state, and selected result cursors.
 - `useCursorStore()` owns persisted cursor surface state, the active surface id, currently mounted/open surface handlers, geometry-based surface movement, global cursor key parsing, and recorded cursor-position history.
+- `useWorkbenchStore()` owns ordered workspace summaries, the presentation-active workspace, event sequence, restore health, and bounded renderer-local UI records keyed by workspace ID.
 
-Phase 1 keeps these stores as one active rendered workspace and retains only bounded active identity in the renderer. Workspace-keyed route, cursor, search, draft, and focus restoration plus the workspace rail are Phase 2 responsibilities. The renderer still sends immutable identity on every individual backend request and rejects a response if the active workspace changed while that request was running.
+The existing feature stores remain one active projection rather than one Pinia instance per workspace. `useWorkbenchStore()` retains compact route, diff-target/layout, search/pinned-result, cursor-history, review-draft, and logical-focus records in versioned local storage. Repository arrays, full diff models, review entities, live search streams, syntax/LSP state, timers, queues, and DOM registrations are cleared on switch and reloaded only for the active workspace. Renderer activation epochs prevent an A to B to A sequence from accepting work started during the first A presentation.
 
-`App.vue` owns the shell around the workspace: top bar, repository picker, settings dialog, changed-file tree, pinned search drawer, global keyboard suppression, and search result routing. The main workspace surface is route-driven through `<RouterView />`. Routes live in `app/src/routes.ts` and currently cover review overview, single-file diff, and folder diff. Routed views read store-backed state directly instead of receiving repository, diff, review, and target state through `App.vue` props.
+`App.vue` coordinates the shell around the workbench: top bar, workspace rail, settings, changed-file tree, pinned search drawer, switcher, keyboard commands, active-store capture/restore, and search-result routing. It captures compact outgoing state before activation, unmounts the heavy workspace surface, restores the incoming active projection, and mounts content only when the route workspace ID agrees with the loaded repository. A `pagehide` capture preserves current UI state across renderer reload.
+
+Routes are `/workbench`, `/w/:workspaceId/review`, `/w/:workspaceId/file/:fileId`, and `/w/:workspaceId/folder/:folderPath`. Route producers require explicit workspace identity. Direct navigation to another known workspace activates it before rendering its saved route.
 
 Cursor surfaces are registered by the mounted Vue components that render them. `ChangedFilesPane.vue`, `DiffViewer.vue`, `SearchResultsDrawer.vue`, `ReviewOverviewView.vue`, and `FolderDiffViewer.vue` each register a surface id, persisted position state, live rectangle lookup, and optional motion/command handlers. The cursor store keeps the persisted surface state in a plain map even after a surface unmounts, while a separate mounted-surface set decides which surfaces participate in geometry-based movement. Surface ids encode enough route information for restoration, such as `diff:<encoded file id>:old`, `diff:<encoded file id>:new`, and `folder-diff:<encoded folder path>`.
 
@@ -105,10 +110,10 @@ Workspace route helpers live in `app/src/lib/workspaceRoutes.ts`. They normalize
 
 The main user flow is:
 
-1. The top bar emits `open-repository`.
-2. `repo.pickAndOpenRepository()` asks Electron for a directory.
-3. `repo.openRepository(path)` sends the global `openWorkspace` command, captures its workspace ID and generation, then sends workspace-scoped target, branch, and changed-file requests.
-4. `App.vue` routes the workspace to the review overview for the opened repository.
+1. The top bar or rail opens the workspace switcher or native directory picker.
+2. `useWorkbenchStore.openWorkspace(path)` sends the global command and records the returned summary in stable rail order.
+3. `App.vue` restores that workspace's compact UI record and asks `useRepoStore()` to load target defaults, branches, and changed files under its explicit workspace identity.
+4. The router restores the workspace's last review, file, or folder route, defaulting to review overview.
 5. Selecting a file or folder updates the workspace route.
 6. `DiffViewer.vue` watches the file route param and calls `diff.loadDiff(fileId)`.
 7. `diff.loadDiff()` sends `getDiffRenderModel` with the current view/context options.
