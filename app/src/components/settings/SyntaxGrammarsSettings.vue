@@ -125,7 +125,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { TreeSitterGrammar } from '../../lib/protocol';
-import { useClient } from '../../lib/useClient';
+import { isActiveWorkspace, useClient } from '../../lib/useClient';
 import Button from '../Button.vue';
 import SearchInput from '../search/SearchInput.vue';
 import Badge from '../ui/Badge.vue';
@@ -170,10 +170,6 @@ const filteredGrammars = computed(() => {
     })
     .sort((first, second) => Number(second.installed) - Number(first.installed) || first.id.localeCompare(second.id));
 });
-
-const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
-  return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
-};
 
 const grammarMatchesFilter = (grammar: TreeSitterGrammar) => {
   if (grammarFilter.value === 'installed') return grammar.installed;
@@ -263,13 +259,10 @@ const grammarRowClass = (grammar: TreeSitterGrammar) => ({
 });
 
 onMounted(() => {
-  removeCoreEventListener = window.diffuse.onCoreEvent((event) => {
-    if (!isCoreEvent(event) || event.method !== 'treeSitter/installProgress') return;
-    if (!event.params || typeof event.params !== 'object') return;
-
-    const params = event.params as { language?: unknown; step?: unknown };
-    if (params.language !== installingLanguage.value) return;
-    if (typeof params.step === 'string') installStep.value = params.step;
+  removeCoreEventListener = window.diffuse.onWorkbenchEvent((event) => {
+    if (event.kind !== 'treeSitter/installProgress' || !isActiveWorkspace(event)) return;
+    if (event.payload.language !== installingLanguage.value) return;
+    installStep.value = event.payload.step;
   });
 
   void loadGrammars();

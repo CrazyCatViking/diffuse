@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
-import { useClient } from '../lib/useClient';
+import { isActiveWorkspace, useClient } from '../lib/useClient';
 import type {
   ChangedFile,
   DiffTarget,
@@ -52,17 +52,10 @@ export const useReviewStore = defineStore('review', () => {
     return [...states].sort((first, second) => (second.updatedAt ?? '').localeCompare(first.updatedAt ?? ''))[0] ?? null;
   });
 
-  const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
-    return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
-  };
-
-  window.diffuse.onCoreEvent((event) => {
-    if (!isCoreEvent(event) || event.method !== 'review/changed') return;
-    if (!event.params || typeof event.params !== 'object') return;
-
-    const params = event.params as { root?: unknown; sessionId?: unknown };
-    if (params.root !== repo.repository?.root) return;
-    if (typeof params.sessionId === 'string' && session.value?.id && params.sessionId !== session.value.id) return;
+  window.diffuse.onWorkbenchEvent((event) => {
+    if (event.kind !== 'review/changed' || !isActiveWorkspace(event)) return;
+    if (event.payload.root !== repo.repository?.root) return;
+    if (event.payload.sessionId && session.value?.id && event.payload.sessionId !== session.value.id) return;
     void refreshReviewState();
   });
 

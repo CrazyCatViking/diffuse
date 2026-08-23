@@ -1,6 +1,6 @@
 import { computed, ref, shallowRef, watch } from 'vue';
 import { defineStore } from 'pinia';
-import { useClient } from '../lib/useClient';
+import { isActiveWorkspace, useClient } from '../lib/useClient';
 import { useRepoStore } from './repo';
 import { useReviewStore } from './review';
 import { buildSearchableFiles } from '../lib/search/searchMetadata';
@@ -89,52 +89,53 @@ export const useSearchStore = defineStore('search', () => {
     }),
   );
 
-  window.diffuse.onCoreEvent((event) => {
-    if (event.method === 'search/started') {
-      if (event.params.searchId === activeSearchId.value) searchLoading.value = true;
+  window.diffuse.onWorkbenchEvent((event) => {
+    if (!isActiveWorkspace(event)) return;
+    if (event.kind === 'search/started') {
+      if (event.payload.searchId === activeSearchId.value) searchLoading.value = true;
       return;
     }
 
-    if (event.method === 'search/results') {
-      if (event.params.searchId !== activeSearchId.value) return;
-      queueCoreResults(event.params.results);
+    if (event.kind === 'search/results') {
+      if (event.payload.searchId !== activeSearchId.value) return;
+      queueCoreResults(event.payload.results);
       return;
     }
 
-    if (event.method === 'search/progress') {
-      if (event.params.searchId !== activeSearchId.value) return;
+    if (event.kind === 'search/progress') {
+      if (event.payload.searchId !== activeSearchId.value) return;
       searchProgress.value = {
-        scannedFiles: event.params.scannedFiles,
-        totalFiles: event.params.totalFiles,
-        emittedResults: event.params.emittedResults,
+        scannedFiles: event.payload.scannedFiles,
+        totalFiles: event.payload.totalFiles,
+        emittedResults: event.payload.emittedResults,
       };
       return;
     }
 
-    if (event.method === 'search/done') {
-      if (event.params.searchId !== activeSearchId.value) return;
+    if (event.kind === 'search/done') {
+      if (event.payload.searchId !== activeSearchId.value) return;
       searchLoading.value = false;
       activeSearchId.value = undefined;
       flushCoreResults();
       searchProgress.value = {
         ...searchProgress.value,
-        scannedFiles: event.params.scannedFiles,
-        emittedResults: event.params.totalResults,
+        scannedFiles: event.payload.scannedFiles,
+        emittedResults: event.payload.totalResults,
       };
       clampSelectedIndex();
       return;
     }
 
-    if (event.method === 'search/cancelled') {
-      if (event.params.searchId !== activeSearchId.value) return;
+    if (event.kind === 'search/cancelled') {
+      if (event.payload.searchId !== activeSearchId.value) return;
       searchLoading.value = false;
       activeSearchId.value = undefined;
       return;
     }
 
-    if (event.method === 'search/error') {
-      if (event.params.searchId !== activeSearchId.value) return;
-      error.value = event.params.message;
+    if (event.kind === 'search/error') {
+      if (event.payload.searchId !== activeSearchId.value) return;
+      error.value = event.payload.message;
       searchLoading.value = false;
       activeSearchId.value = undefined;
     }

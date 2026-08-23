@@ -144,7 +144,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { LspConfigInfo, LspServerInfo } from '../../lib/protocol';
-import { useClient } from '../../lib/useClient';
+import { isActiveWorkspace, useClient } from '../../lib/useClient';
 import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
@@ -171,10 +171,6 @@ const lspSummary = computed(() => ({
   missing: lspServers.value.filter((server) => !server.installed).length,
   errors: lspServers.value.filter((server) => server.lastError).length,
 }));
-
-const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
-  return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
-};
 
 const loadLspConfigInfo = async () => {
   lspLoading.value = true;
@@ -273,13 +269,10 @@ const lspSessionBadgeTone = (server: LspServerInfo): BadgeTone => {
 };
 
 onMounted(() => {
-  removeCoreEventListener = window.diffuse.onCoreEvent((event) => {
-    if (!isCoreEvent(event) || event.method !== 'lsp/installProgress') return;
-    if (!event.params || typeof event.params !== 'object') return;
-
-    const params = event.params as { serverId?: unknown; step?: unknown };
-    if (params.serverId !== installingLspServer.value) return;
-    if (typeof params.step === 'string') lspInstallStep.value = params.step;
+  removeCoreEventListener = window.diffuse.onWorkbenchEvent((event) => {
+    if (event.kind !== 'lsp/installProgress' || !isActiveWorkspace(event)) return;
+    if (event.payload.serverId !== installingLspServer.value) return;
+    lspInstallStep.value = event.payload.step;
   });
 
   void loadLspConfigInfo();

@@ -1,23 +1,41 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { CoreEvent, CoreRequest } from '../src/lib/coreContract';
 import type { DesktopBridge, ReviewAgentChatRequest, ReviewAgentStartRequest } from '../src/lib/desktopBridge';
+import { isWorkbenchEvent, type WorkspaceReference, type WorkspaceRequest } from '../src/lib/workbenchContract';
 
-const coreRequest: CoreRequest = (method, ...args) => {
-  return ipcRenderer.invoke('core:request', { method, params: args[0] });
+const workspaceRequest: WorkspaceRequest = (context, method, ...args) => {
+  return ipcRenderer.invoke('workspace:request', { context, method, params: args[0] });
 };
 
-const onCoreEvent = (listener: (event: CoreEvent) => void) => {
-  const handler = (_event: IpcRendererEvent, coreEvent: CoreEvent) => listener(coreEvent);
-  ipcRenderer.on('core:event', handler);
-  return () => ipcRenderer.off('core:event', handler);
+const onWorkbenchEvent: DesktopBridge['onWorkbenchEvent'] = (listener) => {
+  const handler = (_event: IpcRendererEvent, workbenchEvent: unknown) => {
+    if (isWorkbenchEvent(workbenchEvent)) listener(workbenchEvent);
+  };
+  ipcRenderer.on('workbench:event', handler);
+  return () => ipcRenderer.off('workbench:event', handler);
 };
 
 const pickRepository = () => {
   return ipcRenderer.invoke('repo:pickDirectory');
 };
 
-const getLaunchRepository = () => {
-  return ipcRenderer.invoke('app:getLaunchRepository');
+const getVersion = () => {
+  return ipcRenderer.invoke('app:getVersion');
+};
+
+const getWorkbenchSnapshot = () => {
+  return ipcRenderer.invoke('workbench:getSnapshot');
+};
+
+const openWorkspace = (path: string) => {
+  return ipcRenderer.invoke('workspace:open', { path });
+};
+
+const activateWorkspace = (reference: WorkspaceReference) => {
+  return ipcRenderer.invoke('workspace:activate', reference);
+};
+
+const closeWorkspace = (reference: WorkspaceReference) => {
+  return ipcRenderer.invoke('workspace:close', reference);
 };
 
 const openLspConfig = (configPath?: string) => {
@@ -28,8 +46,8 @@ const startReviewAgent = (request: ReviewAgentStartRequest) => {
   return ipcRenderer.invoke('review-agent:start', request);
 };
 
-const stopReviewAgent = () => {
-  return ipcRenderer.invoke('review-agent:stop');
+const stopReviewAgent: DesktopBridge['stopReviewAgent'] = (context) => {
+  return ipcRenderer.invoke('review-agent:stop', context);
 };
 
 const chatWithReviewAgent = (request: ReviewAgentChatRequest) => {
@@ -38,10 +56,14 @@ const chatWithReviewAgent = (request: ReviewAgentChatRequest) => {
 
 const bridge = {
   pickRepository,
-  getLaunchRepository,
   openLspConfig,
-  coreRequest,
-  onCoreEvent,
+  getVersion,
+  getWorkbenchSnapshot,
+  openWorkspace,
+  activateWorkspace,
+  closeWorkspace,
+  workspaceRequest,
+  onWorkbenchEvent,
   startReviewAgent,
   stopReviewAgent,
   chatWithReviewAgent,

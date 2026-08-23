@@ -41,6 +41,7 @@ export class CoreRpcClient extends EventEmitter {
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private exited = false;
+  private exitEmitted = false;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     super();
@@ -54,16 +55,12 @@ export class CoreRpcClient extends EventEmitter {
     });
 
     child.on('error', (error) => {
-      this.exited = true;
-      this.rejectAll(error);
-      this.emit('exit', { code: null, signal: null });
+      this.finishExit(error, null, null);
     });
 
     child.on('exit', (code, signal) => {
-      this.exited = true;
       const error = new Error(`Diffuse core exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`);
-      this.rejectAll(error);
-      this.emit('exit', { code, signal });
+      this.finishExit(error, code, signal);
     });
   }
 
@@ -86,11 +83,9 @@ export class CoreRpcClient extends EventEmitter {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        if (killOnTimeout) {
-          this.exited = true;
-          this.child.kill();
-        }
-        reject(new CoreRequestTimeoutError(method));
+        const error = new CoreRequestTimeoutError(method);
+        if (killOnTimeout) this.dispose(error);
+        reject(error);
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -115,9 +110,10 @@ export class CoreRpcClient extends EventEmitter {
     });
   }
 
-  dispose(): void {
+  dispose(error = new Error('Diffuse core was disposed')): void {
     this.exited = true;
-    this.child.kill();
+    this.rejectAll(error);
+    if (!this.child.killed) this.child.kill();
   }
 
   private rejectAll(error: Error): void {
@@ -126,6 +122,14 @@ export class CoreRpcClient extends EventEmitter {
       pending.reject(error);
       this.pending.delete(id);
     }
+  }
+
+  private finishExit(error: Error, code: number | null, signal: NodeJS.Signals | null): void {
+    this.exited = true;
+    this.rejectAll(error);
+    if (this.exitEmitted) return;
+    this.exitEmitted = true;
+    this.emit('exit', { code, signal });
   }
 
   private handleLine(line: string): void {

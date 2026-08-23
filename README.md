@@ -208,7 +208,7 @@ diffuse diff --repo /path/to/repository --file src/example.ts
 
 ## Reviewing Changes
 
-When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository.
+When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository. Opening another repository reuses the primary Diffuse window and keeps the previous workspace loaded in the background; invoking `diffuse <path>` again activates or adds that repository in the existing application instead of opening another workspace window.
 
 After opening a repository, Diffuse shows a review overview alongside changed files in a collapsible folder tree. The overview summarizes review progress, change totals, review threads, AI activity, and LSP diagnostics for supported changed files. Use the overview to create review sessions and start or stop AI review runs. Diagnostics are checked while the overview is open, so the diff workspace does not spend space on always-visible review controls.
 

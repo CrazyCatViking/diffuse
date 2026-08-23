@@ -4,6 +4,7 @@ import { platform } from 'node:os';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CoreEvent } from '../src/lib/coreContract';
+import type { WorkbenchEvent } from '../src/lib/workbenchContract';
 import type {
   ChangedFile,
   DiffRenderModel,
@@ -14,6 +15,7 @@ import type {
 } from '../src/lib/protocol';
 import { createRepositoryFixture, type RepositoryFixture } from '../src/test/repositoryFixture';
 import { CoreRpcClient, CoreRpcError } from './coreRpcClient';
+import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 
 const executable = resolve('../core/zig-out/bin', platform() === 'win32' ? 'diffuse.exe' : 'diffuse');
 
@@ -119,5 +121,36 @@ describe('Zig core RPC baseline', () => {
     expect(events.map((event) => event.method)).toEqual(
       expect.arrayContaining(['search/started', 'search/results', 'search/progress', 'search/done']),
     );
+  });
+
+  it('addresses two repositories independently through the workspace facade', async () => {
+    const secondFixture = createRepositoryFixture();
+    const events: WorkbenchEvent[] = [];
+    const registry = new LegacyWorkspaceRegistry({
+      createClient: () => new CoreRpcClient(spawn(executable, ['rpc'], { stdio: 'pipe' })),
+      onEvent: (event) => events.push(event),
+    });
+
+    try {
+      const first = await registry.openWorkspace(fixture.root);
+      const second = await registry.openWorkspace(secondFixture.root);
+      const target = { includeStaged: true, includeUnstaged: true };
+      const [firstFiles, secondFiles] = await Promise.all([
+        registry.request({ ...first.summary, requestId: 'request-first' }, 'listChangedFiles', { target }),
+        registry.request({ ...second.summary, requestId: 'request-second' }, 'listChangedFiles', { target }),
+      ]);
+
+      expect(first.summary.workspaceId).not.toBe(second.summary.workspaceId);
+      expect(first.repository.root).toBe(fixture.root);
+      expect(second.repository.root).toBe(secondFixture.root);
+      expect(firstFiles.context.requestId).toBe('request-first');
+      expect(secondFiles.context.requestId).toBe('request-second');
+      expect(firstFiles.result).toHaveLength(4);
+      expect(secondFiles.result).toHaveLength(4);
+      expect(events.filter((event) => event.kind === 'workspace/added')).toHaveLength(2);
+    } finally {
+      registry.dispose();
+      secondFixture.dispose();
+    }
   });
 });

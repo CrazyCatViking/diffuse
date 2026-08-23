@@ -1,86 +1,47 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type Input, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
-import { CoreRequestTimeoutError, type CoreRpcClient } from './coreRpcClient';
 import { ReviewAgentRunner } from './reviewAgentRunner';
-import { coreMethodNames, type CoreEvent, type CoreMethod, type CoreMethods } from '../src/lib/coreContract';
+import { coreMethodNames, type CoreMethods } from '../src/lib/coreContract';
+import type { ReviewAgentChatRequest, ReviewAgentStartRequest } from '../src/lib/desktopBridge';
+import {
+  isWorkspaceReference,
+  isWorkspaceRequestContext,
+  type WorkbenchEvent,
+  type WorkspaceCoreMethod,
+  type WorkspaceRequestContext,
+} from '../src/lib/workbenchContract';
+import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 
-type WindowState = {
-  window: BrowserWindow;
-  launchRepository?: string;
-  repositoryRoot?: string;
-  core: CoreRpcClient | null;
-  reviewAgentRunner: ReviewAgentRunner | null;
-};
+const workspaceMethodNames = coreMethodNames.filter(
+  (method): method is WorkspaceCoreMethod => method !== 'getVersion' && method !== 'openRepository',
+);
+const allowedWorkspaceMethods = new Set<WorkspaceCoreMethod>(workspaceMethodNames);
+let primaryWindow: BrowserWindow | null = null;
+let initialWorkspaceOpen: Promise<unknown> = Promise.resolve();
+let reviewAgentOwner: { context: WorkspaceRequestContext; runner: ReviewAgentRunner } | null = null;
 
-const windowStates = new Map<number, WindowState>();
+const registry = new LegacyWorkspaceRegistry({
+  createClient: startCoreProcess,
+  onEvent: (event) => forwardWorkbenchEvent(event),
+});
 
 if (!app.requestSingleInstanceLock({ cwd: process.cwd() })) {
   app.exit(0);
 }
 
-const allowedCoreMethods = new Set<CoreMethod>(coreMethodNames);
-
-function getCore(state: WindowState): CoreRpcClient {
-  if (state.core?.isRunning) return state.core;
-
-  state.core = startCoreProcess();
-  state.core.on('event', (event: CoreEvent) => {
-    if (!state.window.isDestroyed()) state.window.webContents.send('core:event', event);
-  });
-  state.core.on('rpcError', (error: Error) => console.error('Diffuse core reported a JSON-RPC error:', error));
-  state.core.on('protocolError', (error: Error) => console.error('Invalid message from Diffuse core:', error));
-  state.core.once('exit', () => {
-    state.core = null;
-  });
-  return state.core;
-}
-
-function isCoreMethod(method: string): method is CoreMethod {
-  return allowedCoreMethods.has(method as CoreMethod);
-}
-
-function requestTimeoutMs(method: string): number {
-  if (method === 'installTreeSitterGrammar') return 5 * 60_000;
-  if (method === 'syncTreeSitterRegistry') return 2 * 60_000;
-  if (method === 'getSyntaxSpans') return 10_000;
-  if (method === 'getLspHover') return 10_000;
-  if (method === 'getLspDiagnostics') return 10_000;
-  return 30_000;
-}
-
-function shouldKillCoreOnTimeout(method: string): boolean {
-  return method !== 'getSyntaxSpans' && method !== 'getLspHover' && method !== 'getLspDiagnostics';
-}
-
-async function coreRequest<M extends CoreMethod>(
-  state: WindowState,
-  method: M,
-  params: CoreMethods[M]['params'] = {} as CoreMethods[M]['params'],
-): Promise<CoreMethods[M]['result']> {
-  try {
-    return await getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), {
-      killOnTimeout: shouldKillCoreOnTimeout(method),
-    });
-  } catch (error) {
-    if (!(error instanceof CoreRequestTimeoutError)) throw error;
-    if (!shouldKillCoreOnTimeout(method)) throw error;
-
-    state.core?.dispose();
-    state.core = null;
-    return getCore(state).request<CoreMethods[M]['result']>(method, params, requestTimeoutMs(method), {
-      killOnTimeout: shouldKillCoreOnTimeout(method),
-    });
+function forwardWorkbenchEvent(event: WorkbenchEvent): void {
+  if (event.kind === 'workspace/removed' && reviewAgentOwner && matchesContext(reviewAgentOwner.context, event)) {
+    reviewAgentOwner.runner.dispose();
+    reviewAgentOwner = null;
   }
+  if (primaryWindow && !primaryWindow.isDestroyed()) primaryWindow.webContents.send('workbench:event', event);
 }
 
-function getReviewAgentRunner(state: WindowState): ReviewAgentRunner {
-  state.reviewAgentRunner ??= new ReviewAgentRunner(async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
-    if (!isCoreMethod(method)) throw new Error(`Unknown core method: ${method}`);
-    return (await coreRequest(state, method, params as CoreMethods[typeof method]['params'])) as T;
-  });
-  return state.reviewAgentRunner;
+function isWorkspaceMethod(method: string): method is WorkspaceCoreMethod {
+  return allowedWorkspaceMethods.has(method as WorkspaceCoreMethod);
 }
 
 function focusWindow(window: BrowserWindow): void {
@@ -90,16 +51,9 @@ function focusWindow(window: BrowserWindow): void {
   window.focus();
 }
 
-function focusExistingRepositoryWindow(path: string): boolean {
-  for (const state of windowStates.values()) {
-    if (state.repositoryRoot !== path && state.launchRepository !== path) continue;
-    focusWindow(state.window);
-    return true;
-  }
-  return false;
-}
+function createWindow(): BrowserWindow {
+  if (primaryWindow && !primaryWindow.isDestroyed()) return primaryWindow;
 
-function createWindow(launchRepository?: string): WindowState {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -114,34 +68,22 @@ function createWindow(launchRepository?: string): WindowState {
       sandbox: false,
     },
   });
-
-  const state: WindowState = {
-    window,
-    launchRepository,
-    core: null,
-    reviewAgentRunner: null,
-  };
-  windowStates.set(window.id, state);
+  primaryWindow = window;
 
   window.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error(`Failed to load preload script ${preloadPath}:`, error);
   });
   installKeyboardDefaultGuards(window);
-
   window.on('closed', () => {
-    state.reviewAgentRunner?.dispose();
-    state.core?.dispose();
-    windowStates.delete(window.id);
+    if (primaryWindow === window) primaryWindow = null;
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    window.loadURL(process.env.ELECTRON_RENDERER_URL);
+    void window.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    window.loadFile(join(__dirname, '../renderer/index.html'));
+    void window.loadFile(join(__dirname, '../renderer/index.html'));
   }
-
-  getCore(state);
-  return state;
+  return window;
 }
 
 function installKeyboardDefaultGuards(window: BrowserWindow): void {
@@ -189,7 +131,7 @@ function shouldBlockElectronDefaultShortcut(input: Input): boolean {
   return key === '+' || key === '=' || key === '-' || key === '_' || key === '0';
 }
 
-function parseLaunchRepository(args: string[], cwd = process.cwd()): string | undefined {
+export function parseLaunchRepository(args: string[], cwd = process.cwd()): string | undefined {
   const index = args.indexOf('--open-repository');
   if (index === -1 || index + 1 >= args.length) return undefined;
   const path = args
@@ -202,27 +144,38 @@ function parseLaunchRepository(args: string[], cwd = process.cwd()): string | un
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
-  createWindow(parseLaunchRepository(process.argv));
+  createWindow();
+  const launchPath = parseLaunchRepository(process.argv);
+  if (launchPath) initialWorkspaceOpen = openWorkspaceFromMain(launchPath);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    const window = createWindow();
+    focusWindow(window);
   });
 });
 
 app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
   const cwd = isCwdPayload(additionalData) ? additionalData.cwd : workingDirectory;
   const launchPath = parseLaunchRepository(argv, cwd);
-  const openWindow = () => {
-    if (launchPath && focusExistingRepositoryWindow(launchPath)) return;
-    const state = createWindow(launchPath);
-    focusWindow(state.window);
+  const handleInvocation = async () => {
+    const window = createWindow();
+    focusWindow(window);
+    if (launchPath) await openWorkspaceFromMain(launchPath);
   };
-  if (app.isReady()) openWindow();
-  else void app.whenReady().then(openWindow);
+  if (app.isReady()) void handleInvocation();
+  else void app.whenReady().then(handleInvocation);
 });
 
 function isCwdPayload(value: unknown): value is { cwd: string } {
-  return typeof value === 'object' && value !== null && 'cwd' in value && typeof value.cwd === 'string';
+  return isRecord(value) && typeof value.cwd === 'string';
+}
+
+async function openWorkspaceFromMain(path: string): Promise<void> {
+  try {
+    await registry.openWorkspace(path);
+  } catch (error) {
+    console.error(`Failed to open workspace ${path}:`, error);
+  }
 }
 
 app.on('window-all-closed', () => {
@@ -230,18 +183,15 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  for (const state of windowStates.values()) {
-    state.reviewAgentRunner?.dispose();
-    state.core?.dispose();
-  }
+  reviewAgentOwner?.runner.dispose();
+  reviewAgentOwner = null;
+  registry.dispose();
 });
 
-function getWindowState(event: IpcMainInvokeEvent): WindowState {
+function getRequestWindow(event: IpcMainInvokeEvent): BrowserWindow {
   const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window) throw new Error('Could not resolve request window');
-  const state = windowStates.get(window.id);
-  if (!state) throw new Error('Could not resolve window state');
-  return state;
+  if (!window || window !== primaryWindow) throw new Error('Request did not originate from the primary window');
+  return window;
 }
 
 function ensureLspConfigFile(configPath: string): void {
@@ -266,40 +216,60 @@ function ensureLspConfigFile(configPath: string): void {
 }
 
 ipcMain.handle('repo:pickDirectory', async (event) => {
-  const state = getWindowState(event);
-
-  const result = await dialog.showOpenDialog(state.window, {
+  const window = getRequestWindow(event);
+  const result = await dialog.showOpenDialog(window, {
     title: 'Open Repository',
     properties: ['openDirectory'],
   });
-
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return result.filePaths[0];
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
 });
 
-ipcMain.handle('app:getLaunchRepository', async (event) => {
-  return getWindowState(event).launchRepository ?? null;
-});
-
-ipcMain.handle('core:request', async (event, request: { method: string; params?: Record<string, unknown> }) => {
-  if (!isCoreMethod(request.method)) {
-    throw new Error(`Unknown core method: ${request.method}`);
+ipcMain.handle('app:getVersion', async (event) => {
+  getRequestWindow(event);
+  const client = startCoreProcess();
+  try {
+    return await client.request<CoreMethods['getVersion']['result']>('getVersion');
+  } finally {
+    client.dispose();
   }
-
-  const state = getWindowState(event);
-  const result = await coreRequest(state, request.method, request.params ?? {});
-  if (request.method === 'openRepository' && isOpenRepositoryResult(result)) {
-    state.repositoryRoot = result.root;
-  }
-  return result;
 });
 
-function isOpenRepositoryResult(value: unknown): value is { root: string } {
-  return typeof value === 'object' && value !== null && 'root' in value && typeof value.root === 'string';
-}
+ipcMain.handle('workbench:getSnapshot', async (event) => {
+  getRequestWindow(event);
+  await initialWorkspaceOpen;
+  return registry.getWorkbenchSnapshot();
+});
 
-ipcMain.handle('lsp:openConfig', async (_event, request: { configPath?: string }) => {
-  const configPath = request.configPath;
+ipcMain.handle('workspace:open', async (event, request: unknown) => {
+  getRequestWindow(event);
+  if (!isRecord(request) || typeof request.path !== 'string' || !request.path.trim()) throw new Error('Workspace path is required');
+  return registry.openWorkspace(request.path);
+});
+
+ipcMain.handle('workspace:activate', async (event, reference: unknown) => {
+  getRequestWindow(event);
+  if (!isWorkspaceReference(reference)) throw new Error('Invalid workspace reference');
+  return registry.activateWorkspace(reference);
+});
+
+ipcMain.handle('workspace:close', async (event, reference: unknown) => {
+  getRequestWindow(event);
+  if (!isWorkspaceReference(reference)) throw new Error('Invalid workspace reference');
+  return registry.closeWorkspace(reference);
+});
+
+ipcMain.handle('workspace:request', async (event, request: unknown) => {
+  getRequestWindow(event);
+  if (!isRecord(request) || !isWorkspaceRequestContext(request.context)) throw new Error('Invalid workspace request context');
+  if (typeof request.method !== 'string' || !isWorkspaceMethod(request.method))
+    throw new Error(`Unknown workspace method: ${String(request.method)}`);
+  if (request.params !== undefined && !isRecord(request.params)) throw new Error('Workspace request params must be an object');
+  return registry.request(request.context, request.method, request.params as CoreMethods[typeof request.method]['params']);
+});
+
+ipcMain.handle('lsp:openConfig', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const configPath = isRecord(request) && typeof request.configPath === 'string' ? request.configPath : undefined;
   if (!configPath) throw new Error('LSP config path is not available');
   ensureLspConfigFile(configPath);
   const error = await shell.openPath(configPath);
@@ -307,14 +277,82 @@ ipcMain.handle('lsp:openConfig', async (_event, request: { configPath?: string }
   return configPath;
 });
 
-ipcMain.handle('review-agent:start', async (event, request: { repositoryRoot: string; sessionId: string; files: unknown[] }) => {
-  return getReviewAgentRunner(getWindowState(event)).start(request as Parameters<ReviewAgentRunner['start']>[0]);
+ipcMain.handle('review-agent:start', async (event, request: unknown) => {
+  getRequestWindow(event);
+  if (!isReviewAgentStartRequest(request)) throw new Error('Invalid review agent start request');
+  const snapshot = registry.getWorkspaceSnapshot(request.context);
+  return getReviewAgentRunner(request.context).start({
+    repositoryRoot: snapshot.repository.root,
+    sessionId: request.sessionId,
+    files: request.files,
+  });
 });
 
-ipcMain.handle('review-agent:stop', async (event) => {
-  return getReviewAgentRunner(getWindowState(event)).stop();
+ipcMain.handle('review-agent:stop', async (event, context: unknown) => {
+  getRequestWindow(event);
+  if (!isWorkspaceRequestContext(context)) throw new Error('Invalid review agent workspace context');
+  const owner = requireReviewAgentOwner(context);
+  const result = await owner.runner.stop();
+  owner.runner.dispose();
+  reviewAgentOwner = null;
+  return result;
 });
 
-ipcMain.handle('review-agent:chat', async (event, request: Parameters<ReviewAgentRunner['chat']>[0]) => {
-  return getReviewAgentRunner(getWindowState(event)).chat(request);
+ipcMain.handle('review-agent:chat', async (event, request: unknown) => {
+  getRequestWindow(event);
+  if (!isReviewAgentChatRequest(request)) throw new Error('Invalid review agent chat request');
+  const snapshot = registry.getWorkspaceSnapshot(request.context);
+  const { context: _context, ...chatRequest } = request;
+  return getReviewAgentRunner(request.context).chat({ ...chatRequest, repositoryRoot: snapshot.repository.root });
 });
+
+function getReviewAgentRunner(context: WorkspaceRequestContext): ReviewAgentRunner {
+  registry.getWorkspaceSnapshot(context);
+  if (reviewAgentOwner) return requireReviewAgentOwner(context).runner;
+
+  const ownerContext = context;
+  const runner = new ReviewAgentRunner(async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
+    if (!isWorkspaceMethod(method)) throw new Error(`Unknown workspace method: ${method}`);
+    const response = await registry.request(
+      { ...ownerContext, requestId: randomUUID() },
+      method,
+      params as CoreMethods[typeof method]['params'],
+    );
+    return response.result as T;
+  });
+  reviewAgentOwner = { context: ownerContext, runner };
+  return runner;
+}
+
+function requireReviewAgentOwner(context: WorkspaceRequestContext): NonNullable<typeof reviewAgentOwner> {
+  registry.getWorkspaceSnapshot(context);
+  if (!reviewAgentOwner || !matchesContext(reviewAgentOwner.context, context)) {
+    throw new Error('The legacy review agent runner belongs to another workspace');
+  }
+  return reviewAgentOwner;
+}
+
+function matchesContext(
+  first: { workspaceId: string; workspaceGeneration: string },
+  second: { workspaceId: string; workspaceGeneration: string },
+): boolean {
+  return first.workspaceId === second.workspaceId && first.workspaceGeneration === second.workspaceGeneration;
+}
+
+function isReviewAgentStartRequest(value: unknown): value is ReviewAgentStartRequest {
+  return isRecord(value) && isWorkspaceRequestContext(value.context) && typeof value.sessionId === 'string' && Array.isArray(value.files);
+}
+
+function isReviewAgentChatRequest(value: unknown): value is ReviewAgentChatRequest {
+  return (
+    isRecord(value) &&
+    isWorkspaceRequestContext(value.context) &&
+    typeof value.sessionId === 'string' &&
+    isRecord(value.thread) &&
+    typeof value.question === 'string'
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

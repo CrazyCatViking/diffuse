@@ -191,11 +191,8 @@ onMounted(async () => {
   window.addEventListener('keyup', suppressBrowserKeyboardDefault, keyboardDefaultSuppressionOptions);
   try {
     await repo.loadVersion();
-    const launchRepository = await window.diffuse.getLaunchRepository();
-    if (launchRepository) {
-      await repo.openRepository(launchRepository);
-      if (!repo.error) await router.replace(overviewRoute());
-    }
+    await repo.restoreWorkbench();
+    if (repo.repository && !repo.error) await router.replace(overviewRoute());
   } catch (error) {
     repo.error = error instanceof Error ? error.message : String(error);
   }

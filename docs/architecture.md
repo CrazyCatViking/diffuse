@@ -11,14 +11,15 @@ Diffuse is split into two cooperating programs:
 - `core/` is a Zig executable named `diffuse`. It owns Git access, repository session state, diff parsing, Tree-sitter syntax work, LSP sessions, review persistence, and JSON-RPC handling.
 - `app/` is an Electron/Vue desktop app. It owns windows, dialogs, UI state, rendering, settings, provider adapters, and communication with the core process.
 
-The app talks to the core over line-delimited JSON-RPC on each core process `stdin` and `stdout`. Diffuse uses one Electron app process with one Zig core process per open window, so multiple repositories can be reviewed independently without starting multiple Electron app processes.
+The app talks to the core over line-delimited JSON-RPC on each core process `stdin` and `stdout`. Diffuse creates one primary Electron window and currently uses one Zig core process per open workspace. Electron main owns the transitional workspace registry, so multiple repositories remain independently addressable while only one workspace is rendered.
 
 ```text
 Vue renderer
   -> renderer-owned DesktopBridge implemented by window.diffuse preload bridge
   -> Electron ipcMain handlers
-  -> CoreRpcClient
-  -> spawned Zig process: core/zig-out/bin/diffuse rpc
+  -> LegacyWorkspaceRegistry
+  -> workspace-owned CoreRpcClient
+  -> workspace-owned Zig process: core/zig-out/bin/diffuse rpc
   -> Zig RPC server
   -> repository, diff, syntax, LSP, review modules
 ```
@@ -28,10 +29,14 @@ Vue renderer
 The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes a small `window.diffuse` bridge with capabilities such as:
 
 - `pickRepository()` asks Electron main to show a native directory picker.
-- `coreRequest(method, params)` sends a whitelisted request to the Zig core.
-- `onCoreEvent(listener)` subscribes to core notifications such as repository changes and Tree-sitter install progress.
+- `openWorkspace(path)` creates or activates a canonical Git-worktree workspace.
+- `workspaceRequest(context, method, params)` sends a whitelisted request with an explicit workspace ID, generation, and request ID.
+- `getWorkbenchSnapshot()` restores open workspace summaries and the active workspace after renderer recreation.
+- `onWorkbenchEvent(listener)` subscribes to validated workspace lifecycle and workspace-tagged core events.
 
-`app/electron/main.ts` creates browser windows, owns one `CoreRpcClient` per window, and registers IPC handlers.
+`app/electron/main.ts` creates at most one primary `BrowserWindow`, owns the application-wide legacy workspace registry, and registers validated IPC handlers. `app/electron/legacyWorkspaceRegistry.ts` maps each ready workspace to one current Zig `CoreRpcClient`, canonicalizes returned Git roots for deduplication, and assigns an opaque workspace ID plus a new generation for every close/reopen lifetime. Workspace IDs are currently stable only for the running application; Phase 3 SQLite persistence will make them stable across restarts.
+
+The registry checks identity before and after every awaited request. Closing a workspace marks it unavailable before disposing its process, immediately rejects pending client requests, and prevents delayed results or events from the closed generation from being forwarded. If a fatal request timeout restarts a workspace core, the registry reopens that workspace root before retrying the request. Registry events carry a monotonically increasing in-memory sequence, event ID, workspace ID, workspace generation, kind, and payload.
 
 The main process disables Electron's default application menu before creating windows. It also blocks Chromium/Electron reserved keyboard defaults such as reload, zoom, devtools, fullscreen, and browser back/forward before they reach the page. Window chrome should stay owned by the operating system and Diffuse's renderer UI rather than Electron's built-in menu template.
 
@@ -46,21 +51,21 @@ The renderer owns keyboard defaults outside editable controls. `App.vue` lets ap
 
 It also resolves the Tree-sitter registry directory from `DIFFUSE_TREE_SITTER_REGISTRY_DIR`, nearby development checkouts named `diffuse-tree-sitter`, or `~/.diffuse/tree-sitter`.
 
-Each window's core is spawned as:
+Each workspace's temporary Zig core is spawned as:
 
 ```text
 diffuse rpc
 ```
 
-`app/electron/coreRpcClient.ts` wraps a child process. Each request is serialized as a single JSON line:
+`app/electron/coreRpcClient.ts` wraps one raw Zig child process. Each request is serialized as a single JSON line:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "listChangedFiles", "params": {} }
 ```
 
-The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits only validated, known notifications as events. JSON-RPC errors with `id: null` use a separate error channel and are never forwarded as renderer events. Timeouts are applied per method. Most timed-out requests kill and restart that window's core; `getSyntaxSpans` can time out without killing the process.
+The client tracks pending requests by numeric `id`, resolves them when a matching response line arrives, and emits only validated, known notifications as events. JSON-RPC errors with `id: null` use a separate error channel and are never forwarded as renderer events. Disposing a client rejects all pending requests immediately. Timeouts are applied per method. Most timed-out requests kill and restart that workspace's core; syntax and selected LSP read requests can time out without killing the process.
 
-The renderer owns the shell-neutral `DesktopBridge` interface in `app/src/lib/desktopBridge.ts`; Electron preload implements that interface and exposes it as `window.diffuse`. The renderer and Electron process share the TypeScript RPC contract in `app/src/lib/coreContract.ts`. That file defines the `CoreMethods` param/result map, the runtime `coreMethodNames` list used by Electron's whitelist, and the typed and runtime-validated core event map consumed by the renderer. Required RPC parameters are required by the TypeScript call signature, while parameterless methods accept no payload. Zig remains the runtime authority for validation; TypeScript contracts keep the frontend, preload bridge, Electron whitelist, and test fixtures synchronized.
+The renderer owns the shell-neutral `DesktopBridge` interface in `app/src/lib/desktopBridge.ts`; Electron preload implements that interface and exposes it as `window.diffuse`. `app/src/lib/coreContract.ts` remains the raw Zig method/event contract. `app/src/lib/workbenchContract.ts` defines the workspace-aware desktop facade: workspace references and request contexts, summaries and snapshots, contextual responses, lifecycle events, tagged core-event envelopes, and runtime validators. Required domain parameters remain required after workspace context is added. Zig remains the runtime authority for raw method validation, while Electron validates facade method names and workspace/request identity.
 
 `scripts/check-rpc-contract.mjs` rejects duplicate RPC names, compares Zig `server.handle(...)` registrations with both `coreMethodNames` and `CoreMethods`, and compares Zig event producers with both `coreEventNames` and `CoreEventMap`. It runs as part of `just build` and `pnpm build` so method-map and event-name drift fail verification early.
 
@@ -75,7 +80,7 @@ RPC params are validated at the core boundary. Omitted optional fields may still
 
 The Electron RPC client preserves `error.code`, `error.message`, and optional `error.data` in `CoreRpcError`.
 
-Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event, and the main process opens a new `BrowserWindow` with its own core process for that repository.
+Electron uses `app.requestSingleInstanceLock()`. A second `diffuse <path>` invocation is delivered to the existing Electron process through the `second-instance` event. Main shows the existing primary window and asks the registry to add or activate the canonical workspace; it never creates another workspace window.
 
 ## Renderer State
 
@@ -83,10 +88,12 @@ The Vue app starts in `app/src/main.ts`, installs Pinia and Vue Router with memo
 
 The main page is organized around stores:
 
-- `useRepoStore()` owns app version, current repository, changed files, active file, loading, and errors.
+- `useRepoStore()` owns app version, the active workspace reference, current repository, changed files, active file, loading, and errors.
 - `useDiffStore()` owns the current diff model, view mode, context mode, synchronized scrolling, grammar install state, and diff errors.
 - `useSearchStore()` owns the renderer-side search query, mode, active filters, grouped results, global palette state, pinned drawer snapshot state, and selected result cursors.
 - `useCursorStore()` owns persisted cursor surface state, the active surface id, currently mounted/open surface handlers, geometry-based surface movement, global cursor key parsing, and recorded cursor-position history.
+
+Phase 1 keeps these stores as one active rendered workspace and retains only bounded active identity in the renderer. Workspace-keyed route, cursor, search, draft, and focus restoration plus the workspace rail are Phase 2 responsibilities. The renderer still sends immutable identity on every individual backend request and rejects a response if the active workspace changed while that request was running.
 
 `App.vue` owns the shell around the workspace: top bar, repository picker, settings dialog, changed-file tree, pinned search drawer, global keyboard suppression, and search result routing. The main workspace surface is route-driven through `<RouterView />`. Routes live in `app/src/routes.ts` and currently cover review overview, single-file diff, and folder diff. Routed views read store-backed state directly instead of receiving repository, diff, review, and target state through `App.vue` props.
 
@@ -100,7 +107,7 @@ The main user flow is:
 
 1. The top bar emits `open-repository`.
 2. `repo.pickAndOpenRepository()` asks Electron for a directory.
-3. `repo.openRepository(path)` sends `openRepository`, then `listChangedFiles`.
+3. `repo.openRepository(path)` sends the global `openWorkspace` command, captures its workspace ID and generation, then sends workspace-scoped target, branch, and changed-file requests.
 4. `App.vue` routes the workspace to the review overview for the opened repository.
 5. Selecting a file or folder updates the workspace route.
 6. `DiffViewer.vue` watches the file route param and calls `diff.loadDiff(fileId)`.
@@ -111,7 +118,7 @@ Changed-file search is split by surface. `ChangedFilesPane.vue` keeps a local re
 
 Core search lives in `core/src/core/search.zig` and `core/src/app/search_handlers.zig`. The core parses forgiving query/filter syntax, applies file metadata filters, ranks deterministic flat result phases, loads reviewed/comment metadata for the supplied review `sessionId`, and scans full changed-file source text directly through `diff.sourceForSide()` instead of `getDiffRenderModel`. Content side selection follows review expectations: added, modified, and renamed files search the new side; deleted files search the old side. Large or binary sources are skipped before scanning. Results stream in ordered batches through `search/results`, with `search/progress`, `search/done`, `search/cancelled`, and `search/error` notifications reporting lifecycle state.
 
-Once a repository is open, filesystem changes under the repository root trigger a changed-file refresh without reopening the repository. If the same file is already displayed, the UI marks the diff as stale and lets the user load the latest version.
+Once a repository is open, filesystem changes under the repository root trigger a changed-file refresh without reopening the repository. Electron tags the raw event with its owning workspace ID and generation; renderer stores ignore events that do not belong to the active workspace. If the same file is already displayed, the UI marks the diff as stale and lets the user load the latest version.
 
 The repository watcher currently runs on Linux. Normal repository file changes emit `repository/changed` with changed relative paths. Changes under `.diffuse/reviews` emit `review/changed`, which causes the renderer to refresh review sessions, progress, runs, agent state, threads, and chat messages.
 
@@ -252,7 +259,7 @@ LSP sessions are keyed by repository, language, and server id. The core opens or
 
 Review state is stored in the opened repository under `.diffuse/reviews`. The data format is documented in [`review-spec-v1.md`](review-spec-v1.md).
 
-The desktop app can start built-in opencode review runs for the active session. Zig core owns review run state in `runs/<agent-run-id>.json`. Electron acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
+The desktop app can start built-in opencode review runs for the active session. Zig core owns review run state in `runs/<agent-run-id>.json`. Electron acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core. During the workspace-facade migration, the legacy runner has one explicit workspace/generation owner at a time; cross-workspace start, stop, or chat calls are rejected rather than expanding its process-global bridge routing model.
 
 Review data is intentionally plain JSON and Markdown so external agent harnesses can inspect or update it without linking against Diffuse.
 

@@ -689,6 +689,8 @@ Exit criteria:
 
 Purpose: remove per-window identity assumptions before replacing Zig.
 
+Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. Workspace IDs remain in-memory until Phase 3 adds SQLite persistence; workspace-keyed renderer restoration and the rail remain Phase 2 work.
+
 Work:
 
 - Introduce `WorkspaceId`, `WorkspaceGeneration`, request context, summaries, snapshots, and event envelopes in the shared contract.

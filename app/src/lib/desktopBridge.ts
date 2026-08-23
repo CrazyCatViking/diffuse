@@ -1,14 +1,22 @@
-import type { CoreEvent, CoreRequest } from './coreContract';
-import type { ChangedFile, ReviewChatMessage, ReviewThread } from './protocol';
+import type { VersionInfo, ChangedFile, ReviewChatMessage, ReviewThread } from './protocol';
+import type {
+  WorkbenchEvent,
+  WorkbenchSnapshot,
+  WorkspaceReference,
+  WorkspaceRequest,
+  WorkspaceRequestContext,
+  WorkspaceSnapshot,
+  WorkspaceSummary,
+} from './workbenchContract';
 
 export type ReviewAgentStartRequest = {
-  repositoryRoot: string;
+  context: WorkspaceRequestContext;
   sessionId: string;
   files: ChangedFile[];
 };
 
 export type ReviewAgentChatRequest = {
-  repositoryRoot: string;
+  context: WorkspaceRequestContext;
   sessionId: string;
   thread: ReviewThread;
   question: string;
@@ -27,11 +35,15 @@ export type ReviewAgentStatus = {
 
 export interface DesktopBridge {
   pickRepository(): Promise<string | null>;
-  getLaunchRepository(): Promise<string | null>;
   openLspConfig(configPath?: string): Promise<string>;
-  coreRequest: CoreRequest;
-  onCoreEvent(listener: (event: CoreEvent) => void): () => void;
+  getVersion(): Promise<VersionInfo>;
+  getWorkbenchSnapshot(): Promise<WorkbenchSnapshot>;
+  openWorkspace(path: string): Promise<WorkspaceSnapshot>;
+  activateWorkspace(reference: WorkspaceReference): Promise<WorkspaceSnapshot>;
+  closeWorkspace(reference: WorkspaceReference): Promise<WorkspaceSummary>;
+  workspaceRequest: WorkspaceRequest;
+  onWorkbenchEvent(listener: (event: WorkbenchEvent) => void): () => void;
   startReviewAgent(request: ReviewAgentStartRequest): Promise<ReviewAgentStatus>;
-  stopReviewAgent(): Promise<ReviewAgentStatus>;
+  stopReviewAgent(context: WorkspaceRequestContext): Promise<ReviewAgentStatus>;
   chatWithReviewAgent(request: ReviewAgentChatRequest): Promise<ReviewChatMessage>;
 }

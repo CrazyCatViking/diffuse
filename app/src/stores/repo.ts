@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia';
 import type { BranchInfo, ChangedFile, DiffTarget, DiffTargetDefaults, OpenRepositoryResult, VersionInfo } from '../lib/protocol';
 import { computed, ref } from 'vue';
-import { useClient } from '../lib/useClient';
+import { isActiveWorkspace, setActiveWorkspace, useClient } from '../lib/useClient';
+import type { WorkspaceReference, WorkspaceSnapshot } from '../lib/workbenchContract';
 
 const recentRepositoriesStorageKey = 'diffuse.recentRepositories';
 const maxRecentRepositories = 10;
@@ -49,6 +50,7 @@ const repositoryName = (path: string): string => {
 export const useRepoStore = defineStore('repo', () => {
   const client = useClient();
   const version = ref<VersionInfo>();
+  const workspace = ref<WorkspaceReference>();
   const repository = ref<OpenRepositoryResult>();
   const diffTarget = ref<DiffTarget>({ includeStaged: true, includeUnstaged: true });
   const diffTargetDefaults = ref<DiffTargetDefaults>();
@@ -62,20 +64,21 @@ export const useRepoStore = defineStore('repo', () => {
   const changedFileIds = ref<string[]>([]);
   let refreshInFlight = false;
   let refreshQueued = false;
+  let workspaceLoadGeneration = 0;
 
   const activeFile = computed(() => changedFiles.value.find((file) => file.id === activeFileId.value) ?? null);
 
-  const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
-    return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
-  };
-
-  window.diffuse.onCoreEvent((event) => {
-    if (!isCoreEvent(event) || event.method !== 'repository/changed') return;
-    if (!event.params || typeof event.params !== 'object') return;
-
-    const params = event.params as { root?: unknown; paths?: unknown };
-    if (params.root !== repository.value?.root) return;
-    void refreshChangedFiles({ selectFallback: false, trackChangedIds: true, changedPaths: stringArrayParam(params.paths) });
+  window.diffuse.onWorkbenchEvent((event) => {
+    if (event.kind === 'workspace/activated') {
+      setActiveWorkspace(event.payload.summary);
+      void loadWorkspace(event.payload).catch((err) => {
+        if (isActiveWorkspace(event.payload.summary)) error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      });
+      return;
+    }
+    if (event.kind !== 'repository/changed' || !isActiveWorkspace(event)) return;
+    if (event.payload.root !== repository.value?.root) return;
+    void refreshChangedFiles({ selectFallback: false, trackChangedIds: true, changedPaths: event.payload.paths });
   });
 
   const loadVersion = async () => {
@@ -97,12 +100,8 @@ export const useRepoStore = defineStore('repo', () => {
     loading.value = true;
     error.value = undefined;
     try {
-      repository.value = await withContext(`open repository ${path}`, () => client.openRepository(path));
-      rememberRepository(repository.value.root);
-      diffTargetDefaults.value = await withContext('load diff target defaults', () => client.getDiffTargetDefaults());
-      branches.value = await withContext('list branches', () => client.listBranches());
-      diffTarget.value = targetFromDefaults(diffTargetDefaults.value);
-      await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
+      const snapshot = await withContext(`open repository ${path}`, () => client.openRepository(path));
+      await loadWorkspace(snapshot);
     } catch (err) {
       if (err instanceof Error) {
         error.value = err.message;
@@ -112,6 +111,28 @@ export const useRepoStore = defineStore('repo', () => {
     } finally {
       loading.value = false;
     }
+  };
+
+  const restoreWorkbench = async () => {
+    const snapshot = await client.getWorkbenchSnapshot();
+    if (snapshot.activeWorkspace) await loadWorkspace(snapshot.activeWorkspace);
+  };
+
+  const loadWorkspace = async (snapshot: WorkspaceSnapshot) => {
+    const generation = ++workspaceLoadGeneration;
+    workspace.value = snapshot.summary;
+    repository.value = snapshot.repository;
+    setActiveWorkspace(snapshot.summary);
+    rememberRepository(snapshot.repository.root);
+    const [defaults, nextBranches] = await Promise.all([
+      withContext('load diff target defaults', () => client.getDiffTargetDefaults()),
+      withContext('list branches', () => client.listBranches()),
+    ]);
+    if (generation !== workspaceLoadGeneration || !isActiveWorkspace(snapshot.summary)) return;
+    diffTargetDefaults.value = defaults;
+    branches.value = nextBranches;
+    diffTarget.value = targetFromDefaults(defaults);
+    await refreshChangedFiles({ selectFallback: true, trackChangedIds: false });
   };
 
   const refreshChangedFiles = async (options: { selectFallback?: boolean; trackChangedIds?: boolean; changedPaths?: string[] } = {}) => {
@@ -181,11 +202,6 @@ export const useRepoStore = defineStore('repo', () => {
     return file.id === path || file.oldPath === path || file.newPath === path;
   };
 
-  const stringArrayParam = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return [];
-    return value.filter((item): item is string => typeof item === 'string');
-  };
-
   const fileSignature = (file: ChangedFile): string => {
     return JSON.stringify({
       oldPath: file.oldPath,
@@ -241,6 +257,7 @@ export const useRepoStore = defineStore('repo', () => {
 
   return {
     version,
+    workspace,
     repository,
     diffTarget,
     diffTargetDefaults,
@@ -256,6 +273,7 @@ export const useRepoStore = defineStore('repo', () => {
     activeFile,
 
     loadVersion,
+    restoreWorkbench,
     pickAndOpenRepository,
     openRepository,
     refreshChangedFiles,

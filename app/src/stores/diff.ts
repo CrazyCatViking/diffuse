@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { markRaw, ref, shallowRef } from 'vue';
-import { useClient } from '../lib/useClient';
+import { isActiveWorkspace, useClient } from '../lib/useClient';
 import type { DiffContextMode, DiffRenderModel, DiffViewMode } from '../lib/protocol';
 import { useRepoStore } from './repo';
 
@@ -19,17 +19,10 @@ export const useDiffStore = defineStore('diff', () => {
   const grammarInstallStep = ref<string>();
   let loadGeneration = 0;
 
-  const isCoreEvent = (event: unknown): event is { method: string; params?: unknown } => {
-    return typeof event === 'object' && event !== null && 'method' in event && typeof (event as { method?: unknown }).method === 'string';
-  };
-
-  window.diffuse.onCoreEvent((event) => {
-    if (!isCoreEvent(event) || event.method !== 'treeSitter/installProgress') return;
-    if (!event.params || typeof event.params !== 'object') return;
-
-    const params = event.params as { language?: unknown; step?: unknown };
-    if (params.language !== current.value?.syntax.language) return;
-    if (typeof params.step === 'string') grammarInstallStep.value = params.step;
+  window.diffuse.onWorkbenchEvent((event) => {
+    if (event.kind !== 'treeSitter/installProgress' || !isActiveWorkspace(event)) return;
+    if (event.payload.language !== current.value?.syntax.language) return;
+    grammarInstallStep.value = event.payload.step;
   });
 
   const loadDiff = async (fileId: string, options: { silent?: boolean } = {}) => {

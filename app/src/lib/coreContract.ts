@@ -145,7 +145,7 @@ type RequiredKeys<T> = {
   [K in keyof T]-?: object extends Pick<T, K> ? never : K;
 }[keyof T];
 
-type CoreRequestArgs<P> = [P] extends [undefined] ? [] : RequiredKeys<P> extends never ? [params?: P] : [params: P];
+export type CoreRequestArgs<P> = [P] extends [undefined] ? [] : RequiredKeys<P> extends never ? [params?: P] : [params: P];
 
 export type CoreRequest = <M extends CoreMethod>(
   method: M,

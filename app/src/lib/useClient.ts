@@ -12,7 +12,6 @@ import {
   LspHover,
   LspInstallInfo,
   LspStatus,
-  OpenRepositoryResult,
   RestartLspServerResult,
   ReviewAgentState,
   ReviewChatMessage,
@@ -31,6 +30,28 @@ import {
   VersionInfo,
 } from './protocol';
 import type { SearchFilterKind, SearchMode } from './search/searchTypes';
+import type {
+  WorkbenchSnapshot,
+  WorkspaceCoreMethod,
+  WorkspaceReference,
+  WorkspaceRequestContext,
+  WorkspaceSnapshot,
+} from './workbenchContract';
+import type { CoreMethods, CoreRequestArgs } from './coreContract';
+
+let activeWorkspace: WorkspaceReference | undefined;
+
+export function setActiveWorkspace(reference: WorkspaceReference | undefined): void {
+  activeWorkspace = reference ? { ...reference } : undefined;
+}
+
+export function getActiveWorkspace(): WorkspaceReference | undefined {
+  return activeWorkspace ? { ...activeWorkspace } : undefined;
+}
+
+export function isActiveWorkspace(reference: WorkspaceReference): boolean {
+  return activeWorkspace?.workspaceId === reference.workspaceId && activeWorkspace.workspaceGeneration === reference.workspaceGeneration;
+}
 
 export const useClient = () => {
   const plainDiffTarget = (target: DiffTarget): DiffTarget => ({
@@ -42,32 +63,68 @@ export const useClient = () => {
 
   const plainJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
+  const requestContext = (): WorkspaceRequestContext => {
+    if (!activeWorkspace) throw new Error('No active workspace');
+    return { ...activeWorkspace, requestId: crypto.randomUUID() };
+  };
+
+  const workspaceRequest = async <M extends WorkspaceCoreMethod>(
+    method: M,
+    ...args: CoreRequestArgs<CoreMethods[M]['params']>
+  ): Promise<CoreMethods[M]['result']> => {
+    const context = requestContext();
+    const response = await window.diffuse.workspaceRequest(context, method, ...args);
+    if (
+      response.context.workspaceId !== context.workspaceId ||
+      response.context.workspaceGeneration !== context.workspaceGeneration ||
+      response.context.requestId !== context.requestId
+    ) {
+      throw new Error(`Workspace response context mismatch for ${method}`);
+    }
+    if (!isActiveWorkspace(context)) throw new Error(`Workspace changed while ${method} was running`);
+    return response.result;
+  };
+
   const pickRepository = async (): Promise<string | null> => {
     return window.diffuse.pickRepository();
   };
 
   const getVersion = async (): Promise<VersionInfo> => {
-    return window.diffuse.coreRequest('getVersion');
+    return window.diffuse.getVersion();
   };
 
-  const openRepository = async (path: string): Promise<OpenRepositoryResult> => {
-    return window.diffuse.coreRequest('openRepository', { path });
+  const openRepository = async (path: string): Promise<WorkspaceSnapshot> => {
+    const snapshot = await window.diffuse.openWorkspace(path);
+    setActiveWorkspace(snapshot.summary);
+    return snapshot;
+  };
+
+  const getWorkbenchSnapshot = async (): Promise<WorkbenchSnapshot> => {
+    const snapshot = await window.diffuse.getWorkbenchSnapshot();
+    setActiveWorkspace(snapshot.activeWorkspace?.summary);
+    return snapshot;
+  };
+
+  const activateWorkspace = async (reference: WorkspaceReference): Promise<WorkspaceSnapshot> => {
+    const snapshot = await window.diffuse.activateWorkspace(reference);
+    setActiveWorkspace(snapshot.summary);
+    return snapshot;
   };
 
   const getDiffTargetDefaults = async (): Promise<DiffTargetDefaults> => {
-    return window.diffuse.coreRequest('getDiffTargetDefaults');
+    return workspaceRequest('getDiffTargetDefaults');
   };
 
   const listBranches = async (): Promise<BranchInfo[]> => {
-    return window.diffuse.coreRequest('listBranches');
+    return workspaceRequest('listBranches');
   };
 
   const listChangedFiles = async (target: DiffTarget): Promise<ChangedFile[]> => {
-    return window.diffuse.coreRequest('listChangedFiles', { target: plainDiffTarget(target) });
+    return workspaceRequest('listChangedFiles', { target: plainDiffTarget(target) });
   };
 
   const getDiffRenderModel = async (fileId: string, options: DiffRenderOptions, target: DiffTarget): Promise<DiffRenderModel> => {
-    return window.diffuse.coreRequest('getDiffRenderModel', { fileId, options, target: plainDiffTarget(target) });
+    return workspaceRequest('getDiffRenderModel', { fileId, options, target: plainDiffTarget(target) });
   };
 
   const getSyntaxSpans = async (
@@ -78,131 +135,131 @@ export const useClient = () => {
     options: Pick<DiffRenderOptions, 'context'>,
     target: DiffTarget,
   ): Promise<SyntaxLineSpans[]> => {
-    return window.diffuse.coreRequest('getSyntaxSpans', { fileId, side, startLine, endLine, options, target: plainDiffTarget(target) });
+    return workspaceRequest('getSyntaxSpans', { fileId, side, startLine, endLine, options, target: plainDiffTarget(target) });
   };
 
   const getLspStatus = async (fileId: string, side: SyntaxSide, target: DiffTarget): Promise<LspStatus> => {
-    return window.diffuse.coreRequest('getLspStatus', { fileId, side, target: plainDiffTarget(target) });
+    return workspaceRequest('getLspStatus', { fileId, side, target: plainDiffTarget(target) });
   };
 
   const getLspConfigInfo = async (): Promise<LspConfigInfo> => {
-    return window.diffuse.coreRequest('getLspConfigInfo');
+    return workspaceRequest('getLspConfigInfo');
   };
 
   const getLspInstallInfo = async (serverId: string, command: string): Promise<LspInstallInfo> => {
-    return window.diffuse.coreRequest('getLspInstallInfo', { serverId, command });
+    return workspaceRequest('getLspInstallInfo', { serverId, command });
   };
 
   const installLspServer = async (serverId: string, command: string): Promise<InstallLspServerResult> => {
-    return window.diffuse.coreRequest('installLspServer', { serverId, command });
+    return workspaceRequest('installLspServer', { serverId, command });
   };
 
   const restartLspServer = async (serverId: string): Promise<RestartLspServerResult> => {
-    return window.diffuse.coreRequest('restartLspServer', { serverId });
+    return workspaceRequest('restartLspServer', { serverId });
   };
 
   const getLspHover = async (fileId: string, side: SyntaxSide, line: number, column: number, target: DiffTarget): Promise<LspHover> => {
-    return window.diffuse.coreRequest('getLspHover', { fileId, side, line, column, target: plainDiffTarget(target) });
+    return workspaceRequest('getLspHover', { fileId, side, line, column, target: plainDiffTarget(target) });
   };
 
   const getLspDiagnostics = async (fileId: string, side: SyntaxSide, target: DiffTarget): Promise<LspDiagnostics> => {
-    return window.diffuse.coreRequest('getLspDiagnostics', { fileId, side, target: plainDiffTarget(target) });
+    return workspaceRequest('getLspDiagnostics', { fileId, side, target: plainDiffTarget(target) });
   };
 
   const installTreeSitterGrammar = async (language: string): Promise<InstallTreeSitterGrammarResult> => {
-    return window.diffuse.coreRequest('installTreeSitterGrammar', { language });
+    return workspaceRequest('installTreeSitterGrammar', { language });
   };
 
   const getActiveReviewSession = async (): Promise<ReviewSession | null> => {
-    return window.diffuse.coreRequest('getActiveReviewSession');
+    return workspaceRequest('getActiveReviewSession');
   };
 
   const getReviewConfig = async (): Promise<ReviewConfig> => {
-    return window.diffuse.coreRequest('getReviewConfig');
+    return workspaceRequest('getReviewConfig');
   };
 
   const saveReviewConfig = async (config: ReviewConfig): Promise<ReviewConfig> => {
-    return window.diffuse.coreRequest('saveReviewConfig', { config: plainJson(config) });
+    return workspaceRequest('saveReviewConfig', { config: plainJson(config) });
   };
 
   const createReviewSession = async (session: ReviewSession): Promise<ReviewSession> => {
-    return window.diffuse.coreRequest('createReviewSession', { session: plainJson(session) });
+    return workspaceRequest('createReviewSession', { session: plainJson(session) });
   };
 
   const listReviewSessions = async (): Promise<ReviewSession[]> => {
-    return window.diffuse.coreRequest('listReviewSessions');
+    return workspaceRequest('listReviewSessions');
   };
 
   const getReviewProgress = async (sessionId: string): Promise<ReviewProgress | null> => {
-    return window.diffuse.coreRequest('getReviewProgress', { sessionId });
+    return workspaceRequest('getReviewProgress', { sessionId });
   };
 
   const saveReviewProgress = async (sessionId: string, progress: ReviewProgress): Promise<ReviewProgress> => {
-    return window.diffuse.coreRequest('saveReviewProgress', { sessionId, progress: plainJson(progress) });
+    return workspaceRequest('saveReviewProgress', { sessionId, progress: plainJson(progress) });
   };
 
   const getReviewedFiles = async (sessionId: string): Promise<ReviewedFilesState> => {
-    return window.diffuse.coreRequest('getReviewedFiles', { sessionId });
+    return workspaceRequest('getReviewedFiles', { sessionId });
   };
 
   const saveReviewedFiles = async (sessionId: string, reviewedFiles: ReviewedFilesState): Promise<ReviewedFilesState> => {
-    return window.diffuse.coreRequest('saveReviewedFiles', { sessionId, reviewedFiles: plainJson(reviewedFiles) });
+    return workspaceRequest('saveReviewedFiles', { sessionId, reviewedFiles: plainJson(reviewedFiles) });
   };
 
   const updateReviewedFiles = async (sessionId: string, update: ReviewedFilesUpdate): Promise<ReviewedFilesState> => {
-    return window.diffuse.coreRequest('updateReviewedFiles', { sessionId, update: plainJson(update) });
+    return workspaceRequest('updateReviewedFiles', { sessionId, update: plainJson(update) });
   };
 
   const saveReviewAgentState = async (sessionId: string, agent: ReviewAgentState): Promise<ReviewAgentState> => {
-    return window.diffuse.coreRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
+    return workspaceRequest('saveReviewAgentState', { sessionId, agent: plainJson(agent) });
   };
 
   const getReviewAgentStates = async (sessionId: string): Promise<ReviewAgentState[]> => {
-    return window.diffuse.coreRequest('getReviewAgentStates', { sessionId });
+    return workspaceRequest('getReviewAgentStates', { sessionId });
   };
 
   const getReviewRuns = async (sessionId: string): Promise<ReviewRun[]> => {
-    return window.diffuse.coreRequest('getReviewRuns', { sessionId });
+    return workspaceRequest('getReviewRuns', { sessionId });
   };
 
   const recoverStaleReviewRuns = async (sessionId: string): Promise<{ recovered: number }> => {
-    return window.diffuse.coreRequest('recoverStaleReviewRuns', { sessionId });
+    return workspaceRequest('recoverStaleReviewRuns', { sessionId });
   };
 
   const saveReviewRun = async (sessionId: string, run: ReviewRun): Promise<ReviewRun> => {
-    return window.diffuse.coreRequest('saveReviewRun', { sessionId, run: plainJson(run) });
+    return workspaceRequest('saveReviewRun', { sessionId, run: plainJson(run) });
   };
 
   const getReviewThreads = async (sessionId: string): Promise<ReviewThread[]> => {
-    return window.diffuse.coreRequest('getReviewThreads', { sessionId });
+    return workspaceRequest('getReviewThreads', { sessionId });
   };
 
   const saveReviewThread = async (sessionId: string, thread: ReviewThread): Promise<ReviewThread> => {
-    return window.diffuse.coreRequest('saveReviewThread', { sessionId, thread: plainJson(thread) });
+    return workspaceRequest('saveReviewThread', { sessionId, thread: plainJson(thread) });
   };
 
   const getReviewChatMessages = async (sessionId: string): Promise<ReviewChatMessage[]> => {
-    return window.diffuse.coreRequest('getReviewChatMessages', { sessionId });
+    return workspaceRequest('getReviewChatMessages', { sessionId });
   };
 
   const saveReviewChatMessage = async (sessionId: string, message: ReviewChatMessage): Promise<ReviewChatMessage> => {
-    return window.diffuse.coreRequest('saveReviewChatMessage', { sessionId, message: plainJson(message) });
+    return workspaceRequest('saveReviewChatMessage', { sessionId, message: plainJson(message) });
   };
 
   const addReviewComment = async (sessionId: string, comment: ReviewThread): Promise<ReviewThread> => {
-    return window.diffuse.coreRequest('addReviewComment', { sessionId, comment: plainJson(comment) });
+    return workspaceRequest('addReviewComment', { sessionId, comment: plainJson(comment) });
   };
 
-  const startReviewAgent = async (repositoryRoot: string, sessionId: string, files: ChangedFile[]): Promise<void> => {
-    await window.diffuse.startReviewAgent({ repositoryRoot, sessionId, files: plainJson(files) });
+  const startReviewAgent = async (_repositoryRoot: string, sessionId: string, files: ChangedFile[]): Promise<void> => {
+    await window.diffuse.startReviewAgent({ context: requestContext(), sessionId, files: plainJson(files) });
   };
 
   const stopReviewAgent = async (): Promise<void> => {
-    await window.diffuse.stopReviewAgent();
+    await window.diffuse.stopReviewAgent(requestContext());
   };
 
   const chatWithReviewAgent = async (
-    repositoryRoot: string,
+    _repositoryRoot: string,
     sessionId: string,
     thread: ReviewThread,
     question: string,
@@ -211,7 +268,7 @@ export const useClient = () => {
     responseMessageId?: string,
   ): Promise<ReviewChatMessage> => {
     return window.diffuse.chatWithReviewAgent({
-      repositoryRoot,
+      context: requestContext(),
       sessionId,
       thread: plainJson(thread),
       question,
@@ -222,15 +279,15 @@ export const useClient = () => {
   };
 
   const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
-    return window.diffuse.coreRequest('listTreeSitterGrammars');
+    return workspaceRequest('listTreeSitterGrammars');
   };
 
   const syncTreeSitterRegistry = async (gitUrl?: string): Promise<SyncTreeSitterRegistryResult> => {
-    return window.diffuse.coreRequest('syncTreeSitterRegistry', { gitUrl });
+    return workspaceRequest('syncTreeSitterRegistry', { gitUrl });
   };
 
   const uninstallTreeSitterGrammar = async (language: string): Promise<UninstallTreeSitterGrammarResult> => {
-    return window.diffuse.coreRequest('uninstallTreeSitterGrammar', { language });
+    return workspaceRequest('uninstallTreeSitterGrammar', { language });
   };
 
   const startSearch = async (request: {
@@ -241,7 +298,7 @@ export const useClient = () => {
     filters: SearchFilterKind[];
     target: DiffTarget;
   }): Promise<{ searchId: string }> => {
-    return window.diffuse.coreRequest('startSearch', {
+    return workspaceRequest('startSearch', {
       searchId: request.searchId,
       sessionId: request.sessionId,
       query: request.query,
@@ -252,12 +309,14 @@ export const useClient = () => {
   };
 
   const cancelSearch = async (searchId: string): Promise<{ cancelled: boolean }> => {
-    return window.diffuse.coreRequest('cancelSearch', { searchId });
+    return workspaceRequest('cancelSearch', { searchId });
   };
 
   return {
     pickRepository,
     getVersion,
+    getWorkbenchSnapshot,
+    activateWorkspace,
     openRepository,
     getDiffTargetDefaults,
     listBranches,
