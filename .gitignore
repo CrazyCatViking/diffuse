@@ -4,6 +4,7 @@ app/.vite/
 core/.zig-cache/
 core/zig-pkg/
 core/zig-out/
+target/
 .DS_Store
 **/tree_sitter_queries/
 .diffuse

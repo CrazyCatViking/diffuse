@@ -744,6 +744,8 @@ Exit criteria:
 
 Purpose: create the transport-neutral application core and durable workspace model.
 
+Implementation status: In progress. The Cargo workspace, `diffuse-core`, and `diffuse-cli` are implemented. The first complete domain slice covers product version, repository opening and canonicalization, diff-target defaults, and local/remote branch listing. `AppCore` owns an explicit multi-workspace registry with stable SQLite workspace IDs, per-open generations, stale-generation rejection, bounded event replay, snapshots, and asynchronous Git execution. Schema migration v1 creates local workspace, UI restoration, agent session, input request, and attention tables. A focused differential suite runs the selected RPC slice against both Zig and Rust on the same deterministic repositories. Zig remains the packaged desktop backend while the remaining slices below are ported; selecting the Rust executable is whole-backend and unported methods return method-not-found rather than falling back to Zig.
+
 Work:
 
 - Add the Cargo workspace and `diffuse-core` plus `diffuse-cli` crates.

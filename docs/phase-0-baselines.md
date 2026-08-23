@@ -13,6 +13,7 @@ This document records the baseline environment and capture procedure for Phase 0
 | Memory | 31 GiB |
 | Display | Wayland |
 | Zig | 0.16.0 |
+| Rust | 1.90.0 |
 | Node | 20.19.5 |
 | pnpm | 11.4.0 |
 
@@ -26,7 +27,7 @@ The deterministic RPC fixture creates a Git repository with a fixed commit ident
 - Review session and progress persistence with `review/changed` events.
 - Search start, result, progress, and completion events under an explicit search ID.
 
-The initial reference run completed 5 integration tests in 553 ms wall time as reported by Vitest. The app unit baseline completed 23 tests in 301 ms wall time. These durations are smoke-test observations, not product latency budgets.
+The initial reference run completed 5 integration tests in 553 ms wall time as reported by Vitest. Phase 1 subsequently added a sixth two-workspace routing test. Phase 3 adds a separate three-test differential suite for version, stable errors, repository opening, dirty and clean diff-target defaults, and branch discovery against both Zig and Rust. The app unit baseline completed 23 tests in 301 ms wall time. These durations are smoke-test observations, not product latency budgets.
 
 ## Performance Capture Matrix
 

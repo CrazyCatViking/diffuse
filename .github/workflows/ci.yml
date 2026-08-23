@@ -33,6 +33,11 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: clippy,rustfmt
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -52,6 +57,13 @@ jobs:
         working-directory: core
         run: zig build
 
+      - name: Check Rust core
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo build --workspace --locked
+
       - name: Install app dependencies
         working-directory: app
         run: pnpm install --frozen-lockfile
@@ -59,6 +71,10 @@ jobs:
       - name: Test core RPC integration
         working-directory: app
         run: pnpm test:integration
+
+      - name: Test Rust repository RPC parity
+        working-directory: app
+        run: pnpm test:rust-integration
 
       - name: Build and test app
         working-directory: app

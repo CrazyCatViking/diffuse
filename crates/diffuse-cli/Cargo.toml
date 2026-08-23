@@ -1,0 +1,16 @@
+[package]
+name = "diffuse-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "diffuse"
+path = "src/main.rs"
+
+[dependencies]
+diffuse-core = { path = "../diffuse-core" }
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true

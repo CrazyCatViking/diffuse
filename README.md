@@ -6,7 +6,7 @@
 
 <p>
   <img alt="Status: Work in progress" src="https://img.shields.io/badge/status-work%20in%20progress-f5a524?style=for-the-badge">
-  <img alt="Core: Zig" src="https://img.shields.io/badge/core-Zig-f7a41d?style=for-the-badge">
+  <img alt="Core: Zig with Rust migration" src="https://img.shields.io/badge/core-Zig%20%2B%20Rust-f7a41d?style=for-the-badge">
   <img alt="App: Vue and Electron" src="https://img.shields.io/badge/app-Vue%20%2B%20Electron-42b883?style=for-the-badge">
 </p>
 
@@ -55,16 +55,17 @@ These scripts are hosted directly in this repository and served by GitHub throug
 
 ## How It Works
 
-Diffuse has two main parts:
+Diffuse has these main source areas:
 
 ```text
 diffuse/
   core/   Zig core: Git, diff rendering, syntax, LSP, review persistence, JSON-RPC
+  crates/ Rust AppCore and compatibility CLI under the Agent Workbench migration
   app/    Electron + Vue app: desktop UI, settings, review agent bridge
   docs/   GitHub-readable docs, architecture notes, and data-format specs
 ```
 
-The desktop app starts the Zig core as a child process using `diffuse rpc`. The UI talks to that process over JSON-RPC. The core owns repository operations, diff generation, Tree-sitter integration, LSP sessions, and persisted review data.
+The desktop app currently starts the Zig core as a child process using `diffuse rpc`. The UI talks to that process over JSON-RPC. A transport-neutral Rust `AppCore` and temporary compatible CLI are being introduced slice by slice; Rust currently covers durable workspace identity, repository opening, diff-target defaults, and branches, while Zig remains the packaged backend.
 
 Review data is intentionally easy to inspect and integrate with:
 
@@ -124,6 +125,7 @@ To build and install Diffuse from source, install:
 | `git`            | Repository access and update/install commands.     |
 | `just`           | Project task runner.                               |
 | `zig`            | Builds the native core. Minimum version: `0.16.0`. |
+| `rustup`/`cargo` | Builds and tests the Phase 3 Rust core. The repository pins Rust `1.90.0`. |
 | `node`           | Builds and runs the Electron app.                  |
 | `pnpm`           | Installs app dependencies.                         |
 | `curl` and `tar` | Used by build/install tooling on Unix systems.     |
@@ -144,9 +146,11 @@ just install
 
 1. Check required tools.
 2. Build the Zig core.
-3. Install app dependencies with `pnpm install --frozen-lockfile`.
-4. Build the Electron/Vue app.
-5. Install Diffuse into your user environment.
+3. Format, lint, test, and build the Rust core.
+4. Run the Zig/Rust repository-slice differential tests.
+5. Install app dependencies with `pnpm install --frozen-lockfile`.
+6. Build the Electron/Vue app.
+7. Install Diffuse into your user environment.
 
 Default install locations:
 
@@ -177,7 +181,7 @@ Open a specific repository:
 diffuse /path/to/repository
 ```
 
-If Diffuse is already running, another `diffuse /path/to/repository` command opens a new window in the existing Electron app process. Each window has its own isolated Zig core process.
+If Diffuse is already running, another `diffuse /path/to/repository` command adds or activates that repository in the existing primary window. During migration, each open workspace still has its own isolated Zig core process behind the workspace-aware Electron facade.
 
 The desktop app also accepts the packaged-app launch argument `--open-repository <path>`.
 
@@ -263,10 +267,17 @@ cd core
 zig build test
 zig build
 
-cd ../app
+cd ..
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo build --workspace --locked
+
+cd app
 pnpm install --frozen-lockfile
 pnpm test
 pnpm test:integration
+pnpm test:rust-integration
 ```
 
 The Electron app looks for the core binary in `core/zig-out/bin/diffuse`. You can point it at a custom binary with:
@@ -274,6 +285,8 @@ The Electron app looks for the core binary in `core/zig-out/bin/diffuse`. You ca
 ```sh
 DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse pnpm dev
 ```
+
+The Phase 3 Rust compatibility binary is built at `target/debug/diffuse`. It currently supports only version, repository opening, diff-target defaults, and branch listing, so use `DIFFUSE_CORE_EXECUTABLE` with it for focused parity work rather than a complete desktop session. Unported methods fail explicitly; they are never delegated to Zig inside the same workspace.
 
 When no explicit executable is configured, the Electron app checks development paths, packaged resources, and then the installed core under `DIFFUSE_INSTALL_ROOT` or `~/.local/share/diffuse/core/diffuse`.
 

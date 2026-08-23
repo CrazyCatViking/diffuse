@@ -48,7 +48,7 @@ fi
 
 if [[ "$dry_run" -eq 1 ]]; then
   echo "Would publish Diffuse $version"
-  echo "Would update app/package.json and core/src/protocol/types.zig"
+  echo "Would update app/package.json, Cargo.toml, Cargo.lock, and core/src/protocol/types.zig"
   echo "Would commit: Release $tag"
   echo "Would tag: $tag"
   echo "Would push commit and tag to origin"
@@ -57,8 +57,10 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 sed -i.bak -E 's/("version": ")[^"]*(")/\1'"$version"'\2/' app/package.json && rm app/package.json.bak
+sed -i.bak -E 's/^version = "[^"]*"$/version = "'"$version"'"/' Cargo.toml && rm Cargo.toml.bak
 sed -i.bak -E 's/pub const version = "[^"]*";/pub const version = "'"$version"'";/' core/src/protocol/types.zig && rm core/src/protocol/types.zig.bak
-git add app/package.json core/src/protocol/types.zig
+cargo check --workspace
+git add app/package.json Cargo.toml Cargo.lock core/src/protocol/types.zig
 git commit -m "Release $tag"
 git tag "$tag"
 git push origin HEAD

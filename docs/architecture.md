@@ -6,12 +6,16 @@ This document describes the current implementation. The proposed single-window E
 
 ## System Shape
 
-Diffuse is split into two cooperating programs:
+Diffuse currently ships as two cooperating programs, with the Phase 3 Rust replacement developing alongside them:
 
 - `core/` is a Zig executable named `diffuse`. It owns Git access, repository session state, diff parsing, Tree-sitter syntax work, LSP sessions, review persistence, and JSON-RPC handling.
+- `crates/diffuse-core/` is the transport-neutral Rust `AppCore` under migration. Its completed first slice owns durable workspace identity, workspace generations, snapshots, event sequencing, repository opening, diff-target defaults, and branch listing.
+- `crates/diffuse-cli/` is the temporary Rust line-delimited JSON-RPC adapter used for differential testing through the existing executable seam.
 - `app/` is an Electron/Vue desktop app. It owns windows, dialogs, UI state, rendering, settings, provider adapters, and communication with the core process.
 
 The app talks to the core over line-delimited JSON-RPC on each core process `stdin` and `stdout`. Diffuse creates one primary Electron window and currently uses one Zig core process per open workspace. Electron main owns the transitional workspace registry, so multiple repositories remain independently addressable while only one workspace is rendered.
+
+The packaged and default development backend remains Zig. Setting `DIFFUSE_CORE_EXECUTABLE` to `target/debug/diffuse` opts an entire spawned workspace backend into the Rust adapter. The Rust adapter currently implements only `getVersion`, `openRepository`, `getDiffTargetDefaults`, and `listBranches`; it never proxies an unported method back to Zig. This preserves one authority per workspace while parity work is incomplete.
 
 ```text
 Vue renderer
@@ -34,7 +38,7 @@ The renderer never imports Node APIs directly. `app/electron/preload.ts` exposes
 - `getWorkbenchSnapshot()` restores open workspace summaries and the active workspace after renderer recreation.
 - `onWorkbenchEvent(listener)` subscribes to validated workspace lifecycle and workspace-tagged core events.
 
-`app/electron/main.ts` creates at most one primary `BrowserWindow`, owns the application-wide legacy workspace registry, and registers validated IPC handlers. `app/electron/legacyWorkspaceRegistry.ts` maps each ready workspace to one current Zig `CoreRpcClient`, canonicalizes returned Git roots for deduplication, and assigns an opaque workspace ID plus a new generation for every close/reopen lifetime. Workspace IDs are currently stable only for the running application; Phase 3 SQLite persistence will make them stable across restarts.
+`app/electron/main.ts` creates at most one primary `BrowserWindow`, owns the application-wide legacy workspace registry, and registers validated IPC handlers. `app/electron/legacyWorkspaceRegistry.ts` maps each ready workspace to one current Zig `CoreRpcClient`, canonicalizes returned Git roots for deduplication, and assigns an opaque workspace ID plus a new generation for every close/reopen lifetime. The production Zig facade's workspace IDs remain stable only for the running application. The Rust `AppCore` now persists stable IDs across restarts, but Electron will not consume those IDs until a later Phase 3 backend cutover.
 
 The registry checks identity before and after every awaited request. Closing a workspace marks it unavailable before disposing its process, immediately rejects pending client requests, and prevents delayed results or events from the closed generation from being forwarded. If a fatal request timeout restarts a workspace core, the registry reopens that workspace root before retrying the request. Registry events carry a monotonically increasing in-memory sequence, event ID, workspace ID, workspace generation, kind, and payload.
 
@@ -139,6 +143,34 @@ The CLI supports commands such as:
 - `diffuse diff --repo <path> --file <path>` prints a diff render model as JSON.
 
 The desktop app uses `diffuse rpc`.
+
+## Rust Phase 3 Core
+
+The root Cargo workspace contains two crates:
+
+- `diffuse-core` exposes the transport-neutral `AppCore`, `WorkspaceRegistry`, `WorkbenchDatabase`, bounded `EventHub`, repository operations, and domain DTOs. It has no Electron, N-API, or JSON-RPC dependency.
+- `diffuse-cli` exposes a binary named `diffuse`. Its `rpc` command maps the legacy process-local repository protocol onto explicit Rust workspace request contexts only at this temporary transport boundary.
+
+`AppCore` can load multiple repositories in one process. Opening resolves the Git worktree root, canonicalizes it for deduplication, obtains or creates its stable workspace UUID in SQLite, and creates a fresh generation UUID for that loaded lifetime. Repository work runs through Tokio blocking tasks without holding the registry lock. Requests resolve a workspace by both ID and generation; a close/reopen cycle therefore rejects stale contexts even though the durable workspace ID is reused.
+
+The Rust event hub assigns monotonic process-local sequences, retains a bounded replay window, and reports when a requested sequence requires a snapshot. Domain records and SQLite remain authoritative rather than the event queue.
+
+The Rust JSON-RPC compatibility adapter keeps stdout reserved for one response line per request and preserves the current error codes and omission of absent optional fields for its ported methods. Requests execute concurrently, while input size, queued requests, in-flight tasks, Git output, and event replay are bounded. The selected executable owns the whole workspace backend. Method-level Zig/Rust fallback is intentionally unsupported.
+
+### Workbench Database
+
+The Rust database defaults to the platform application-data directory as `workbench.sqlite3`. `DIFFUSE_WORKBENCH_DATABASE` overrides the path for tests and development. Connections enable foreign keys, a busy timeout, WAL mode, and transactional versioned migrations.
+
+Each loaded database holds a cross-process shared recovery lock. Confirmed corruption is moved aside with its SQLite sidecars and replaced only after an exclusive lock proves that no other process is using the database. A failed sidecar move rolls the rename back. Schema versions newer than the binary supports are rejected without modifying or replacing the database.
+
+Schema migration v1 creates:
+
+- `workspaces` and `app_state` for canonical roots, stable IDs, generations, rail order, open state, and active workspace.
+- `workspace_ui_state` for future core-owned restoration snapshots.
+- `agent_sessions`, `input_requests`, and `attention_items` for later Phase 5 and Phase 6 state machines.
+- Supporting indexes and foreign-key cleanup rules.
+
+Only workspace lifecycle records are written by the current slice. The other tables establish the migration boundary but do not imply that durable attention or ACP behavior is implemented yet.
 
 ## Core RPC Runtime
 
@@ -311,6 +343,8 @@ This state is UI convenience data only. Review sessions and agent state are stor
 
 The Zig core is built from `core/build.zig`. It produces an executable named `diffuse`.
 
+The Phase 3 Rust core is built from the root `Cargo.toml`. `cargo build --workspace` produces the compatibility executable at `target/debug/diffuse`; it is a development and parity artifact, not a packaged release artifact yet.
+
 The Electron app is configured in `app/electron.vite.config.ts` with separate builds for:
 
 - Electron main: `app/electron/main.ts`
@@ -320,12 +354,16 @@ The Electron app is configured in `app/electron.vite.config.ts` with separate bu
 Useful commands:
 
 ```sh
-cd core && zig build
-cd app && pnpm dev
-cd app && pnpm build
+(cd core && zig build)
+cargo test --workspace --all-targets --locked
+cargo build --workspace --locked
+(cd app && pnpm dev)
+(cd app && pnpm build)
 ```
 
-For development, build the core first so `app/electron/coreProcess.ts` can find `core/zig-out/bin/diffuse`.
+For normal development, build the Zig core first so `app/electron/coreProcess.ts` can find `core/zig-out/bin/diffuse`. To exercise the completed Rust repository slice, build the Cargo workspace and set `DIFFUSE_CORE_EXECUTABLE` to the absolute path of `target/debug/diffuse`. A normal desktop session still needs Zig because most methods have not been ported.
+
+`just build` and CI run Rust formatting, Clippy, unit/integration tests, compilation, and the focused Zig/Rust repository-slice differential suite in addition to the existing Zig and app checks. Release packaging continues to copy only the Zig executable until Phase 3 parity is complete and the later N-API cutover is ready.
 
 Prebuilt release packaging is separate from source installation. `just install` continues to build from source and run `scripts/install.sh` or `scripts/install.ps1`. The native release path runs `app/scripts/prepare-electron-package.mjs` after the app build, copies the already-built Zig core into Electron resources, and then runs `electron-builder` through `pnpm dist`. Release artifacts are archives only: Linux `tar.gz`, macOS `zip`, and Windows `zip`.
 

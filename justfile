@@ -5,9 +5,14 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPoli
 build:
     ./scripts/requirements.sh build
     node scripts/check-rpc-contract.mjs
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --all-targets --locked
+    cargo build --workspace --locked
     (cd core && zig build test)
     (cd core && zig build)
     (cd app && pnpm install --frozen-lockfile)
+    (cd app && pnpm test:rust-integration)
     (cd app && pnpm build)
 
 [windows]
@@ -15,11 +20,17 @@ build:
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Missing required command: git' }
     if (-not (Get-Command just -ErrorAction SilentlyContinue)) { throw 'Missing required command: just' }
     if (-not (Get-Command zig -ErrorAction SilentlyContinue)) { throw 'Missing required command: zig' }
+    if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) { throw 'Missing required command: rustup' }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw 'Missing required command: cargo' }
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'Missing required command: node' }
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw 'Missing required command: pnpm' }
     node scripts/check-rpc-contract.mjs
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --all-targets --locked
+    cargo build --workspace --locked
     Push-Location core; zig build test; zig build; Pop-Location
-    Push-Location app; pnpm install --frozen-lockfile; pnpm build; Pop-Location
+    Push-Location app; pnpm install --frozen-lockfile; pnpm test:rust-integration; pnpm build; Pop-Location
 
 [unix]
 install: build

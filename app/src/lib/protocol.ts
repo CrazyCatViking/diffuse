@@ -25,7 +25,8 @@ export type DiffTarget = {
   includeUnstaged: boolean;
 };
 
-export type DiffTargetDefaults = DiffTarget & {
+export type DiffTargetDefaults = Omit<DiffTarget, 'base'> & {
+  base: string;
   dirty: boolean;
   upstream?: string;
 };

@@ -17,6 +17,8 @@ need just
 case "$mode" in
   build|install)
     need zig
+    need rustup
+    need cargo
     need node
     need pnpm
     need curl
@@ -24,6 +26,7 @@ case "$mode" in
     ;;
   publish)
     need git
+    need cargo
     need sed
     ;;
   *)

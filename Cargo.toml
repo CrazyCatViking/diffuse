@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/diffuse-cli", "crates/diffuse-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.21"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+dunce = "1.0"
+fs2 = "0.4"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.20"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync"] }
+uuid = { version = "1.18", features = ["serde", "v4"] }
