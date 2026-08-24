@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Proposed |
-| Last updated | 2026-08-23 |
+| Last updated | 2026-08-24 |
 | Target shell | Electron and Vue |
 | Target core | One application-wide Rust core loaded through N-API |
 | Window model | One primary workbench window with multiple workspaces |
@@ -744,7 +744,7 @@ Exit criteria:
 
 Purpose: create the transport-neutral application core and durable workspace model.
 
-Implementation status: Complete. The Cargo workspace, transport-neutral `diffuse-core`, and temporary JSON-RPC `diffuse-cli` implement the complete 44-method and 10-event desktop contract. `AppCore` owns multiple workspace runtimes with stable SQLite workspace IDs, per-open generations, stale-generation rejection, operation draining, bounded gap-free live events, repository and diff operations, v1-compatible review persistence, cancellable search, cross-platform event-driven watchers, supervised LSP sessions, and syntax management. Optional native Tree-sitter grammars execute only in an isolated runner child. SQLite migration, integrity, corruption-recovery, cross-process locking, and future-schema tests are in place. The full differential suite compares methods, events, persisted artifacts, watcher behavior, mock-LSP behavior, and CLI failures against Zig. Development prefers the Rust executable as a whole backend; packaged releases remain Zig until the Phase 4 N-API cutover.
+Implementation status: Complete. The Cargo workspace, transport-neutral `diffuse-core`, and temporary JSON-RPC `diffuse-cli` implement the complete 44-method and 10-event desktop contract. `AppCore` owns multiple workspace runtimes with stable SQLite workspace IDs, per-open generations, stale-generation rejection, operation draining, bounded gap-free live events, repository and diff operations, v1-compatible review persistence, cancellable search, cross-platform event-driven watchers, supervised LSP sessions, and syntax management. Workspace snapshots expose repository-watcher health, and unexpected watcher termination degrades the owning workspace. Optional native Tree-sitter grammars execute only in an isolated runner child. SQLite migration, integrity, corruption-recovery, genuine child-process locking, and future-schema tests are in place. Direct multi-workspace tests prove same-ID search cancellation isolation and rejection of stale old-generation callbacks after reopen. The full differential suite compares methods, events, persisted artifacts, Linux watcher behavior, mock-LSP behavior, and CLI failures against Zig; Rust watcher behavior is additionally tested on macOS and Windows, where the legacy Zig watcher is unavailable. Development prefers the Rust executable as a whole backend; packaged releases remain Zig until the Phase 4 N-API cutover.
 
 Work:
 

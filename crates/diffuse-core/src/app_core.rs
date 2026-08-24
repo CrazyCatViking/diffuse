@@ -226,17 +226,13 @@ impl AppCore {
             &display_name,
             generation,
         )?;
-        let runtime = Arc::new(WorkspaceRuntime::new(
-            id,
-            generation,
-            canonical_root,
-            display_name,
-            repository,
-        ));
+        let mut runtime =
+            WorkspaceRuntime::new(id, generation, canonical_root, display_name, repository);
         if let Err(error) = runtime.start_watcher(self.inner.events.clone()) {
             let _ = self.inner.database.close_workspace(id);
             return Err(error);
         }
+        let runtime = Arc::new(runtime);
         let state = self
             .inner
             .state_gate
@@ -1209,6 +1205,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::{Condvar, Mutex, mpsc};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use tempfile::TempDir;
@@ -1244,6 +1242,81 @@ mod tests {
             workspace_generation: snapshot.summary.workspace_generation,
             request_id: request_id.to_owned(),
         }
+    }
+
+    struct GatedSearchSource {
+        entered: mpsc::Sender<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl ChangedFilesProvider for GatedSearchSource {
+        fn changed_files(&self) -> Result<Vec<search::ChangedFile>, SearchError> {
+            Ok(vec![search::ChangedFile {
+                id: "README.md".to_owned(),
+                old_path: None,
+                new_path: Some("README.md".to_owned()),
+                status: search::ChangedFileStatus::Modified,
+                additions: 1,
+                deletions: 0,
+                signature: "fixture".to_owned(),
+            }])
+        }
+    }
+
+    impl SourceTextProvider for GatedSearchSource {
+        fn source_text(
+            &self,
+            _file: &search::ChangedFile,
+            _side: search::SyntaxSide,
+        ) -> Result<Option<Vec<u8>>, SearchError> {
+            self.entered.send(()).expect("report blocked search");
+            let (released, wake) = &*self.release;
+            let mut released = released.lock().expect("search gate lock poisoned");
+            while !*released {
+                released = wake.wait(released).expect("search gate lock poisoned");
+            }
+            Ok(Some(b"shared search\n".to_vec()))
+        }
+    }
+
+    impl ReviewCommentsProvider for GatedSearchSource {
+        fn review_snapshot(
+            &self,
+            _session_id: &str,
+        ) -> Result<search::ReviewSnapshot, SearchError> {
+            Ok(search::ReviewSnapshot::default())
+        }
+    }
+
+    fn start_gated_search(
+        core: &AppCore,
+        context: &WorkspaceRequestContext,
+        source: GatedSearchSource,
+    ) -> thread::JoinHandle<Result<search::SearchStats, SearchError>> {
+        let runtime = core
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)
+            .expect("workspace runtime");
+        let permit = runtime.acquire_operation().expect("workspace operation");
+        let coordinator = runtime.search.clone();
+        let reservation = coordinator.reserve("shared-id").expect("reserve search");
+        let request = SearchRequest {
+            search_id: "shared-id".to_owned(),
+            session_id: String::new(),
+            query: "shared".to_owned(),
+            mode: SearchMode::Content,
+            filters: Vec::new(),
+        };
+        let sink = SearchEventForwarder {
+            core: core.clone(),
+            context: context.clone(),
+        };
+        thread::spawn(move || {
+            let result = coordinator.run_reserved(request, reservation, &source, &sink);
+            drop(permit);
+            result
+        })
     }
 
     #[tokio::test]
@@ -1508,15 +1581,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_managers_are_isolated_and_same_search_ids_do_not_collide() {
+    async fn cancelling_same_search_id_is_isolated_and_stale_work_is_rejected_after_reopen() {
         let first_repository = repository();
         let second_repository = repository();
-        fs::write(first_repository.path().join("README.md"), "shared search\n").unwrap();
-        fs::write(
-            second_repository.path().join("README.md"),
-            "shared search\n",
-        )
-        .unwrap();
         let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
         let first = core.open_workspace(first_repository.path()).await.unwrap();
         let second = core.open_workspace(second_repository.path()).await.unwrap();
@@ -1541,30 +1608,88 @@ mod tests {
         assert!(!Arc::ptr_eq(&first_runtime.search, &second_runtime.search));
         assert!(!Arc::ptr_eq(&first_runtime.lsp, &second_runtime.lsp));
 
-        let params = || {
-            Some(json!({
-                "searchId": "shared-id",
-                "sessionId": "",
-                "query": "shared",
-                "mode": "content",
-                "filters": [],
-                "target": {
-                    "base": "HEAD",
-                    "includeStaged": true,
-                    "includeUnstaged": true
-                }
-            }))
-        };
-        let (first_result, second_result) = tokio::join!(
-            core.dispatch_workspace(&first_context, "startSearch", params()),
-            core.dispatch_workspace(&second_context, "startSearch", params()),
+        let before = core.events().current_sequence();
+        let (entered, blocked) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let first_worker = start_gated_search(
+            &core,
+            &first_context,
+            GatedSearchSource {
+                entered: entered.clone(),
+                release: release.clone(),
+            },
         );
-        assert_eq!(first_result.unwrap(), json!({ "searchId": "shared-id" }));
-        assert_eq!(second_result.unwrap(), json!({ "searchId": "shared-id" }));
+        let second_worker = start_gated_search(
+            &core,
+            &second_context,
+            GatedSearchSource {
+                entered,
+                release: release.clone(),
+            },
+        );
+        blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+        blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let cancelled = core
+            .dispatch_workspace(
+                &first_context,
+                "cancelSearch",
+                Some(json!({ "searchId": "shared-id" })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancelled, json!({ "cancelled": true }));
+        assert!(second_runtime.search.is_active("shared-id"));
+
+        *release.0.lock().expect("search gate lock poisoned") = true;
+        release.1.notify_all();
+        first_worker.join().unwrap().unwrap();
+        second_worker.join().unwrap().unwrap();
+
+        let events = core.events().replay_after(before).events;
+        assert!(events.iter().any(|event| {
+            event.kind == "search/cancelled"
+                && event.workspace_id == Some(first_context.workspace_id)
+                && event.workspace_generation == Some(first_context.workspace_generation)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "search/done"
+                && event.workspace_id == Some(second_context.workspace_id)
+                && event.workspace_generation == Some(second_context.workspace_generation)
+        }));
+        assert!(events.iter().all(|event| {
+            event.kind != "search/cancelled"
+                || event.workspace_id != Some(second_context.workspace_id)
+        }));
+
+        let stale_forwarder = SearchEventForwarder {
+            core: core.clone(),
+            context: first_context.clone(),
+        };
+        core.close_workspace(&first_context).unwrap();
+        let reopened = core.open_workspace(first_repository.path()).await.unwrap();
+        assert_eq!(first.summary.workspace_id, reopened.summary.workspace_id);
+        assert_ne!(
+            first.summary.workspace_generation,
+            reopened.summary.workspace_generation
+        );
+        let after_reopen = core.events().current_sequence();
+        assert!(matches!(
+            stale_forwarder.send(SearchEvent::Started(search::SearchStarted {
+                search_id: "shared-id".to_owned(),
+            })),
+            Err(SearchError::Provider(_))
+        ));
+        assert!(
+            core.events()
+                .replay_after(after_reopen)
+                .events
+                .iter()
+                .all(|event| event.kind != "search/started"
+                    || event.workspace_generation != Some(first_context.workspace_generation))
+        );
+
         core.shutdown().unwrap();
-        let after_shutdown = core.events().current_sequence();
-        std::thread::sleep(Duration::from_millis(25));
-        assert!(core.events().replay_after(after_shutdown).events.is_empty());
     }
 
     #[tokio::test]

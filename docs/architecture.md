@@ -158,13 +158,13 @@ The Rust event hub assigns monotonic process-local sequences, retains a bounded 
 
 The Rust JSON-RPC compatibility adapter implements all 44 methods and forwards all 10 event families. It keeps stdout reserved for protocol output and preserves current error codes and omission of absent optional fields. Requests execute concurrently, while input size, queued requests, in-flight tasks, Git output, event replay, and subscriber queues are bounded. The selected executable owns the whole workspace backend. Method-level Zig/Rust fallback is intentionally unsupported.
 
-Each `WorkspaceRuntime` owns its repository, review store, search coordinator, watcher, and repository-scoped LSP manager. A close barrier rejects new work, waits for active durable operations, cancels owned searches, stops the watcher and LSP processes, and only then removes the runtime. `AppCore::shutdown` drains every loaded workspace.
+Each `WorkspaceRuntime` owns its repository, review store, search coordinator, watcher, and repository-scoped LSP manager. Workspace summaries include repository-watcher health as `running`, `stopped`, or `failed`; unexpected worker or forwarding termination changes an accepting workspace to `degraded`, and subsequent snapshots expose that state. A close barrier rejects new work, waits for active durable operations, cancels owned searches, stops the watcher and LSP processes, and only then removes the runtime. Search coordinators are workspace-local, so cancelling an identifier in one workspace cannot cancel the same identifier in another. `AppCore::shutdown` drains every loaded workspace.
 
 ### Workbench Database
 
 The Rust database defaults to the platform application-data directory as `workbench.sqlite3`. `DIFFUSE_WORKBENCH_DATABASE` overrides the path for tests and development. Connections enable foreign keys, a busy timeout, WAL mode, and transactional versioned migrations.
 
-Each loaded database holds a cross-process shared recovery lock. Confirmed corruption is moved aside with its SQLite sidecars and replaced only after an exclusive lock proves that no other process is using the database. A failed sidecar move rolls the rename back. Schema versions newer than the binary supports are rejected without modifying or replacing the database.
+Each loaded database holds a cross-process shared recovery lock. Confirmed corruption is moved aside with its SQLite sidecars and replaced only after an exclusive lock proves that no other process is using the database. A failed sidecar move rolls the rename back. Schema versions newer than the binary supports are rejected without modifying or replacing the database. Tests launch a separate operating-system process to verify that the lifetime shared lock blocks exclusive recovery and that dropping the database releases it.
 
 Schema migration v1 creates:
 

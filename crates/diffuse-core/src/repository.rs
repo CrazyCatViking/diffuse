@@ -568,7 +568,10 @@ mod tests {
         let (temp, _) = repository();
         fs::create_dir(temp.path().join("nested")).expect("create nested directory");
         let opened = Repository::open(&temp.path().join("nested")).expect("open nested path");
-        assert_eq!(opened.root(), temp.path());
+        assert_eq!(
+            dunce::canonicalize(opened.root()).expect("canonical opened root"),
+            dunce::canonicalize(temp.path()).expect("canonical temporary root")
+        );
         assert!(!opened.head.is_empty());
     }
 

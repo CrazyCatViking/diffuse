@@ -6,5 +6,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     restoreMocks: true,
+    setupFiles: ['./src/test/setup.ts'],
   },
 });

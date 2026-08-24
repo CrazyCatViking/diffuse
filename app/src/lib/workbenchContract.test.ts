@@ -29,6 +29,20 @@ describe('workbench contract', () => {
     const summary = { ...base, root: '/repo', displayName: 'repo', state: 'ready' };
 
     expect(isWorkbenchEvent({ ...base, kind: 'workspace/added', payload: summary })).toBe(true);
+    expect(
+      isWorkbenchEvent({
+        ...base,
+        kind: 'workspace/added',
+        payload: { ...summary, state: 'degraded', serviceHealth: { repositoryWatcher: 'failed' } },
+      }),
+    ).toBe(true);
+    expect(
+      isWorkbenchEvent({
+        ...base,
+        kind: 'workspace/added',
+        payload: { ...summary, serviceHealth: { repositoryWatcher: 'unknown' } },
+      }),
+    ).toBe(false);
     expect(isWorkbenchEvent({ ...base, kind: 'search/started', payload: { searchId: 'search-1' } })).toBe(true);
     expect(isWorkbenchEvent({ ...base, kind: 'search/started', payload: {} })).toBe(false);
     expect(isWorkbenchEvent({ ...base, sequence: 0, kind: 'search/started', payload: { searchId: 'search-1' } })).toBe(false);

@@ -15,12 +15,19 @@ export type WorkspaceRequestContext = WorkspaceReference & {
   requestId: RequestId;
 };
 
-export type WorkspaceLoadState = 'opening' | 'ready' | 'closing' | 'closed';
+export type WorkspaceLoadState = 'opening' | 'ready' | 'degraded' | 'closing' | 'closed';
+
+export type WorkspaceServiceStatus = 'running' | 'stopped' | 'failed';
+
+export type WorkspaceServiceHealth = {
+  repositoryWatcher: WorkspaceServiceStatus;
+};
 
 export type WorkspaceSummary = WorkspaceReference & {
   root: string;
   displayName: string;
   state: WorkspaceLoadState;
+  serviceHealth?: WorkspaceServiceHealth;
 };
 
 export type WorkspaceSnapshot = {
@@ -102,10 +109,21 @@ export function isWorkbenchEvent(value: unknown): value is WorkbenchEvent {
 function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
   if (!isRecord(value) || !isWorkspaceReference(value)) return false;
   const record = value as unknown as Record<string, unknown>;
+  const hasValidServiceHealth =
+    record.serviceHealth === undefined ||
+    (isRecord(record.serviceHealth) &&
+      (record.serviceHealth.repositoryWatcher === 'running' ||
+        record.serviceHealth.repositoryWatcher === 'stopped' ||
+        record.serviceHealth.repositoryWatcher === 'failed'));
   return (
     typeof record.root === 'string' &&
     typeof record.displayName === 'string' &&
-    (record.state === 'opening' || record.state === 'ready' || record.state === 'closing' || record.state === 'closed')
+    (record.state === 'opening' ||
+      record.state === 'ready' ||
+      record.state === 'degraded' ||
+      record.state === 'closing' ||
+      record.state === 'closed') &&
+    hasValidServiceHealth
   );
 }
 

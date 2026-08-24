@@ -24,8 +24,8 @@ pub use repository::{
     VersionInfo,
 };
 pub use workspace::{
-    WorkspaceGeneration, WorkspaceId, WorkspaceRequestContext, WorkspaceSnapshot, WorkspaceState,
-    WorkspaceSummary,
+    WorkspaceGeneration, WorkspaceId, WorkspaceRequestContext, WorkspaceServiceHealth,
+    WorkspaceServiceStatus, WorkspaceSnapshot, WorkspaceState, WorkspaceSummary,
 };
 
 pub const APP_NAME: &str = "diffuse";

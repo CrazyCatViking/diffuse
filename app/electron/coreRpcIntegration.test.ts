@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { platform } from 'node:os';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -47,7 +47,7 @@ describe('core RPC baseline', () => {
     const opened = await client.request<OpenRepositoryResult>('openRepository', { path: fixture.root });
     const defaults = await client.request<DiffTargetDefaults>('getDiffTargetDefaults');
 
-    expect(opened.root).toBe(fixture.root);
+    expect(realpathSync(opened.root)).toBe(realpathSync(fixture.root));
     expect(opened.head).toMatch(/^[0-9a-f]+$/);
     expect(defaults).toMatchObject({ includeStaged: true, includeUnstaged: true, dirty: true });
   });
@@ -143,8 +143,8 @@ describe('core RPC baseline', () => {
       ]);
 
       expect(first.summary.workspaceId).not.toBe(second.summary.workspaceId);
-      expect(first.repository.root).toBe(fixture.root);
-      expect(second.repository.root).toBe(secondFixture.root);
+      expect(realpathSync(first.repository.root)).toBe(realpathSync(fixture.root));
+      expect(realpathSync(second.repository.root)).toBe(realpathSync(secondFixture.root));
       expect(firstFiles.context.requestId).toBe('request-first');
       expect(secondFiles.context.requestId).toBe('request-second');
       expect(firstFiles.result).toHaveLength(4);

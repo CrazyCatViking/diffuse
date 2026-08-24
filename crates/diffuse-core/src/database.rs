@@ -418,10 +418,16 @@ fn null_device() -> &'static str {
 mod tests {
     use std::fs;
     use std::io::{Seek, SeekFrom, Write};
+    use std::process::Command;
 
     use tempfile::TempDir;
 
     use super::*;
+
+    const LOCK_CHILD_PATH_ENV: &str = "DIFFUSE_TEST_DATABASE_LOCK_CHILD_PATH";
+    const LOCK_CHILD_EXPECT_ACQUIRED_ENV: &str = "DIFFUSE_TEST_DATABASE_LOCK_CHILD_EXPECT_ACQUIRED";
+    const LOCK_CHILD_TEST: &str = "database::tests::database_lock_child_process";
+    const LOCK_CHILD_SUCCESS_MARKER: &str = "diffuse-database-lock-child-complete";
 
     #[test]
     fn migrations_are_idempotent_and_enable_foreign_keys() {
@@ -575,6 +581,38 @@ mod tests {
     }
 
     #[test]
+    fn database_shared_lock_blocks_a_child_process_for_its_loaded_lifetime() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
+        let database = WorkbenchDatabase::open(&path).unwrap();
+
+        run_lock_child(&path, false);
+        drop(database);
+        run_lock_child(&path, true);
+    }
+
+    #[test]
+    fn database_lock_child_process() {
+        let Some(path) = std::env::var_os(LOCK_CHILD_PATH_ENV) else {
+            return;
+        };
+        let expected_acquired = std::env::var_os(LOCK_CHILD_EXPECT_ACQUIRED_ENV)
+            .expect("child lock expectation")
+            == "true";
+        let lock = open_database_lock(Path::new(&path)).expect("open child database lock");
+        let acquired = FileExt::try_lock_exclusive(&lock).is_ok();
+
+        assert_eq!(
+            acquired, expected_acquired,
+            "child exclusive lock acquisition did not match expectation"
+        );
+        if acquired {
+            FileExt::unlock(&lock).expect("unlock child database lock");
+        }
+        println!("{LOCK_CHILD_SUCCESS_MARKER}");
+    }
+
+    #[test]
     fn moving_corrupt_database_preserves_sidecars() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
@@ -644,6 +682,31 @@ mod tests {
         drop(connection);
         drop(database);
         (page_size, root_page)
+    }
+
+    fn run_lock_child(path: &Path, expected_acquired: bool) {
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .args(["--exact", LOCK_CHILD_TEST, "--nocapture"])
+            .env(LOCK_CHILD_PATH_ENV, path)
+            .env(
+                LOCK_CHILD_EXPECT_ACQUIRED_ENV,
+                expected_acquired.to_string(),
+            )
+            .output()
+            .expect("run database lock child process");
+
+        assert!(
+            output.status.success(),
+            "database lock child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(LOCK_CHILD_SUCCESS_MARKER),
+            "database lock child test did not run\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn overwrite_bytes(path: &Path, offset: usize, bytes: &[u8]) {

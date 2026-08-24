@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { platform, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -87,7 +87,7 @@ describe('repository RPC slice parity', () => {
     const results = await Promise.all(clients.map(({ client }) => repositoryState(client, dirtyFixture.root)));
 
     expect(results[0]).toEqual(results[1]);
-    expect(results[0].opened.root).toBe(dirtyFixture.root);
+    expect(realpathSync(results[0].opened.root)).toBe(realpathSync(dirtyFixture.root));
     expect(results[0].opened.head).toMatch(/^[0-9a-f]+$/);
     expect(results[0].defaults).toEqual({
       base: 'HEAD',

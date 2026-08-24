@@ -11,7 +11,9 @@ use crate::lsp::LspManager;
 use crate::repository::Repository;
 use crate::review::ReviewStore;
 use crate::search::SearchCoordinator;
-use crate::watcher::{RepositoryWatchEvent, RepositoryWatcher, RepositoryWatcherConfig};
+use crate::watcher::{
+    RepositoryWatchEvent, RepositoryWatcher, RepositoryWatcherConfig, RepositoryWatcherStatus,
+};
 use crate::{CoreError, CoreResult, EventHub, OpenRepositoryResult};
 
 macro_rules! uuid_id {
@@ -64,6 +66,21 @@ pub enum WorkspaceState {
     Closing,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceServiceStatus {
+    Running,
+    #[default]
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceServiceHealth {
+    pub repository_watcher: WorkspaceServiceStatus,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSummary {
@@ -72,6 +89,8 @@ pub struct WorkspaceSummary {
     pub root: String,
     pub display_name: String,
     pub state: WorkspaceState,
+    #[serde(default)]
+    pub service_health: WorkspaceServiceHealth,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +193,16 @@ impl WorkspaceLifecycle {
         state.accepting_operations = true;
     }
 
+    fn mark_degraded(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("workspace lifecycle lock poisoned");
+        if state.accepting_operations {
+            state.workspace_state = WorkspaceState::Degraded;
+        }
+    }
+
     fn wait_until_idle(&self) {
         let mut state = self
             .state
@@ -201,6 +230,22 @@ struct WorkspaceWatcher {
 }
 
 impl WorkspaceWatcher {
+    fn status(&self) -> WorkspaceServiceStatus {
+        match self.watcher.status() {
+            RepositoryWatcherStatus::Running
+                if self
+                    .forwarder
+                    .as_ref()
+                    .is_some_and(|forwarder| forwarder.is_finished()) =>
+            {
+                WorkspaceServiceStatus::Failed
+            }
+            RepositoryWatcherStatus::Running => WorkspaceServiceStatus::Running,
+            RepositoryWatcherStatus::Stopped => WorkspaceServiceStatus::Stopped,
+            RepositoryWatcherStatus::Failed => WorkspaceServiceStatus::Failed,
+        }
+    }
+
     fn stop(mut self) {
         self.watcher.stop();
         if let Some(forwarder) = self.forwarder.take() {
@@ -240,7 +285,7 @@ impl WorkspaceRuntime {
         }
     }
 
-    pub(crate) fn start_watcher(&self, events: Arc<EventHub>) -> CoreResult<()> {
+    pub(crate) fn start_watcher(&mut self, events: Arc<EventHub>) -> CoreResult<()> {
         if self
             .watcher
             .lock()
@@ -292,6 +337,7 @@ impl WorkspaceRuntime {
                         RepositoryWatchEvent::Stopped { .. } => break,
                     }
                 }
+                lifecycle.mark_degraded();
             })?;
         let candidate = WorkspaceWatcher {
             watcher,
@@ -319,10 +365,15 @@ impl WorkspaceRuntime {
     }
 
     pub(crate) fn watcher_running(&self) -> bool {
+        self.watcher_status() == WorkspaceServiceStatus::Running
+    }
+
+    fn watcher_status(&self) -> WorkspaceServiceStatus {
         self.watcher
             .lock()
             .expect("workspace watcher lock poisoned")
-            .is_some()
+            .as_ref()
+            .map_or(WorkspaceServiceStatus::Stopped, WorkspaceWatcher::status)
     }
 
     pub(crate) fn acquire_operation(&self) -> CoreResult<WorkspaceOperationPermit> {
@@ -342,12 +393,23 @@ impl WorkspaceRuntime {
     }
 
     pub(crate) fn summary(&self) -> WorkspaceSummary {
+        let service_health = WorkspaceServiceHealth {
+            repository_watcher: self.watcher_status(),
+        };
+        let lifecycle_state = self.lifecycle.workspace_state();
         WorkspaceSummary {
             workspace_id: self.id,
             workspace_generation: self.generation,
             root: self.repository.result().root,
             display_name: self.display_name.clone(),
-            state: self.lifecycle.workspace_state(),
+            state: if lifecycle_state == WorkspaceState::Ready
+                && service_health.repository_watcher != WorkspaceServiceStatus::Running
+            {
+                WorkspaceState::Degraded
+            } else {
+                lifecycle_state
+            },
+            service_health,
         }
     }
 
@@ -447,5 +509,78 @@ impl WorkspaceRegistry {
             .values()
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use super::*;
+
+    fn repository() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("temporary repository");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(temp.path())
+            .args(["init", "--initial-branch=main"])
+            .status()
+            .expect("initialize repository");
+        assert!(status.success());
+        fs::write(temp.path().join("README.md"), "fixture\n").expect("write fixture");
+        temp
+    }
+
+    #[test]
+    fn stopped_watcher_degrades_workspace_and_is_exposed_in_summary() {
+        let root = repository();
+        let repository = Repository::open(root.path()).expect("open repository");
+        let mut runtime = WorkspaceRuntime::new(
+            WorkspaceId::new(),
+            WorkspaceGeneration::new(),
+            repository.canonical_key(),
+            "fixture".to_owned(),
+            repository,
+        );
+        runtime
+            .start_watcher(Arc::new(EventHub::default()))
+            .expect("start watcher");
+        assert_eq!(runtime.summary().state, WorkspaceState::Ready);
+
+        runtime
+            .watcher
+            .lock()
+            .expect("workspace watcher lock poisoned")
+            .as_mut()
+            .expect("watcher")
+            .watcher
+            .stop();
+
+        let summary = runtime.summary();
+        assert_eq!(summary.state, WorkspaceState::Degraded);
+        assert_eq!(
+            summary.service_health.repository_watcher,
+            WorkspaceServiceStatus::Stopped
+        );
+        runtime.stop_watcher();
+    }
+
+    #[test]
+    fn service_health_is_an_additive_camel_case_summary_field() {
+        let value = serde_json::to_value(WorkspaceSummary {
+            workspace_id: WorkspaceId::new(),
+            workspace_generation: WorkspaceGeneration::new(),
+            root: "/repository".to_owned(),
+            display_name: "repository".to_owned(),
+            state: WorkspaceState::Degraded,
+            service_health: WorkspaceServiceHealth {
+                repository_watcher: WorkspaceServiceStatus::Failed,
+            },
+        })
+        .expect("serialize summary");
+
+        assert_eq!(value["state"], "degraded");
+        assert_eq!(value["serviceHealth"]["repositoryWatcher"], "failed");
     }
 }

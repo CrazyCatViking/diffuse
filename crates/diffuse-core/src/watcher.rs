@@ -12,6 +12,14 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 const REPOSITORY_CHANGED: &str = "repository/changed";
 const REVIEW_CHANGED: &str = "review/changed";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RepositoryWatcherStatus {
+    #[default]
+    Running,
+    Stopped,
+    Failed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepositoryWatchEvent {
     RepositoryChanged { root: PathBuf, paths: Vec<String> },
@@ -134,12 +142,7 @@ impl RepositoryWatcher {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     watch_repository(worker_root.clone(), backend, config, &worker_shared);
                 }));
-                if result.is_err() {
-                    worker_shared.enqueue(RepositoryWatchEvent::RescanRequired {
-                        root: worker_root.clone(),
-                    });
-                }
-                worker_shared.enqueue(RepositoryWatchEvent::Stopped { root: worker_root });
+                finish_worker(&worker_shared, worker_root, result);
             })?;
 
         Ok((
@@ -161,6 +164,10 @@ impl RepositoryWatcher {
             self.shared.request_stop();
             let _ = worker.join();
         }
+    }
+
+    pub fn status(&self) -> RepositoryWatcherStatus {
+        self.shared.state().worker_status
     }
 }
 
@@ -360,6 +367,7 @@ struct QueueState {
     stop_requested: bool,
     closed: bool,
     has_rescan: bool,
+    worker_status: RepositoryWatcherStatus,
 }
 
 impl QueueState {
@@ -401,6 +409,17 @@ enum BackendMessage {
 enum BackendEvent {
     Paths(Vec<String>),
     Rescan,
+}
+
+fn finish_worker(shared: &Shared, root: PathBuf, result: thread::Result<()>) {
+    let status = if result.is_err() {
+        shared.enqueue(RepositoryWatchEvent::RescanRequired { root: root.clone() });
+        RepositoryWatcherStatus::Failed
+    } else {
+        RepositoryWatcherStatus::Stopped
+    };
+    shared.state().worker_status = status;
+    shared.enqueue(RepositoryWatchEvent::Stopped { root });
 }
 
 fn notify_error_to_io(error: notify::Error) -> io::Error {
@@ -752,9 +771,31 @@ mod tests {
         }
 
         watcher.stop();
+        assert_eq!(watcher.status(), RepositoryWatcherStatus::Stopped);
         assert!(matches!(
             receiver.recv_timeout(Duration::from_secs(2)),
             Ok(RepositoryWatchEvent::Stopped { .. })
+        ));
+    }
+
+    #[test]
+    fn records_worker_failure_before_publishing_terminal_event() {
+        let shared = Arc::new(Shared::new(2));
+        let result: thread::Result<()> = Err(Box::new("watcher panic"));
+        finish_worker(&shared, PathBuf::from("/repository"), result);
+
+        assert_eq!(
+            shared.state().worker_status,
+            RepositoryWatcherStatus::Failed
+        );
+        let receiver = RepositoryWatchReceiver { shared };
+        assert!(matches!(
+            receiver.recv(),
+            Some(RepositoryWatchEvent::RescanRequired { .. })
+        ));
+        assert!(matches!(
+            receiver.recv(),
+            Some(RepositoryWatchEvent::Stopped { .. })
         ));
     }
 
