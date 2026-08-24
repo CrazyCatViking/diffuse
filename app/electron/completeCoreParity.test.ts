@@ -158,6 +158,14 @@ type Difference = { path: string; zig: unknown; rust: unknown };
 type Mismatch = { label: string; path: string; zig: unknown; rust: unknown };
 
 describe('complete Zig and Rust core parity', () => {
+  it('normalizes timestamp-based persistence artifact keys', () => {
+    const backend = { fixture: { root: '/repo' }, home: '/home', sandbox: '/sandbox' };
+
+    expect(normalize({ 'sessions/parity-session/threads/thread-1787576430123-1-1-15.json': { persisted: true } }, backend)).toEqual({
+      'sessions/parity-session/threads/thread-<timestamp>-1-1-15.json': { persisted: true },
+    });
+  });
+
   it('matches every core method, persistence artifact, event family, and RPC process behavior', async () => {
     const testRoot = mkdtempSync(join(tmpdir(), 'diffuse-complete-parity-'));
     const mismatches: Mismatch[] = [];
@@ -1024,7 +1032,7 @@ function normalizeIntentionalDifferences(label: string, value: unknown): unknown
   return value;
 }
 
-function normalize(value: unknown, backend: Backend, key = ''): unknown {
+function normalize(value: unknown, backend: { fixture: { root: string }; home: string; sandbox: string }, key = ''): unknown {
   if (typeof value === 'string') {
     let normalized = value
       .replaceAll(backend.fixture.root, '<repo>')
@@ -1041,7 +1049,7 @@ function normalize(value: unknown, backend: Backend, key = ''): unknown {
     const object = value as JsonRecord;
     return Object.fromEntries(
       Object.entries(object).map(([childKey, childValue]) => [
-        childKey,
+        normalize(childKey, backend) as string,
         childKey === 'installed' && ('serverId' in object || 'configured' in object)
           ? '<installed-tool>'
           : normalize(childValue, backend, childKey),

@@ -88,7 +88,7 @@ Settings can open `~/.diffuse/lsp.json`. If the file does not exist, Diffuse cre
 
 ## Server Lifecycle
 
-Language servers are persistent per repository/language/server. Settings shows whether a session is running and exposes a restart action for running or errored sessions.
+The application-wide `AppCore` owns language-server child processes scoped per workspace/repository, language, and server. Settings shows whether a session is running and exposes a restart action for running or errored sessions.
 
 Diffuse only attempts to attach a language server when opening supported file types for diagnostics. Unsupported file types do not trigger LSP status, diagnostics, or hover requests.
 
@@ -96,4 +96,4 @@ Hover uses an already-attached language server session. Moving the pointer over 
 
 Restarting a server stops matching sessions. The next supported file open or diagnostics request starts a fresh process.
 
-LSP is currently unavailable on Windows in the core implementation.
+The Rust core provides the same LSP lifecycle on Linux, macOS, and Windows.

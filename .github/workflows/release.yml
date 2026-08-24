@@ -19,12 +19,15 @@ jobs:
           - platform: linux-x64
             runner: ubuntu-latest
             artifact_pattern: app/dist/*.tar.gz
+            unpacked_dir: dist/linux-unpacked
           - platform: mac-arm64
             runner: macos-latest
             artifact_pattern: app/dist/*.zip
+            unpacked_dir: dist/mac-arm64
           - platform: win-x64
             runner: windows-latest
             artifact_pattern: app/dist/*.zip
+            unpacked_dir: dist/win-unpacked
 
     steps:
       - name: Check out source
@@ -34,6 +37,9 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.90.0
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -58,9 +64,27 @@ jobs:
         working-directory: app
         run: pnpm install --frozen-lockfile
 
+      - name: Build release Rust workspace and stage native artifacts
+        run: cargo build --workspace --release --locked
+
+      - name: Stage release native addon and Rust helper
+        working-directory: app
+        run: pnpm native:stage:release
+
+      - name: Build unpacked app
+        working-directory: app
+        run: |
+          pnpm build
+          pnpm prepare:electron
+          pnpm exec electron-builder --dir
+
+      - name: Smoke unpacked app native resources
+        working-directory: app
+        run: pnpm smoke:native:packaged
+
       - name: Build app archive
         working-directory: app
-        run: pnpm dist
+        run: pnpm exec electron-builder --prepackaged "${{ matrix.unpacked_dir }}"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4

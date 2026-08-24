@@ -168,7 +168,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
 
   const applyEvent = async (event: WorkbenchEvent) => {
     if (event.sequence <= sequence.value) return;
-    if (sequence.value > 0 && event.sequence > sequence.value + 1) {
+    if (event.sequence > sequence.value + 1) {
       const snapshot = await window.diffuse.getWorkbenchSnapshot();
       if (snapshot.sequence < sequence.value) return;
       workspaces.value = orderSummaries(snapshot.workspaces, persistedRailOrder.value);

@@ -14,6 +14,8 @@ pub enum CoreError {
     StaleWorkspaceGeneration,
     #[error("WorkspaceClosing")]
     WorkspaceClosing,
+    #[error("AppCoreShuttingDown")]
+    AppCoreShuttingDown,
     #[error("WorkspaceFileNotFound")]
     WorkspaceFileNotFound,
     #[error("InvalidParams: {0}")]
@@ -50,6 +52,7 @@ impl CoreError {
             Self::WorkspaceNotFound => "WorkspaceNotFound",
             Self::StaleWorkspaceGeneration => "StaleWorkspaceGeneration",
             Self::WorkspaceClosing => "WorkspaceClosing",
+            Self::AppCoreShuttingDown => "AppCoreShuttingDown",
             Self::WorkspaceFileNotFound => "WorkspaceFileNotFound",
             Self::InvalidParams(_) => "InvalidParams",
             Self::MethodNotFound => "MethodNotFound",

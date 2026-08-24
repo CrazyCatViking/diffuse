@@ -1,6 +1,8 @@
 app/node_modules/
 app/out/
 app/.vite/
+app/build/
+app/dist/
 core/.zig-cache/
 core/zig-pkg/
 core/zig-out/

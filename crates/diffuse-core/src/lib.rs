@@ -11,14 +11,14 @@ pub mod syntax;
 pub mod watcher;
 mod workspace;
 
-pub use app_core::{AppCore, WorkbenchSnapshot};
+pub use app_core::{AppCore, AppCoreLifecycleState, AppCoreOptions, WorkbenchSnapshot};
 pub use database::{DEFAULT_DATABASE_FILE_NAME, WorkbenchDatabase, default_database_path};
 pub use diff::{
     DiffContextMode, DiffIntelligence, DiffRenderModel, DiffRenderOptions, DiffRow, DiffRowKind,
     DiffViewMode, SyntaxSpan, SyntaxStatus,
 };
 pub use error::{CoreError, CoreResult};
-pub use event::{EventHub, EventReplay, WorkbenchEvent};
+pub use event::{EventHub, EventReplay, EventSubscription, WorkbenchEvent};
 pub use repository::{
     BranchInfo, ChangedFile, DiffTarget, DiffTargetDefaults, FileStatus, OpenRepositoryResult,
     VersionInfo,

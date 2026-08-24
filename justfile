@@ -12,6 +12,8 @@ build:
     (cd core && zig build test)
     (cd core && zig build)
     (cd app && pnpm install --frozen-lockfile)
+    (cd app && pnpm native:stage)
+    (cd app && pnpm test:native:all)
     (cd app && pnpm test:rust-integration)
     (cd app && pnpm build)
 
@@ -30,7 +32,7 @@ build:
     cargo test --workspace --all-targets --locked
     cargo build --workspace --locked
     Push-Location core; zig build test; zig build; Pop-Location
-    Push-Location app; pnpm install --frozen-lockfile; pnpm test:rust-integration; pnpm build; Pop-Location
+    Push-Location app; pnpm install --frozen-lockfile; pnpm native:stage; pnpm test:native:all; pnpm test:rust-integration; pnpm build; Pop-Location
 
 [unix]
 install: build

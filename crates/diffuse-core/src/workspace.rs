@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,7 @@ pub(crate) struct WorkspaceRuntime {
     pub(crate) lsp: Arc<LspManager>,
     pub(crate) search: Arc<SearchCoordinator>,
     lifecycle: Arc<WorkspaceLifecycle>,
+    close_gate: Mutex<()>,
     watcher: Mutex<Option<WorkspaceWatcher>>,
 }
 
@@ -281,6 +282,7 @@ impl WorkspaceRuntime {
             search: Arc::new(SearchCoordinator::default()),
             repository,
             lifecycle: Arc::new(WorkspaceLifecycle::new()),
+            close_gate: Mutex::new(()),
             watcher: Mutex::new(None),
         }
     }
@@ -392,6 +394,12 @@ impl WorkspaceRuntime {
         self.lifecycle.wait_until_idle();
     }
 
+    pub(crate) fn acquire_close_gate(&self) -> MutexGuard<'_, ()> {
+        self.close_gate
+            .lock()
+            .expect("workspace close lock poisoned")
+    }
+
     pub(crate) fn summary(&self) -> WorkspaceSummary {
         let service_health = WorkspaceServiceHealth {
             repository_watcher: self.watcher_status(),
@@ -433,6 +441,15 @@ pub(crate) struct WorkspaceRegistry {
 }
 
 impl WorkspaceRegistry {
+    pub(crate) fn by_id(&self, id: WorkspaceId) -> Option<Arc<WorkspaceRuntime>> {
+        self.state
+            .read()
+            .expect("workspace registry lock poisoned")
+            .by_id
+            .get(&id)
+            .cloned()
+    }
+
     pub(crate) fn by_root(&self, canonical_root: &str) -> Option<Arc<WorkspaceRuntime>> {
         let state = self.state.read().expect("workspace registry lock poisoned");
         state
@@ -509,6 +526,14 @@ impl WorkspaceRegistry {
             .values()
             .cloned()
             .collect()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.state
+            .read()
+            .expect("workspace registry lock poisoned")
+            .by_id
+            .is_empty()
     }
 }
 

@@ -75,6 +75,40 @@ describe('useWorkbenchStore', () => {
     expect(handler).not.toHaveBeenCalledWith(first);
   });
 
+  it('restores an authoritative snapshot for a sequence gap after sequence zero', async () => {
+    const bridge = createMockDesktopBridge();
+    const restored = workspace('workspace-restored', '/repo/restored');
+    const skippedEventWorkspace = workspace('workspace-event', '/repo/event');
+    bridge.getWorkbenchSnapshot
+      .mockResolvedValueOnce({ workspaces: [], activeWorkspaceId: null, activeWorkspace: null, sequence: 0 })
+      .mockResolvedValueOnce({
+        workspaces: [restored.summary],
+        activeWorkspaceId: restored.summary.workspaceId,
+        activeWorkspace: restored,
+        sequence: 2,
+      });
+    window.diffuse = bridge;
+    const handler = vi.fn();
+    const store = useWorkbenchStore();
+    await store.initialize(handler);
+
+    bridge.emitWorkbenchEvent({
+      sequence: 2,
+      eventId: 'event-2',
+      workspaceId: skippedEventWorkspace.summary.workspaceId,
+      workspaceGeneration: skippedEventWorkspace.summary.workspaceGeneration,
+      kind: 'workspace/activated',
+      payload: skippedEventWorkspace,
+    });
+
+    await vi.waitFor(() => expect(store.sequence).toBe(2));
+    expect(bridge.getWorkbenchSnapshot).toHaveBeenCalledTimes(2);
+    expect(store.activeWorkspaceId).toBe(restored.summary.workspaceId);
+    expect(store.workspaces).toEqual([restored.summary]);
+    expect(handler).toHaveBeenCalledWith(restored);
+    expect(handler).not.toHaveBeenCalledWith(skippedEventWorkspace);
+  });
+
   it('sends plain workspace references when switching and closing', async () => {
     const bridge = createMockDesktopBridge();
     const first = workspace('workspace-a', '/repo/a');

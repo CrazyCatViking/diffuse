@@ -11,7 +11,7 @@
 | Window model | One primary workbench window with multiple workspaces |
 | Agent protocol | Agent Client Protocol (ACP) with Diffuse tools exposed through MCP |
 
-This document defines the target architecture and user experience. It is not a description of the current Zig and per-window core implementation. The current implementation remains documented in [`architecture.md`](architecture.md) until each migration phase is complete.
+This document defines the target architecture and user experience and records implementation status by phase. The current implementation through Phase 4 is documented in [`architecture.md`](architecture.md); later attention, ACP, hardening, and fallback-removal phases remain proposals here.
 
 ## Executive Summary
 
@@ -689,7 +689,7 @@ Exit criteria:
 
 Purpose: remove per-window identity assumptions before replacing Zig.
 
-Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. The legacy Electron facade still uses in-memory IDs; Phase 3 added stable SQLite identities inside Rust, which Electron will consume through the Phase 4 N-API boundary.
+Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. The rollback Electron facade still uses in-memory IDs; Phase 3 added stable SQLite identities inside Rust, and the Phase 4 N-API default now exposes those identities directly to Electron.
 
 Work:
 
@@ -744,7 +744,7 @@ Exit criteria:
 
 Purpose: create the transport-neutral application core and durable workspace model.
 
-Implementation status: Complete. The Cargo workspace, transport-neutral `diffuse-core`, and temporary JSON-RPC `diffuse-cli` implement the complete 44-method and 10-event desktop contract. `AppCore` owns multiple workspace runtimes with stable SQLite workspace IDs, per-open generations, stale-generation rejection, operation draining, bounded gap-free live events, repository and diff operations, v1-compatible review persistence, cancellable search, cross-platform event-driven watchers, supervised LSP sessions, and syntax management. Workspace snapshots expose repository-watcher health, and unexpected watcher termination degrades the owning workspace. Optional native Tree-sitter grammars execute only in an isolated runner child. SQLite migration, integrity, corruption-recovery, genuine child-process locking, and future-schema tests are in place. Direct multi-workspace tests prove same-ID search cancellation isolation and rejection of stale old-generation callbacks after reopen. The full differential suite compares methods, events, persisted artifacts, Linux watcher behavior, mock-LSP behavior, and CLI failures against Zig; Rust watcher behavior is additionally tested on macOS and Windows, where the legacy Zig watcher is unavailable. Development prefers the Rust executable as a whole backend; packaged releases remain Zig until the Phase 4 N-API cutover.
+Implementation status: Complete. The Cargo workspace, transport-neutral `diffuse-core`, and temporary JSON-RPC `diffuse-cli` implement the complete 44-method and 10-event desktop contract. `AppCore` owns multiple workspace runtimes with stable SQLite workspace IDs, per-open generations, stale-generation rejection, operation draining, bounded gap-free live events, repository and diff operations, v1-compatible review persistence, cancellable search, cross-platform event-driven watchers, supervised LSP sessions, and syntax management. Workspace snapshots expose repository-watcher health, and unexpected watcher termination degrades the owning workspace. Optional native Tree-sitter grammars execute only in an isolated runner child. SQLite migration, integrity, corruption-recovery, genuine child-process locking, and future-schema tests are in place. Direct multi-workspace tests prove same-ID search cancellation isolation and rejection of stale old-generation callbacks after reopen. The full differential suite compares methods, events, persisted artifacts, Linux watcher behavior, mock-LSP behavior, and CLI failures against Zig; Rust watcher behavior is additionally tested on macOS and Windows, where the legacy Zig watcher is unavailable. The Rust executable remains the compatibility, parity, and helper artifact after the Phase 4 N-API cutover.
 
 Work:
 
@@ -774,6 +774,8 @@ Exit criteria:
 
 Purpose: remove the separate Diffuse core process while retaining the proven Electron/Vue shell.
 
+Implementation status: Complete. Electron main now loads one application-wide `diffuse-node` addon and creates one `AppCore`; the native methods return Promises backed by N-API asynchronous tasks, so normal desktop requests do not execute Rust work on the Node main thread. Events cross a bounded thread-safe callback in batches of at most 64 or 8 ms, with bounded core, subscription, and callback queues; bounded blocking delivery occurs on the dedicated drain thread without dropping terminal batches, while sequence validation plus renderer snapshot reload still protects against gaps from reload/replay scenarios. The boundary reports healthy, degraded, unhealthy, stopping, and stopped states; panics make the boundary unhealthy, work is rejected after shutdown begins, and a five-second native shutdown caller timeout leaves health stopping until actual completion while Electron retains its seven-second quit bound. SQLite-backed workspace IDs remain stable across restarts while every open lifetime gets a new generation. N-API is the desktop default, and `DIFFUSE_DESKTOP_CORE=rpc` selects the whole legacy process backend for rollback. Linux x64, macOS arm64, and Windows x64 CI/release jobs build and stage the addon and Rust helper, run Node, Electron, integration, and unpacked-package native smokes, and produce the normal platform archives. The Rust JSON-RPC compatibility executable remains available as packaged `diffuse-rpc` and is also the isolated syntax helper; the Zig executable remains the user-facing CLI and packaged RPC rollback executable. Verification covers addon loading, multi-workspace dispatch, stable-ID reopen behavior, ordered events, health, idempotent shutdown, backend selection, Rust/Zig parity, and platform packaging resources. Native binaries flow through the normal `electron-builder` platform packaging and signing hooks when signing is configured; the current workflows do not provide signing credentials or prove signing/notarization. Electron-plus-N-API startup, idle-memory, large-diff interaction, renderer event-throughput, and provider-backed agent measurements are still deferred because the Phase 0 captures and an automated baseline comparison do not exist; they remain required before the Phase 7 performance exit criteria can be evaluated. Phase 5 durable attention behavior is not implemented by this phase.
+
 Work:
 
 - Add the thin `diffuse-node` N-API crate.
@@ -781,16 +783,17 @@ Work:
 - Map typed Electron requests to asynchronous Rust calls without blocking Node's main thread.
 - Deliver batched native events through a thread-safe callback.
 - Add bounded shutdown and health reporting.
-- Package and sign the addon for the supported operating-system and architecture matrix.
+- Package the addon for the supported operating-system and architecture matrix and pass it through normal platform signing hooks when signing is configured.
 - Keep the Rust JSON-RPC executable temporarily available for differential and rollback testing.
-- Compare Electron plus N-API against the captured Electron plus Zig baselines.
+- Compare Electron plus N-API against Electron plus Zig once the deferred Phase 0 performance captures exist.
 
 Exit criteria:
 
 - The normal desktop app does not spawn a Diffuse core child process.
 - Closing and reopening the renderer preserves Rust workspace and background state.
 - Native calls do not block Electron main during large Git, diff, syntax, LSP, or database operations.
-- Addon packaging, updates, and clean installs pass on Windows, macOS, and Linux.
+- Addon staging, Node/Electron loading, integration, and unpacked-package resource smokes run on Windows, macOS, and Linux.
+- Signing/notarization and automated performance comparison are not claimed without credentials/configuration and captured baselines.
 
 ### Phase 5: Durable Attention And Hybrid Review Migration
 
@@ -867,7 +870,7 @@ Purpose: make the Rust Agent Workbench the only supported architecture.
 
 Work:
 
-- Make N-API `AppCore` the default and remove the Zig desktop runtime.
+- Remove the RPC rollback path and Zig desktop runtime after the rollback period; N-API `AppCore` is already the default.
 - Remove per-workspace legacy core processes and JSON-RPC desktop routing after the rollback period.
 - Remove `ReviewAgentRunner`, generated opencode tools, and the localhost bridge after ACP parity.
 - Update build requirements, installers, release CI, versioning, signing, command shims, and completions.

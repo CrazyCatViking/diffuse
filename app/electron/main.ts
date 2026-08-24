@@ -13,9 +13,13 @@ import {
   type WorkspaceCoreMethod,
   type WorkspaceRequestContext,
 } from '../src/lib/workbenchContract';
+import type { CoreBackend } from './coreBackend';
+import { LegacyCoreBackend } from './legacyCoreBackend';
+import { closeWorkspaceWithLegacyReviewAgent } from './legacyReviewAgentLifecycle';
 import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 import { windowCloseDisposition } from './windowLifecycle';
 
+const BACKEND_SHUTDOWN_TIMEOUT_MS = 7_000;
 const workspaceMethodNames = coreMethodNames.filter(
   (method): method is WorkspaceCoreMethod => method !== 'getVersion' && method !== 'openRepository',
 );
@@ -25,11 +29,10 @@ let initialWorkspaceOpen: Promise<unknown> = Promise.resolve();
 let reviewAgentOwner: { context: WorkspaceRequestContext; runner: ReviewAgentRunner } | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
-
-const registry = new LegacyWorkspaceRegistry({
-  createClient: startCoreProcess,
-  onEvent: (event) => forwardWorkbenchEvent(event),
-});
+let allowQuitAfterShutdown = false;
+let coreBackendPromise: Promise<CoreBackend> | null = null;
+let unsubscribeBackendEvents: (() => void) | null = null;
+let shutdownOperation: Promise<void> | null = null;
 
 if (!app.requestSingleInstanceLock({ cwd: process.cwd() })) {
   app.exit(0);
@@ -41,6 +44,80 @@ function forwardWorkbenchEvent(event: WorkbenchEvent): void {
     reviewAgentOwner = null;
   }
   if (primaryWindow && !primaryWindow.isDestroyed()) primaryWindow.webContents.send('workbench:event', event);
+}
+
+function getCoreBackend(): Promise<CoreBackend> {
+  if (shutdownOperation) return Promise.reject(new Error('The core backend is shutting down'));
+  if (!coreBackendPromise) {
+    coreBackendPromise = createCoreBackend().then((backend) => {
+      unsubscribeBackendEvents = backend.onEvents((events) => {
+        for (const event of events) forwardWorkbenchEvent(event);
+      });
+      return backend;
+    });
+  }
+  return coreBackendPromise;
+}
+
+async function createCoreBackend(): Promise<CoreBackend> {
+  const mode = desktopCoreMode();
+  if (mode === 'rpc') {
+    return new LegacyCoreBackend(new LegacyWorkspaceRegistry({ createClient: startCoreProcess }));
+  }
+
+  const [{ loadNativeAddonFactory }, { NativeCoreBackend }] = await Promise.all([
+    import('./nativeCoreAddon'),
+    import('./nativeCoreBackend'),
+  ]);
+  const syntaxRunnerPath = resolveNativeSyntaxRunnerPath();
+  return new NativeCoreBackend(loadNativeAddonFactory({ isPackaged: app.isPackaged }), {
+    databasePath: join(app.getPath('userData'), 'workbench.sqlite3'),
+    ...(syntaxRunnerPath ? { syntaxRunnerPath } : {}),
+  });
+}
+
+export function desktopCoreMode(value = process.env.DIFFUSE_DESKTOP_CORE): 'rpc' | 'napi' {
+  if (value === undefined || value === '' || value === 'napi') return 'napi';
+  if (value === 'rpc') return 'rpc';
+  throw new Error(`Unsupported DIFFUSE_DESKTOP_CORE value: ${value}`);
+}
+
+export function resolveNativeSyntaxRunnerPath(
+  options: {
+    configuredPath?: string;
+    cwd?: string;
+    resourcesPath?: string;
+    dirname?: string;
+    platform?: NodeJS.Platform;
+    isPackaged?: boolean;
+    fileExists?: (path: string) => boolean;
+  } = {},
+): string | undefined {
+  const cwd = options.cwd ?? process.cwd();
+  const fileExists = options.fileExists ?? existsSync;
+  const configuredPath = options.configuredPath ?? process.env.DIFFUSE_SYNTAX_RUNNER;
+  if (configuredPath) {
+    const path = isAbsolute(configuredPath) ? configuredPath : resolve(cwd, configuredPath);
+    if (fileExists(path)) return path;
+    throw new Error(`DIFFUSE_SYNTAX_RUNNER points to a missing executable: ${path}`);
+  }
+
+  const windows = (options.platform ?? process.platform) === 'win32';
+  const executableName = windows ? 'diffuse.exe' : 'diffuse';
+  const packagedHelperName = windows ? 'diffuse-rpc.exe' : 'diffuse-rpc';
+  const resourcesPath = options.resourcesPath ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const packagedCandidates = resourcesPath ? [join(resourcesPath, packagedHelperName)] : [];
+  const sourceDir = options.dirname ?? __dirname;
+  const developmentCandidates = [
+    resolve(sourceDir, '../../../target/debug', executableName),
+    resolve(cwd, '../target/debug', executableName),
+    resolve(cwd, 'target/debug', executableName),
+  ];
+  const candidates =
+    (options.isPackaged ?? app.isPackaged)
+      ? [...packagedCandidates, ...developmentCandidates]
+      : [...developmentCandidates, ...packagedCandidates];
+  return candidates.find(fileExists);
 }
 
 function isWorkspaceMethod(method: string): method is WorkspaceCoreMethod {
@@ -196,27 +273,40 @@ export function parseLaunchRepository(args: string[], cwd = process.cwd()): stri
   return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
-app.whenReady().then(() => {
-  Menu.setApplicationMenu(null);
-  createTray();
-  createWindow();
-  const launchPath = parseLaunchRepository(process.argv);
-  if (launchPath) initialWorkspaceOpen = openWorkspaceFromMain(launchPath);
+app
+  .whenReady()
+  .then(async () => {
+    await getCoreBackend();
+    if (isQuitting) return;
+    Menu.setApplicationMenu(null);
+    createTray();
+    createWindow();
+    const launchPath = parseLaunchRepository(process.argv);
+    if (launchPath) {
+      initialWorkspaceOpen = openWorkspaceFromMain(launchPath);
+      await initialWorkspaceOpen;
+    }
 
-  app.on('activate', () => {
-    showPrimaryWindow();
+    app.on('activate', () => {
+      showPrimaryWindow();
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to initialize the Diffuse core backend:', error);
+    app.exit(1);
   });
-});
 
 app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
   const cwd = isCwdPayload(additionalData) ? additionalData.cwd : workingDirectory;
   const launchPath = parseLaunchRepository(argv, cwd);
   const handleInvocation = async () => {
+    await getCoreBackend();
+    if (isQuitting) return;
     showPrimaryWindow();
     if (launchPath) await openWorkspaceFromMain(launchPath);
   };
-  if (app.isReady()) void handleInvocation();
-  else void app.whenReady().then(handleInvocation);
+  const operation = app.isReady() ? handleInvocation() : app.whenReady().then(handleInvocation);
+  void operation.catch((error) => console.error('Failed to handle a second Diffuse invocation:', error));
 });
 
 function isCwdPayload(value: unknown): value is { cwd: string } {
@@ -225,7 +315,8 @@ function isCwdPayload(value: unknown): value is { cwd: string } {
 
 async function openWorkspaceFromMain(path: string): Promise<void> {
   try {
-    await registry.openWorkspace(path);
+    const backend = await getCoreBackend();
+    await backend.openWorkspace(path);
   } catch (error) {
     console.error(`Failed to open workspace ${path}:`, error);
   }
@@ -233,14 +324,47 @@ async function openWorkspaceFromMain(path: string): Promise<void> {
 
 app.on('window-all-closed', () => undefined);
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   isQuitting = true;
+  if (allowQuitAfterShutdown) return;
+  event.preventDefault();
+  if (shutdownOperation) return;
+
   reviewAgentOwner?.runner.dispose();
   reviewAgentOwner = null;
-  registry.dispose();
   tray?.destroy();
   tray = null;
+  const existingBackend = coreBackendPromise;
+  shutdownOperation = shutdownBackend(existingBackend).finally(() => {
+    allowQuitAfterShutdown = true;
+    app.quit();
+  });
 });
+
+async function shutdownBackend(existingBackend: Promise<CoreBackend> | null): Promise<void> {
+  if (!existingBackend) return;
+
+  let timeout: NodeJS.Timeout | undefined;
+  const timedOut = Symbol('timed-out');
+  try {
+    const shutdown = existingBackend.then((backend) => {
+      unsubscribeBackendEvents?.();
+      unsubscribeBackendEvents = null;
+      return backend.shutdown();
+    });
+    const result = await Promise.race([
+      shutdown.then(() => undefined),
+      new Promise<typeof timedOut>((resolveTimeout) => {
+        timeout = setTimeout(() => resolveTimeout(timedOut), BACKEND_SHUTDOWN_TIMEOUT_MS);
+      }),
+    ]);
+    if (result === timedOut) console.error(`Core backend shutdown timed out after ${BACKEND_SHUTDOWN_TIMEOUT_MS}ms`);
+  } catch (error) {
+    console.error('Core backend shutdown failed:', error);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 function getRequestWindow(event: IpcMainInvokeEvent): BrowserWindow {
   const window = BrowserWindow.fromWebContents(event.sender);
@@ -280,40 +404,41 @@ ipcMain.handle('repo:pickDirectory', async (event) => {
 
 ipcMain.handle('app:getVersion', async (event) => {
   getRequestWindow(event);
-  const client = startCoreProcess();
-  try {
-    return await client.request<CoreMethods['getVersion']['result']>('getVersion');
-  } finally {
-    client.dispose();
-  }
+  const backend = await getCoreBackend();
+  return await backend.getVersion();
 });
 
 ipcMain.handle('workbench:getSnapshot', async (event) => {
   getRequestWindow(event);
   await initialWorkspaceOpen;
-  return registry.getWorkbenchSnapshot();
+  const backend = await getCoreBackend();
+  return await backend.getWorkbenchSnapshot();
 });
 
 ipcMain.handle('workspace:open', async (event, request: unknown) => {
   getRequestWindow(event);
   if (!isRecord(request) || typeof request.path !== 'string' || !request.path.trim()) throw new Error('Workspace path is required');
-  return registry.openWorkspace(request.path);
+  const backend = await getCoreBackend();
+  return await backend.openWorkspace(request.path);
 });
 
 ipcMain.handle('workspace:activate', async (event, reference: unknown) => {
   getRequestWindow(event);
+  const backend = await getCoreBackend();
   if (reference === null) {
-    registry.deactivateWorkspace();
-    return null;
+    return await backend.activateWorkspace(null);
   }
   if (!isWorkspaceReference(reference)) throw new Error('Invalid workspace reference');
-  return registry.activateWorkspace(reference);
+  return await backend.activateWorkspace(reference);
 });
 
 ipcMain.handle('workspace:close', async (event, reference: unknown) => {
   getRequestWindow(event);
   if (!isWorkspaceReference(reference)) throw new Error('Invalid workspace reference');
-  return registry.closeWorkspace(reference);
+  const backend = await getCoreBackend();
+  const owner = reviewAgentOwner;
+  if (owner && matchesContext(owner.context, reference)) reviewAgentOwner = null;
+  return await closeWorkspaceWithLegacyReviewAgent(reference, owner, (workspaceReference) => backend.closeWorkspace(workspaceReference));
 });
 
 ipcMain.handle('workspace:request', async (event, request: unknown) => {
@@ -322,7 +447,8 @@ ipcMain.handle('workspace:request', async (event, request: unknown) => {
   if (typeof request.method !== 'string' || !isWorkspaceMethod(request.method))
     throw new Error(`Unknown workspace method: ${String(request.method)}`);
   if (request.params !== undefined && !isRecord(request.params)) throw new Error('Workspace request params must be an object');
-  return registry.request(request.context, request.method, request.params as CoreMethods[typeof request.method]['params']);
+  const backend = await getCoreBackend();
+  return await backend.request(request.context, request.method, request.params as CoreMethods[typeof request.method]['params']);
 });
 
 ipcMain.handle('lsp:openConfig', async (event, request: unknown) => {
@@ -338,8 +464,10 @@ ipcMain.handle('lsp:openConfig', async (event, request: unknown) => {
 ipcMain.handle('review-agent:start', async (event, request: unknown) => {
   getRequestWindow(event);
   if (!isReviewAgentStartRequest(request)) throw new Error('Invalid review agent start request');
-  const snapshot = registry.getWorkspaceSnapshot(request.context);
-  return getReviewAgentRunner(request.context).start({
+  const backend = await getCoreBackend();
+  const snapshot = await backend.getWorkspaceSnapshot(request.context);
+  const runner = await getReviewAgentRunner(request.context, backend);
+  return runner.start({
     repositoryRoot: snapshot.repository.root,
     sessionId: request.sessionId,
     files: request.files,
@@ -349,7 +477,7 @@ ipcMain.handle('review-agent:start', async (event, request: unknown) => {
 ipcMain.handle('review-agent:stop', async (event, context: unknown) => {
   getRequestWindow(event);
   if (!isWorkspaceRequestContext(context)) throw new Error('Invalid review agent workspace context');
-  const owner = requireReviewAgentOwner(context);
+  const owner = await requireReviewAgentOwner(context);
   const result = await owner.runner.stop();
   owner.runner.dispose();
   reviewAgentOwner = null;
@@ -359,19 +487,23 @@ ipcMain.handle('review-agent:stop', async (event, context: unknown) => {
 ipcMain.handle('review-agent:chat', async (event, request: unknown) => {
   getRequestWindow(event);
   if (!isReviewAgentChatRequest(request)) throw new Error('Invalid review agent chat request');
-  const snapshot = registry.getWorkspaceSnapshot(request.context);
+  const backend = await getCoreBackend();
+  const snapshot = await backend.getWorkspaceSnapshot(request.context);
   const { context: _context, ...chatRequest } = request;
-  return getReviewAgentRunner(request.context).chat({ ...chatRequest, repositoryRoot: snapshot.repository.root });
+  const runner = await getReviewAgentRunner(request.context, backend);
+  return runner.chat({ ...chatRequest, repositoryRoot: snapshot.repository.root });
 });
 
-function getReviewAgentRunner(context: WorkspaceRequestContext): ReviewAgentRunner {
-  registry.getWorkspaceSnapshot(context);
-  if (reviewAgentOwner) return requireReviewAgentOwner(context).runner;
+async function getReviewAgentRunner(context: WorkspaceRequestContext, existingBackend?: CoreBackend): Promise<ReviewAgentRunner> {
+  const backend = existingBackend ?? (await getCoreBackend());
+  await backend.getWorkspaceSnapshot(context);
+  if (reviewAgentOwner) return (await requireReviewAgentOwner(context)).runner;
 
   const ownerContext = context;
   const runner = new ReviewAgentRunner(async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
     if (!isWorkspaceMethod(method)) throw new Error(`Unknown workspace method: ${method}`);
-    const response = await registry.request(
+    const requestBackend = await getCoreBackend();
+    const response = await requestBackend.request(
       { ...ownerContext, requestId: randomUUID() },
       method,
       params as CoreMethods[typeof method]['params'],
@@ -382,8 +514,9 @@ function getReviewAgentRunner(context: WorkspaceRequestContext): ReviewAgentRunn
   return runner;
 }
 
-function requireReviewAgentOwner(context: WorkspaceRequestContext): NonNullable<typeof reviewAgentOwner> {
-  registry.getWorkspaceSnapshot(context);
+async function requireReviewAgentOwner(context: WorkspaceRequestContext): Promise<NonNullable<typeof reviewAgentOwner>> {
+  const backend = await getCoreBackend();
+  await backend.getWorkspaceSnapshot(context);
   if (!reviewAgentOwner || !matchesContext(reviewAgentOwner.context, context)) {
     throw new Error('The legacy review agent runner belongs to another workspace');
   }

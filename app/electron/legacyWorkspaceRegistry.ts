@@ -13,6 +13,7 @@ import type {
   WorkspaceSummary,
 } from '../src/lib/workbenchContract';
 import type { OpenRepositoryResult } from '../src/lib/protocol';
+import type { VersionInfo } from '../src/lib/protocol';
 import { CoreRequestTimeoutError } from './coreRpcClient';
 
 type CoreClient = {
@@ -58,12 +59,27 @@ export type LegacyWorkspaceRegistryOptions = {
 export class LegacyWorkspaceRegistry {
   private readonly entries = new Map<string, WorkspaceEntry>();
   private readonly roots = new Map<string, WorkspaceEntry>();
+  private readonly eventListeners = new Set<(event: WorkbenchEvent) => void>();
   private activeWorkspaceId: string | null = null;
   private sequence = 0;
   private openQueue: Promise<unknown> = Promise.resolve();
   private presentationIntent = 0;
 
   constructor(private readonly options: LegacyWorkspaceRegistryOptions) {}
+
+  async getVersion(): Promise<VersionInfo> {
+    const client = this.options.createClient();
+    try {
+      return await client.request<VersionInfo>('getVersion');
+    } finally {
+      client.dispose();
+    }
+  }
+
+  onEvent(listener: (event: WorkbenchEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
 
   openWorkspace(path: string): Promise<WorkspaceSnapshot> {
     const intent = ++this.presentationIntent;
@@ -293,14 +309,16 @@ export class LegacyWorkspaceRegistry {
 
   private publish(kind: WorkbenchEvent['kind'], payload: WorkbenchEvent['payload'], entry: WorkspaceEntry): void {
     this.sequence += 1;
-    this.options.onEvent?.({
+    const event = {
       sequence: this.sequence,
       eventId: this.createId(),
       kind,
       workspaceId: entry.workspaceId,
       workspaceGeneration: entry.workspaceGeneration,
       payload,
-    } as WorkbenchEvent);
+    } as WorkbenchEvent;
+    this.options.onEvent?.(event);
+    for (const listener of this.eventListeners) listener(event);
   }
 
   private createId(): string {

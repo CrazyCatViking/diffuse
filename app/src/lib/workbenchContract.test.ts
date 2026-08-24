@@ -47,4 +47,42 @@ describe('workbench contract', () => {
     expect(isWorkbenchEvent({ ...base, kind: 'search/started', payload: {} })).toBe(false);
     expect(isWorkbenchEvent({ ...base, sequence: 0, kind: 'search/started', payload: { searchId: 'search-1' } })).toBe(false);
   });
+
+  it('requires lifecycle payload references to match their event envelopes', () => {
+    const base = {
+      sequence: 1,
+      eventId: 'event-1',
+      workspaceId: 'workspace-1',
+      workspaceGeneration: 'generation-1',
+    };
+    const summary = {
+      workspaceId: base.workspaceId,
+      workspaceGeneration: base.workspaceGeneration,
+      root: '/repo',
+      displayName: 'repo',
+      state: 'ready',
+    };
+    const mismatchedId = { ...summary, workspaceId: 'workspace-2' };
+    const mismatchedGeneration = { ...summary, workspaceGeneration: 'generation-2' };
+
+    for (const kind of ['workspace/added', 'workspace/removed'] as const) {
+      expect(isWorkbenchEvent({ ...base, kind, payload: mismatchedId })).toBe(false);
+      expect(isWorkbenchEvent({ ...base, kind, payload: mismatchedGeneration })).toBe(false);
+    }
+
+    expect(
+      isWorkbenchEvent({
+        ...base,
+        kind: 'workspace/activated',
+        payload: { summary: mismatchedId, repository: { root: '/repo', head: 'abc123' } },
+      }),
+    ).toBe(false);
+    expect(
+      isWorkbenchEvent({
+        ...base,
+        kind: 'workspace/activated',
+        payload: { summary: mismatchedGeneration, repository: { root: '/repo', head: 'abc123' } },
+      }),
+    ).toBe(false);
+  });
 });

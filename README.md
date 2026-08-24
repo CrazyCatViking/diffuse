@@ -6,7 +6,7 @@
 
 <p>
   <img alt="Status: Work in progress" src="https://img.shields.io/badge/status-work%20in%20progress-f5a524?style=for-the-badge">
-  <img alt="Core: Rust development with Zig releases" src="https://img.shields.io/badge/core-Rust%20dev%20%2B%20Zig%20releases-f7a41d?style=for-the-badge">
+  <img alt="Core: Rust through N-API" src="https://img.shields.io/badge/core-Rust%20%2B%20N--API-f7a41d?style=for-the-badge">
   <img alt="App: Vue and Electron" src="https://img.shields.io/badge/app-Vue%20%2B%20Electron-42b883?style=for-the-badge">
 </p>
 
@@ -51,7 +51,7 @@ These scripts are hosted directly in this repository and served by GitHub throug
 | LSP support           | Shows hover information and diagnostics from language servers.                                   |
 | Review state          | Stores review sessions, threads, progress, and chat as plain files under `.diffuse/reviews`.     |
 | AI review             | Can run opencode-based review agents and save their findings back into Diffuse.                  |
-| Local-first design    | The core works through local Git, local files, and a local JSON-RPC process.                     |
+| Local-first design    | One in-process Rust core works through local Git, local files, and local helper processes.       |
 
 ## How It Works
 
@@ -59,13 +59,13 @@ Diffuse has these main source areas:
 
 ```text
 diffuse/
-  core/   Packaged Zig core: Git, diff rendering, syntax, LSP, review persistence, JSON-RPC
-  crates/ Rust AppCore and development JSON-RPC CLI
+  core/   Zig user CLI and legacy RPC rollback implementation
+  crates/ Rust AppCore, N-API addon, RPC compatibility CLI, and syntax helper
   app/    Electron + Vue app: desktop UI, settings, review agent bridge
   docs/   GitHub-readable docs, architecture notes, and data-format specs
 ```
 
-The UI talks to a child core process over line-delimited JSON-RPC. Development builds prefer the transport-neutral Rust `AppCore` through `target/debug/diffuse`; it implements the complete desktop RPC and event contract, durable workspace identity, and local SQLite state. Packaged releases continue to include the Zig core until the later in-process N-API cutover.
+The renderer calls a typed preload bridge, Electron main validates IPC, and one native addon hosts one application-wide Rust `AppCore`. Normal desktop use does not start a Diffuse core child per workspace. Git commands, language servers, the isolated syntax helper, and the existing review-agent provider remain child-process boundaries. SQLite provides stable local workspace identity and `.diffuse/reviews` remains the portable review store.
 
 Review data is intentionally easy to inspect and integrate with:
 
@@ -102,7 +102,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/CrazyCatViking/diffuse/main/scripts/install-release.ps1 | iex
 ```
 
-The release installers download the matching GitHub Release archive for the current platform, install the packaged Electron app into the user environment, and create a `diffuse` command shim. The shim opens the desktop app for normal usage and forwards CLI subcommands such as `diffuse --version` to the bundled Zig core. Linux installs also add a `.desktop` launcher. macOS installs copy `Diffuse.app` to `~/Applications`. Windows installs add a Start Menu shortcut.
+The release installers download the matching GitHub Release archive for the current platform, install the packaged Electron app, and create a `diffuse` command shim. The desktop app uses the bundled Rust N-API addon by default; CLI subcommands such as `diffuse --version` continue to use the bundled Zig CLI. Linux installs also add a `.desktop` launcher. macOS installs copy `Diffuse.app` to `~/Applications`. Windows installs add a Start Menu shortcut.
 
 Install a specific version by setting `DIFFUSE_VERSION`:
 
@@ -118,54 +118,40 @@ $env:DIFFUSE_VERSION = "v0.1.4"; irm https://raw.githubusercontent.com/CrazyCatV
 
 ## Source Requirements
 
-To build and install Diffuse from source, install:
+To build Diffuse from source, install:
 
-| Tool             | Why It Is Needed                                   |
-| ---------------- | -------------------------------------------------- |
-| `git`            | Repository access and update/install commands.     |
-| `just`           | Project task runner.                               |
-| `zig`            | Builds the packaged native core. Minimum version: `0.16.0`. |
-| `rustup`/`cargo` | Builds the development Rust core. The repository pins Rust `1.90.0`. |
-| `node`           | Builds and runs the Electron app.                  |
-| `pnpm`           | Installs app dependencies.                         |
-| `curl` and `tar` | Used by build/install tooling on Unix systems.     |
+| Tool             | Why It Is Needed                                                        |
+| ---------------- | ----------------------------------------------------------------------- |
+| `git`            | Repository access and local Git fixtures.                               |
+| `just`           | Repository-wide build and verification tasks.                           |
+| `zig`            | Builds the retained CLI and RPC rollback. Minimum version: `0.16.0`.    |
+| `rustup`/`cargo` | Builds `AppCore`, the N-API addon, and the Rust helper. Rust is `1.90.0`. |
+| `node`           | Builds and runs Electron. CI uses Node 22.                              |
+| `pnpm`           | Installs app dependencies and runs native/app/package tasks.            |
+| `curl` and `tar` | Used by Unix release and install tooling.                               |
 
-## Install From Source
+## Build From Source
 
-Source install is intended for contributors and users who want to build locally. It is separate from the prebuilt release installers above.
+Source builds are intended for contributors. Prebuilt releases remain the recommended installation path.
 
-Clone the repository and install:
+Clone the repository and run the complete build:
 
 ```sh
 git clone https://github.com/CrazyCatViking/diffuse.git
 cd diffuse
-just install
+just build
 ```
 
-`just install` will:
+`just build` will:
 
 1. Check required tools.
-2. Build the Zig core.
-3. Format, lint, test, and build the Rust core.
-4. Run the complete Zig/Rust method, event, persistence, and CLI parity suite.
-5. Install app dependencies with `pnpm install --frozen-lockfile`.
-6. Build the Electron/Vue app.
-7. Install Diffuse into your user environment.
+2. Build and test the retained Zig CLI/RPC implementation.
+3. Format, lint, test, and build the Rust workspace.
+4. Stage and smoke the N-API addon in Node and Electron.
+5. Run the complete Zig/Rust method, event, persistence, and CLI parity suite.
+6. Install app dependencies and build the Electron/Vue app.
 
-Default install locations:
-
-| Platform               | Install Root             | Command Location                |
-| ---------------------- | ------------------------ | ------------------------------- |
-| Linux/macOS-style Unix | `~/.local/share/diffuse` | `~/.local/bin/diffuse`          |
-| Windows                | `%LOCALAPPDATA%\Diffuse` | `%USERPROFILE%\bin\diffuse.exe` |
-
-You can override these paths:
-
-```sh
-DIFFUSE_INSTALL_ROOT=/path/to/install DIFFUSE_BIN_DIR=/path/to/bin just install
-```
-
-On Unix systems, the installer also adds shell completions and a Linux desktop entry when applicable.
+For a runnable unpacked N-API application, build the package from `app/` as described under [Development](#development). The older `just install` checkout installer remains available for its Zig CLI launcher and source-tree workflow, but it does not create the packaged Electron native-resource layout.
 
 ## Run Diffuse
 
@@ -181,7 +167,7 @@ Open a specific repository:
 diffuse /path/to/repository
 ```
 
-If Diffuse is already running, another `diffuse /path/to/repository` command adds or activates that repository in the existing primary window. Packaged builds keep each open workspace in an isolated Zig core process behind the workspace-aware Electron facade until the Phase 4 in-process Rust cutover.
+If Diffuse is already running, another `diffuse /path/to/repository` command adds or activates that repository in the existing primary window. All open workspaces share the application's one in-process Rust `AppCore` while keeping explicit workspace IDs and per-open generations.
 
 The desktop app also accepts the packaged-app launch argument `--open-repository <path>`.
 
@@ -200,7 +186,7 @@ diffuse completion <bash|zsh|fish|powershell>
 
 `diffuse update` resolves the newest GitHub Release and installs the matching prebuilt artifact for the current platform. `diffuse install <version>` accepts released versions with or without a leading `v` and prints the closest/latest available release when the requested release cannot be found. Version discovery is cached under the platform cache directory and `diffuse list-versions --cached` reads only that cache.
 
-Built-in update/install commands only consider GitHub Releases and do not clone the repository. To install a non-release commit or branch, check out the source repository yourself and run `just install`. The GitHub repository defaults to `CrazyCatViking/diffuse` and can be overridden with `DIFFUSE_GITHUB_REPO=owner/repo`.
+Built-in update/install commands only consider GitHub Releases and do not clone the repository. To run a non-release commit or branch, check out the source and use the development or package commands below. The GitHub repository defaults to `CrazyCatViking/diffuse` and can be overridden with `DIFFUSE_GITHUB_REPO=owner/repo`.
 
 Developer/debug commands:
 
@@ -243,23 +229,31 @@ Review comments can be anchored to old-side or new-side lines. Selecting text in
 
 ## Development
 
-Build everything:
+Build and verify everything:
 
 ```sh
 just build
 ```
 
-Run the app in development mode:
+For the normal N-API development path, build the Rust workspace, stage the addon and helper, then start Electron:
 
 ```sh
-cargo build --workspace --locked
-
 cd app
 pnpm install --frozen-lockfile
+pnpm native:build
 pnpm dev
 ```
 
-Run core, app unit, and deterministic RPC integration tests:
+`pnpm native:build` stages `diffuse_core.node`, the Rust `diffuse-rpc` helper, and a hash manifest under `app/build/native`. If Cargo is already built, refresh only the staged files with `pnpm native:stage`.
+
+Run the Node-load, native integration, and Electron-runtime native checks:
+
+```sh
+cd app
+pnpm test:native:all
+```
+
+Run the broader core, app, and deterministic RPC suites:
 
 ```sh
 cd core
@@ -279,17 +273,17 @@ pnpm test:integration
 pnpm test:rust-integration
 ```
 
-The Electron app prefers the Rust development binary at `target/debug/diffuse`, then falls back to `core/zig-out/bin/diffuse`. You can point it at a custom binary with:
+The desktop backend defaults to one in-process N-API `AppCore`. Useful overrides are:
 
 ```sh
-DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse pnpm dev
+DIFFUSE_DESKTOP_CORE=rpc pnpm dev
+DIFFUSE_NATIVE_ADDON=/absolute/path/to/diffuse_core.node pnpm dev
+DIFFUSE_SYNTAX_RUNNER=/absolute/path/to/diffuse-rpc pnpm dev
 ```
 
-The Phase 3 Rust compatibility binary is built at `target/debug/diffuse` and implements all desktop methods and events. Backend selection always applies to the whole workspace; requests are never delegated method by method between Rust and Zig.
+`DIFFUSE_DESKTOP_CORE=rpc` selects the whole legacy process backend for rollback; it never mixes methods between backends. `DIFFUSE_NATIVE_ADDON` overrides addon discovery. `DIFFUSE_SYNTAX_RUNNER` overrides the isolated helper used for optional native Tree-sitter grammars. On the RPC path, `DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse` selects a specific Rust or Zig compatibility executable.
 
-Rust workbench state defaults to the platform application-data directory as `workbench.sqlite3`. Set `DIFFUSE_WORKBENCH_DATABASE=/path/to/workbench.sqlite3` to isolate development or test state.
-
-When no explicit executable is configured, the Electron app checks development paths, packaged resources, and then the installed core under `DIFFUSE_INSTALL_ROOT` or `~/.local/share/diffuse/core/diffuse`.
+The normal Electron backend stores `workbench.sqlite3` under Electron's platform `userData` directory. The standalone Rust RPC adapter supports `DIFFUSE_WORKBENCH_DATABASE` for isolated tests.
 
 Build only the app:
 
@@ -298,7 +292,7 @@ cd app
 pnpm build
 ```
 
-Package the native Electron app for the current platform:
+Build an unpacked application or distributable archive for the current platform:
 
 ```sh
 cd core
@@ -306,10 +300,18 @@ zig build -Doptimize=ReleaseSafe
 
 cd ../app
 pnpm install --frozen-lockfile
+pnpm package
+# or
 pnpm dist
 ```
 
-`pnpm dist` copies the built Zig core into Electron resources and runs `electron-builder`. This packaging path is for prebuilt releases; it does not replace `just install`, which continues to install from source.
+Both commands build and stage release Rust artifacts, build the app, verify staged hashes, and run `electron-builder`. `pnpm package` creates an unpacked app; `pnpm dist` creates the platform archive. Packages contain:
+
+- `diffuse_core.node`: the default in-process desktop core.
+- `diffuse-rpc`: the Rust RPC compatibility executable and isolated syntax helper.
+- `diffuse`: the Zig user CLI and packaged RPC rollback executable.
+
+These native files flow through normal platform packaging and signing when signing is configured. The repository does not include signing credentials or a notarization guarantee.
 
 Publish a release:
 
@@ -317,9 +319,9 @@ Publish a release:
 just publish 0.1.5
 ```
 
-`just publish` updates the version, commits the release, creates and pushes the `v0.1.5` tag, and lets the GitHub Actions release workflow build Linux, macOS, and Windows archives. The workflow creates the GitHub Release and uploads those archives. Use `just publish-dry-run 0.1.5` to preview the local version/tag steps.
+`just publish` updates the version, commits the release, creates and pushes the `v0.1.5` tag, and lets GitHub Actions build Linux x64, macOS arm64, and Windows x64 archives. Release jobs smoke the unpacked native resources before archiving. Use `just publish-dry-run 0.1.5` to preview the local version/tag steps.
 
-Build only a core:
+Build only the Rust workspace or retained Zig CLI/RPC implementation:
 
 ```sh
 cargo build --workspace --locked

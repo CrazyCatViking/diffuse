@@ -101,12 +101,32 @@ export function isWorkbenchEvent(value: unknown): value is WorkbenchEvent {
     return false;
   if (typeof record.kind !== 'string') return false;
 
-  if (record.kind === 'workspace/added' || record.kind === 'workspace/removed') return isWorkspaceSummary(record.payload);
-  if (record.kind === 'workspace/activated') return isWorkspaceSnapshot(record.payload);
+  if (record.kind === 'workspace/added' || record.kind === 'workspace/removed') {
+    return isWorkspaceSummary(record.payload) && matchesReference(value, record.payload);
+  }
+  if (record.kind === 'workspace/activated') {
+    return isWorkspaceSnapshot(record.payload) && matchesReference(value, record.payload.summary);
+  }
   return isCoreEvent({ jsonrpc: '2.0', method: record.kind, params: record.payload });
 }
 
-function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
+export function isWorkbenchSnapshot(value: unknown): value is WorkbenchSnapshot {
+  if (!isRecord(value) || !Array.isArray(value.workspaces) || !value.workspaces.every(isWorkspaceSummary)) return false;
+  if (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 0) return false;
+  if (value.activeWorkspaceId === null && value.activeWorkspace === null) return true;
+  const activeWorkspace = value.activeWorkspace;
+  if (typeof value.activeWorkspaceId !== 'string' || !isWorkspaceSnapshot(activeWorkspace)) return false;
+  return (
+    activeWorkspace.summary.workspaceId === value.activeWorkspaceId &&
+    value.workspaces.some(
+      (workspace) =>
+        workspace.workspaceId === activeWorkspace.summary.workspaceId &&
+        workspace.workspaceGeneration === activeWorkspace.summary.workspaceGeneration,
+    )
+  );
+}
+
+export function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
   if (!isRecord(value) || !isWorkspaceReference(value)) return false;
   const record = value as unknown as Record<string, unknown>;
   const hasValidServiceHealth =
@@ -127,7 +147,7 @@ function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
   );
 }
 
-function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
+export function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
   return (
     isRecord(value) &&
     isWorkspaceSummary(value.summary) &&
@@ -135,6 +155,10 @@ function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
     typeof value.repository.root === 'string' &&
     typeof value.repository.head === 'string'
   );
+}
+
+function matchesReference(first: WorkspaceReference, second: WorkspaceReference): boolean {
+  return first.workspaceId === second.workspaceId && first.workspaceGeneration === second.workspaceGeneration;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

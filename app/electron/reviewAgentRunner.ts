@@ -97,6 +97,7 @@ type ActiveRun = {
   id: string;
   sessionId: string;
   repositoryRoot: string;
+  files: ChangedFile[];
   opencode?: Awaited<ReturnType<typeof createOpencode>>;
   opencodeSessionId?: string;
   bridge?: ReviewToolBridge;
@@ -105,6 +106,7 @@ type ActiveRun = {
   seenBusy: boolean;
   idlePolls: number;
   startedAt: string;
+  finishing?: Promise<void>;
 };
 
 export class ReviewAgentRunner {
@@ -128,7 +130,18 @@ export class ReviewAgentRunner {
 
     const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
     const groups = partitionFiles(request.files, Math.max(1, Math.min(config.maxParallelAgents || 1, request.files.length || 1)));
-    await Promise.all(groups.map((files, index) => this.startRun(request, config, files, index + 1, groups.length)));
+    const results = await Promise.allSettled(groups.map((files, index) => this.startRun(request, config, files, index + 1, groups.length)));
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) {
+      try {
+        await this.stop();
+      } catch {
+        // Preserve the shard startup error after making a best effort to persist cancellation.
+      } finally {
+        this.dispose();
+      }
+      throw failed.reason;
+    }
     return this.status();
   }
 
@@ -143,6 +156,7 @@ export class ReviewAgentRunner {
       id: createId('agent-run'),
       sessionId: request.sessionId,
       repositoryRoot: request.repositoryRoot,
+      files,
       stopping: false,
       seenBusy: false,
       idlePolls: 0,
@@ -208,21 +222,37 @@ export class ReviewAgentRunner {
   async stop(): Promise<ReviewAgentStatus> {
     if (this.activeRuns.size === 0) return { running: false };
 
-    await Promise.all(
-      [...this.activeRuns.values()].map(async (run) => {
-        run.stopping = true;
-        await this.saveRun(run, 'cancelling', 'Stopping opencode review');
-        await this.saveAgentState(run, 'cancelled', 'Stopping opencode review');
-        if (run.opencode && run.opencodeSessionId) {
-          await run.opencode.client.session.abort({
-            path: { id: run.opencodeSessionId },
-            query: { directory: run.repositoryRoot },
-            throwOnError: true,
-          });
-        }
-      }),
-    );
+    const results = await Promise.allSettled([...this.activeRuns.values()].map((run) => this.cancelRun(run)));
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
     return this.status();
+  }
+
+  private async cancelRun(run: ActiveRun): Promise<void> {
+    run.stopping = true;
+    if (run.pollTimer) clearTimeout(run.pollTimer);
+    run.pollTimer = undefined;
+
+    let failure: unknown;
+    try {
+      await this.saveRun(run, 'cancelling', 'Stopping opencode review');
+      if (run.opencode && run.opencodeSessionId) {
+        await run.opencode.client.session.abort({
+          path: { id: run.opencodeSessionId },
+          query: { directory: run.repositoryRoot },
+          throwOnError: true,
+        });
+      }
+    } catch (error) {
+      failure = error;
+    }
+
+    try {
+      await this.finishRun(run, run.files, 'cancelled', 'Review stopped');
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure) throw failure;
   }
 
   async chat(request: ReviewChatRequest): Promise<ReviewChatMessage> {
@@ -330,7 +360,12 @@ export class ReviewAgentRunner {
     }
   }
 
-  private async finishRun(
+  private finishRun(run: ActiveRun, files: ChangedFile[], status: 'completed' | 'failed' | 'cancelled', message: string): Promise<void> {
+    if (!run.finishing) run.finishing = this.persistFinishedRun(run, files, status, message);
+    return run.finishing;
+  }
+
+  private async persistFinishedRun(
     run: ActiveRun,
     files: ChangedFile[],
     status: 'completed' | 'failed' | 'cancelled',

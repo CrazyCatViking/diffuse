@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,6 +56,8 @@ struct EventSubscriptionInner {
 }
 
 impl EventSubscription {
+    /// Stop future publication to this subscription. Events already queued remain receivable,
+    /// and the receiver disconnects after any publisher that was already in flight finishes.
     pub fn close(&self) {
         let Some(hub) = self.inner.hub.upgrade() else {
             return;
@@ -64,6 +67,17 @@ impl EventSubscription {
             .expect("event hub lock poisoned")
             .subscribers
             .remove(&self.inner.subscriber_id);
+    }
+
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<WorkbenchEvent, mpsc::RecvTimeoutError> {
+        self.inner
+            .receiver
+            .lock()
+            .expect("event subscription lock poisoned")
+            .recv_timeout(timeout)
     }
 }
 
@@ -300,6 +314,46 @@ mod tests {
         assert_eq!(sequence, 0);
         assert_eq!(subscription.next().unwrap().sequence, 1);
         assert_eq!(clone.next().unwrap().sequence, 2);
+    }
+
+    #[test]
+    fn timed_subscription_receive_allows_a_drain_worker_to_stop() {
+        let hub = EventHub::new(4);
+        let (_, subscription) = hub.subscribe(2);
+
+        assert_eq!(
+            subscription.recv_timeout(Duration::from_millis(1)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        hub.publish("one", None, json!({}));
+        assert_eq!(
+            subscription
+                .recv_timeout(Duration::from_millis(10))
+                .unwrap()
+                .sequence,
+            1
+        );
+    }
+
+    #[test]
+    fn closing_a_subscription_preserves_queued_events_then_disconnects() {
+        let hub = EventHub::new(4);
+        let (_, subscription) = hub.subscribe(2);
+        hub.publish("one", None, json!({}));
+
+        subscription.close();
+
+        assert_eq!(
+            subscription
+                .recv_timeout(Duration::from_millis(10))
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert_eq!(
+            subscription.recv_timeout(Duration::from_millis(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 
     #[test]

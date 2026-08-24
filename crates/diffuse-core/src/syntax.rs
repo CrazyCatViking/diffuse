@@ -244,6 +244,10 @@ pub struct SyntaxManagerOptions {
 
 impl SyntaxManagerOptions {
     pub fn from_environment() -> Self {
+        Self::from_environment_with_parser_backend(parser_backend_from_environment())
+    }
+
+    pub fn from_environment_with_parser_backend(parser_backend: ParserBackend) -> Self {
         let grammar_root = std::env::var_os("DIFFUSE_GRAMMARS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(default_grammar_root);
@@ -255,7 +259,11 @@ impl SyntaxManagerOptions {
             grammar_root,
             registry_root,
             registry_git_url,
-            ..Self::default()
+            parser_backend,
+            command_timeout: Duration::from_secs(5 * 60),
+            parser_timeout: Duration::from_secs(10),
+            max_command_output: 1024 * 1024,
+            max_parser_output: 20 * 1024 * 1024,
         }
     }
 }
@@ -1555,6 +1563,14 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn environment_options_accept_an_explicit_parser_backend() {
+        let options =
+            SyntaxManagerOptions::from_environment_with_parser_backend(ParserBackend::Unavailable);
+
+        assert_eq!(options.parser_backend, ParserBackend::Unavailable);
     }
 
     #[test]

@@ -19,7 +19,9 @@ use crate::search::{
     self, ChangedFilesProvider, ReviewCommentsProvider, SearchError, SearchEvent, SearchEventSink,
     SearchFilterKind, SearchMode, SearchRequest, SourceTextProvider,
 };
-use crate::syntax::{self, SyntaxDocumentProvider, SyntaxManager, SyntaxSourceDocument};
+use crate::syntax::{
+    self, SyntaxDocumentProvider, SyntaxManager, SyntaxManagerOptions, SyntaxSourceDocument,
+};
 use crate::workspace::{WorkspaceRegistry, WorkspaceRuntime};
 use crate::{
     BranchInfo, CoreError, CoreResult, DiffTargetDefaults, EventHub, WorkspaceGeneration,
@@ -31,7 +33,31 @@ use crate::{
 pub struct WorkbenchSnapshot {
     pub workspaces: Vec<WorkspaceSummary>,
     pub active_workspace_id: Option<WorkspaceId>,
+    #[serde(default)]
+    pub active_workspace: Option<WorkspaceSnapshot>,
     pub sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppCoreLifecycleState {
+    #[default]
+    Running,
+    ShuttingDown,
+    Stopped,
+}
+
+#[derive(Clone, Debug)]
+pub struct AppCoreOptions {
+    pub syntax: SyntaxManagerOptions,
+}
+
+impl Default for AppCoreOptions {
+    fn default() -> Self {
+        Self {
+            syntax: SyntaxManagerOptions::from_environment(),
+        }
+    }
 }
 
 struct AppCoreInner {
@@ -40,8 +66,11 @@ struct AppCoreInner {
     events: Arc<EventHub>,
     syntax: Arc<SyntaxManager>,
     active_workspace_id: RwLock<Option<WorkspaceId>>,
+    lifecycle_state: RwLock<AppCoreLifecycleState>,
     state_gate: StdMutex<()>,
+    lifecycle_events: StdMutex<()>,
     open_commit: AsyncMutex<()>,
+    shutdown_gate: StdMutex<()>,
 }
 
 #[derive(Clone)]
@@ -161,17 +190,27 @@ struct CancelSearchParams {
 
 impl AppCore {
     pub fn new(database: WorkbenchDatabase) -> Self {
-        Self {
+        Self::with_options(database, AppCoreOptions::default())
+            .expect("default syntax roots are safe managed paths")
+    }
+
+    pub fn with_options(database: WorkbenchDatabase, options: AppCoreOptions) -> CoreResult<Self> {
+        let syntax = SyntaxManager::new(options.syntax)
+            .map_err(|error| CoreError::Syntax(error.to_string()))?;
+        Ok(Self {
             inner: Arc::new(AppCoreInner {
                 registry: WorkspaceRegistry::default(),
                 database,
                 events: Arc::new(EventHub::default()),
-                syntax: Arc::new(SyntaxManager::default()),
+                syntax: Arc::new(syntax),
                 active_workspace_id: RwLock::new(None),
+                lifecycle_state: RwLock::new(AppCoreLifecycleState::Running),
                 state_gate: StdMutex::new(()),
+                lifecycle_events: StdMutex::new(()),
                 open_commit: AsyncMutex::new(()),
+                shutdown_gate: StdMutex::new(()),
             }),
-        }
+        })
     }
 
     pub fn events(&self) -> &EventHub {
@@ -186,15 +225,28 @@ impl AppCore {
             .expect("app core state lock poisoned");
         let mut workspaces = self.inner.registry.summaries();
         workspaces.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        let active_workspace_id = *self
+            .inner
+            .active_workspace_id
+            .read()
+            .expect("active workspace lock poisoned");
+        let active_workspace = active_workspace_id
+            .and_then(|workspace_id| self.inner.registry.by_id(workspace_id))
+            .map(|runtime| runtime.snapshot());
         WorkbenchSnapshot {
             workspaces,
-            active_workspace_id: *self
-                .inner
-                .active_workspace_id
-                .read()
-                .expect("active workspace lock poisoned"),
+            active_workspace_id,
+            active_workspace,
             sequence: self.inner.events.current_sequence(),
         }
+    }
+
+    pub fn lifecycle_state(&self) -> AppCoreLifecycleState {
+        *self
+            .inner
+            .lifecycle_state
+            .read()
+            .expect("app core lifecycle lock poisoned")
     }
 
     pub async fn open_workspace(&self, path: impl AsRef<Path>) -> CoreResult<WorkspaceSnapshot> {
@@ -207,8 +259,7 @@ impl AppCore {
 
         let existing = self.inner.registry.by_root(&canonical_root);
         if let Some(runtime) = existing {
-            self.activate_workspace(runtime.id, runtime.generation)?;
-            return Ok(runtime.snapshot());
+            return self.activate_workspace(runtime.id, runtime.generation);
         }
 
         let result = repository.result();
@@ -233,46 +284,88 @@ impl AppCore {
             return Err(error);
         }
         let runtime = Arc::new(runtime);
+        let lifecycle_event = self
+            .inner
+            .lifecycle_events
+            .lock()
+            .expect("app core lifecycle event lock poisoned");
         let state = self
             .inner
             .state_gate
             .lock()
             .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            drop(state);
+            runtime.stop_watcher();
+            self.inner.database.close_workspace(id)?;
+            return Err(CoreError::AppCoreShuttingDown);
+        }
         self.inner.registry.insert(runtime.clone());
         let snapshot = runtime.snapshot();
+        drop(state);
         self.inner.events.publish(
             "workspace/added",
             Some((id, generation)),
             serde_json::to_value(&snapshot.summary).expect("workspace summary is serializable"),
         );
-        drop(state);
-        self.activate_workspace(id, generation)?;
-        Ok(snapshot)
+        drop(lifecycle_event);
+        self.activate_workspace(id, generation)
     }
 
     pub fn activate_workspace(
         &self,
         workspace_id: WorkspaceId,
         generation: WorkspaceGeneration,
-    ) -> CoreResult<()> {
+    ) -> CoreResult<WorkspaceSnapshot> {
         let runtime = self.inner.registry.get(workspace_id, generation)?;
         let _permit = runtime.acquire_operation()?;
-        self.inner.database.activate_workspace(workspace_id)?;
-        let _state = self
+        let _lifecycle_event = self
+            .inner
+            .lifecycle_events
+            .lock()
+            .expect("app core lifecycle event lock poisoned");
+        let state = self
             .inner
             .state_gate
             .lock()
             .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        let runtime = self.inner.registry.get(workspace_id, generation)?;
+        self.inner.database.activate_workspace(workspace_id)?;
         *self
             .inner
             .active_workspace_id
             .write()
             .expect("active workspace lock poisoned") = Some(workspace_id);
+        let snapshot = runtime.snapshot();
+        drop(state);
         self.inner.events.publish(
             "workspace/activated",
             Some((workspace_id, generation)),
-            json!({ "workspaceId": workspace_id }),
+            serde_json::to_value(&snapshot).expect("workspace snapshot is serializable"),
         );
+        Ok(snapshot)
+    }
+
+    pub fn deactivate_workspace(&self) -> CoreResult<()> {
+        let _lifecycle_event = self
+            .inner
+            .lifecycle_events
+            .lock()
+            .expect("app core lifecycle event lock poisoned");
+        let _state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        self.inner.database.deactivate_workspace()?;
+        *self
+            .inner
+            .active_workspace_id
+            .write()
+            .expect("active workspace lock poisoned") = None;
         Ok(())
     }
 
@@ -784,6 +877,14 @@ impl AppCore {
             let _ = coordinator.run_reserved(request, reservation, &source, sink.as_ref());
             drop(permit);
         });
+        let _state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        self.inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
         Ok(json!({ "searchId": search_id }))
     }
 
@@ -875,20 +976,44 @@ impl AppCore {
         runtime.begin_close()?;
         drop(state);
 
+        self.finish_workspace_close(runtime, context, true)
+    }
+
+    fn finish_workspace_close(
+        &self,
+        runtime: Arc<WorkspaceRuntime>,
+        context: &WorkspaceRequestContext,
+        restore_on_failure: bool,
+    ) -> CoreResult<()> {
+        let _close = runtime.acquire_close_gate();
+        if self
+            .inner
+            .registry
+            .by_id(context.workspace_id)
+            .is_none_or(|current| current.generation != context.workspace_generation)
+        {
+            return Ok(());
+        }
+
         runtime.search.cancel_all();
         runtime.wait_until_idle();
         runtime.search.wait_for_all();
 
         if let Err(error) = runtime.lsp.shutdown_repository(runtime.repository.root()) {
-            runtime.restore_ready();
+            self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
             return Err(CoreError::Lsp(error.to_string()));
         }
         if let Err(error) = self.inner.database.close_workspace(context.workspace_id) {
-            runtime.restore_ready();
+            self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
             return Err(error);
         }
 
-        let _state = self
+        let _lifecycle_event = self
+            .inner
+            .lifecycle_events
+            .lock()
+            .expect("app core lifecycle event lock poisoned");
+        let state = self
             .inner
             .state_gate
             .lock()
@@ -906,7 +1031,7 @@ impl AppCore {
             *active = None;
         }
         drop(active);
-        drop(_state);
+        drop(state);
         runtime.stop_watcher();
         self.inner.events.publish(
             "workspace/removed",
@@ -915,8 +1040,48 @@ impl AppCore {
         );
         Ok(())
     }
+    fn restore_workspace_after_close_failure(
+        &self,
+        runtime: &WorkspaceRuntime,
+        restore_on_failure: bool,
+    ) {
+        if restore_on_failure && self.lifecycle_state() == AppCoreLifecycleState::Running {
+            runtime.restore_ready();
+        }
+    }
+
+    pub fn begin_shutdown(&self) {
+        let _state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        let mut lifecycle = self
+            .inner
+            .lifecycle_state
+            .write()
+            .expect("app core lifecycle lock poisoned");
+        if *lifecycle == AppCoreLifecycleState::Stopped {
+            return;
+        }
+        *lifecycle = AppCoreLifecycleState::ShuttingDown;
+        let runtimes = self.inner.registry.runtimes();
+        for runtime in &runtimes {
+            let _ = runtime.begin_close();
+            runtime.search.cancel_all();
+        }
+        if runtimes.is_empty() {
+            *lifecycle = AppCoreLifecycleState::Stopped;
+        }
+    }
 
     pub fn shutdown(&self) -> CoreResult<()> {
+        let _shutdown = self
+            .inner
+            .shutdown_gate
+            .lock()
+            .expect("app core shutdown lock poisoned");
+        self.begin_shutdown();
         let runtimes = self.inner.registry.runtimes();
         let mut failures = Vec::new();
         for runtime in runtimes {
@@ -925,9 +1090,16 @@ impl AppCore {
                 workspace_generation: runtime.generation,
                 request_id: "shutdown".to_owned(),
             };
-            if let Err(error) = self.close_workspace(&context) {
+            if let Err(error) = self.finish_workspace_close(runtime, &context, false) {
                 failures.push(error.to_string());
             }
+        }
+        if self.inner.registry.is_empty() {
+            *self
+                .inner
+                .lifecycle_state
+                .write()
+                .expect("app core lifecycle lock poisoned") = AppCoreLifecycleState::Stopped;
         }
         if failures.is_empty() {
             Ok(())
@@ -1205,7 +1377,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::{Condvar, Mutex, mpsc};
+    use std::sync::{Barrier, Condvar, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -1341,6 +1513,119 @@ mod tests {
             core.get_workspace_snapshot(&stale),
             Err(CoreError::StaleWorkspaceGeneration)
         ));
+    }
+
+    #[tokio::test]
+    async fn workbench_snapshot_and_activation_event_include_the_active_workspace() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let before = core.events().current_sequence();
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+
+        let snapshot = core.workbench_snapshot();
+        assert_eq!(
+            snapshot.active_workspace_id,
+            Some(opened.summary.workspace_id)
+        );
+        assert_eq!(snapshot.active_workspace, Some(opened.clone()));
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            value["activeWorkspaceId"],
+            opened.summary.workspace_id.to_string()
+        );
+        assert_eq!(
+            value["activeWorkspace"]["summary"]["workspaceGeneration"],
+            opened.summary.workspace_generation.to_string()
+        );
+
+        let activated = core
+            .events()
+            .replay_after(before)
+            .events
+            .into_iter()
+            .find(|event| event.kind == "workspace/activated")
+            .expect("workspace activation event");
+        assert_eq!(
+            activated.payload,
+            serde_json::to_value(&opened).expect("serialize workspace snapshot")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lifecycle_event_backpressure_does_not_hold_the_state_gate() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let (_, subscription) = core.events().subscribe(1);
+        let open_core = core.clone();
+        let root = repository.path().to_owned();
+        let open = tokio::spawn(async move { open_core.open_workspace(root).await });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while core.events().current_sequence() < 2 {
+            assert!(Instant::now() < deadline, "activation event did not block");
+            tokio::task::yield_now().await;
+        }
+        let snapshot_core = core.clone();
+        let (snapshot_ready, snapshot) = mpsc::channel();
+        let snapshot_worker = thread::spawn(move || {
+            snapshot_ready
+                .send(snapshot_core.workbench_snapshot())
+                .unwrap();
+        });
+        let during_backpressure = snapshot
+            .recv_timeout(Duration::from_millis(100))
+            .expect("state gate remained available during event backpressure");
+        assert_eq!(during_backpressure.workspaces.len(), 1);
+
+        let added = subscription.recv_timeout(Duration::from_secs(1)).unwrap();
+        let activated = subscription.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(added.kind, "workspace/added");
+        assert_eq!(activated.kind, "workspace/activated");
+        open.await.unwrap().unwrap();
+        snapshot_worker.join().unwrap();
+        subscription.close();
+        loop {
+            match subscription.recv_timeout(Duration::from_millis(100)) {
+                Ok(_) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("closed lifecycle event subscription did not disconnect")
+                }
+            }
+        }
+        core.shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn deactivation_clears_the_active_workspace_without_closing_it() {
+        let repository = repository();
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let core = AppCore::new(database.clone());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+
+        core.deactivate_workspace().unwrap();
+
+        let snapshot = core.workbench_snapshot();
+        assert_eq!(snapshot.active_workspace_id, None);
+        assert_eq!(snapshot.active_workspace, None);
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(database.active_workspace_id().unwrap(), None);
+        core.get_workspace_snapshot(&context(&opened, "still-open"))
+            .unwrap();
+    }
+
+    #[test]
+    fn app_core_accepts_explicit_syntax_options() {
+        let core = AppCore::with_options(
+            WorkbenchDatabase::open_in_memory().unwrap(),
+            AppCoreOptions {
+                syntax: SyntaxManagerOptions::from_environment_with_parser_backend(
+                    syntax::ParserBackend::Unavailable,
+                ),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(core.lifecycle_state(), AppCoreLifecycleState::Running);
     }
 
     #[tokio::test]
@@ -1581,6 +1866,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admitted_durable_operation_succeeds_while_close_waits_and_rejects_new_work() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let snapshot = core.open_workspace(repository.path()).await.unwrap();
+        let context = context(&snapshot, "completion-race");
+        let runtime = core
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)
+            .unwrap();
+        let release_gate = Arc::new(Barrier::new(2));
+        let (entered, operation_entered) = tokio::sync::oneshot::channel();
+        let worker_core = core.clone();
+        let worker_context = context.clone();
+        let worker_release_gate = release_gate.clone();
+        let durable_path = repository.path().join("admitted-durable-write.txt");
+        let worker_durable_path = durable_path.clone();
+        let operation = tokio::spawn(async move {
+            worker_core
+                .run_workspace_blocking(&worker_context, move |_| {
+                    entered.send(()).expect("report operation started");
+                    worker_release_gate.wait();
+                    fs::write(worker_durable_path, "committed\n")?;
+                    Ok("saved")
+                })
+                .await
+        });
+        operation_entered.await.unwrap();
+
+        let (closed, close_completed) = mpsc::channel();
+        let close_core = core.clone();
+        let close_context = context.clone();
+        let close_worker = thread::spawn(move || {
+            closed
+                .send(close_core.close_workspace(&close_context))
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while runtime.acquire_operation().is_ok() {
+            assert!(Instant::now() < deadline, "close did not begin");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(matches!(
+            core.get_workspace_snapshot(&context),
+            Err(CoreError::WorkspaceClosing)
+        ));
+        assert!(matches!(
+            close_completed.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_gate.wait();
+
+        assert_eq!(operation.await.unwrap().unwrap(), "saved");
+        assert_eq!(fs::read_to_string(durable_path).unwrap(), "committed\n");
+        close_completed
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        close_worker.join().unwrap();
+    }
+
+    #[tokio::test]
     async fn cancelling_same_search_id_is_isolated_and_stale_work_is_rejected_after_reopen() {
         let first_repository = repository();
         let second_repository = repository();
@@ -1711,6 +2059,32 @@ mod tests {
             core.get_workspace_snapshot(&context(&second, "closed-second")),
             Err(CoreError::WorkspaceNotFound)
         ));
+        assert_eq!(core.lifecycle_state(), AppCoreLifecycleState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn begin_shutdown_rejects_new_work_without_waiting_for_operations() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let snapshot = core.open_workspace(repository.path()).await.unwrap();
+        let context = context(&snapshot, "shutdown-started");
+        let runtime = core
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)
+            .unwrap();
+        let permit = runtime.acquire_operation().unwrap();
+
+        core.begin_shutdown();
+
+        assert_eq!(core.lifecycle_state(), AppCoreLifecycleState::ShuttingDown);
+        assert!(matches!(
+            core.get_workspace_snapshot(&context),
+            Err(CoreError::WorkspaceClosing)
+        ));
+        drop(permit);
+        core.shutdown().unwrap();
+        assert_eq!(core.lifecycle_state(), AppCoreLifecycleState::Stopped);
     }
 
     #[test]

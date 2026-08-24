@@ -282,6 +282,17 @@ impl WorkbenchDatabase {
         Ok(())
     }
 
+    pub(crate) fn deactivate_workspace(&self) -> CoreResult<()> {
+        self.connection
+            .lock()
+            .expect("database lock poisoned")
+            .execute(
+                "UPDATE app_state SET active_workspace_id = NULL WHERE singleton = 1",
+                [],
+            )?;
+        Ok(())
+    }
+
     pub(crate) fn close_workspace(&self, id: WorkspaceId) -> CoreResult<()> {
         let mut connection = self.connection.lock().expect("database lock poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -306,6 +317,19 @@ impl WorkbenchDatabase {
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
                 row.get(0)
             })?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_workspace_id(&self) -> CoreResult<Option<String>> {
+        Ok(self
+            .connection
+            .lock()
+            .expect("database lock poisoned")
+            .query_row(
+                "SELECT active_workspace_id FROM app_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )?)
     }
 }
 
@@ -454,6 +478,24 @@ mod tests {
             .open_workspace("/repo", "/repo", "repo", WorkspaceGeneration::new())
             .unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn active_workspace_can_be_cleared_without_closing_it() {
+        let database = WorkbenchDatabase::open_in_memory().expect("open database");
+        let workspace = database
+            .open_workspace("/repo", "/repo", "repo", WorkspaceGeneration::new())
+            .unwrap();
+        database.activate_workspace(workspace).unwrap();
+        let workspace_id = workspace.to_string();
+        assert_eq!(
+            database.active_workspace_id().unwrap().as_deref(),
+            Some(workspace_id.as_str())
+        );
+
+        database.deactivate_workspace().unwrap();
+
+        assert_eq!(database.active_workspace_id().unwrap(), None);
     }
 
     #[test]
@@ -680,7 +722,9 @@ mod tests {
             "workspaces root must not share the file header"
         );
         drop(connection);
-        drop(database);
+        let lock = database.into_lock();
+        FileExt::unlock(&lock).unwrap();
+        drop(lock);
         (page_size, root_page)
     }
 
