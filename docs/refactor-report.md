@@ -1,8 +1,8 @@
 # Diffuse Architecture Refactor Report
 
-This report captures the current architecture assessment and the recommended cleanup plan after the initial fast implementation phase.
+This historical report captures the architecture assessment and recommended cleanup plan after the initial fast implementation phase. For the implemented Phase 3 Rust backend and current process boundaries, see [`architecture.md`](architecture.md).
 
-## Current Architecture
+## Baseline Architecture
 
 Diffuse has a sound high-level split:
 

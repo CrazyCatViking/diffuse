@@ -1,11 +1,69 @@
 use std::sync::{Arc, RwLock};
 
 use diffuse_core::{
-    AppCore, CoreError, WorkbenchDatabase, WorkspaceRequestContext, default_database_path,
-    version_info,
+    AppCore, CoreError, WorkbenchDatabase, WorkbenchEvent, WorkspaceRequestContext,
+    default_database_path, version_info,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+const WORKSPACE_METHOD_NAMES: [&str; 42] = [
+    "getDiffTargetDefaults",
+    "listBranches",
+    "listChangedFiles",
+    "getDiffRenderModel",
+    "getSyntaxSpans",
+    "getLspConfigInfo",
+    "getLspInstallInfo",
+    "installLspServer",
+    "restartLspServer",
+    "getLspStatus",
+    "getLspHover",
+    "getLspDiagnostics",
+    "getReviewConfig",
+    "saveReviewConfig",
+    "getActiveReviewSession",
+    "listReviewSessions",
+    "createReviewSession",
+    "getReviewProgress",
+    "saveReviewProgress",
+    "getReviewedFiles",
+    "saveReviewedFiles",
+    "updateReviewedFiles",
+    "getReviewAgentStates",
+    "saveReviewAgentState",
+    "getReviewRuns",
+    "recoverStaleReviewRuns",
+    "saveReviewRun",
+    "createReviewRun",
+    "updateReviewRun",
+    "finishReviewRun",
+    "getReviewThreads",
+    "getReviewChatMessages",
+    "saveReviewChatMessage",
+    "addReviewCommentPayload",
+    "addReviewComment",
+    "saveReviewThread",
+    "listTreeSitterGrammars",
+    "syncTreeSitterRegistry",
+    "installTreeSitterGrammar",
+    "uninstallTreeSitterGrammar",
+    "startSearch",
+    "cancelSearch",
+];
+
+const CORE_EVENT_NAMES: [&str; 10] = [
+    "repository/changed",
+    "review/changed",
+    "treeSitter/installProgress",
+    "lsp/installProgress",
+    "search/started",
+    "search/results",
+    "search/progress",
+    "search/done",
+    "search/cancelled",
+    "search/error",
+];
 
 #[derive(Clone)]
 pub struct RpcAdapter {
@@ -33,6 +91,27 @@ impl RpcAdapter {
 
     pub fn invalid_utf8_response() -> Value {
         rpc_error(Value::Null, -32700, "SyntaxError")
+    }
+
+    pub fn current_event_sequence(&self) -> u64 {
+        self.core.events().current_sequence()
+    }
+
+    pub fn subscribe_events(
+        &self,
+        capacity: usize,
+    ) -> (
+        u64,
+        impl Iterator<Item = WorkbenchEvent> + Clone + Send + 'static,
+        impl FnOnce() + Send + 'static,
+    ) {
+        let (sequence, subscription) = self.core.events().subscribe(capacity);
+        let cancellation = subscription.clone();
+        (sequence, subscription, move || cancellation.close())
+    }
+
+    pub fn shutdown(&self) -> Result<(), CoreError> {
+        self.core.shutdown()
     }
 
     pub async fn handle_line(&self, line: &str) -> Option<Value> {
@@ -65,33 +144,17 @@ impl RpcAdapter {
                     });
                 serde_json::to_value(snapshot.repository).map_err(internal_json_error)
             }
-            "getDiffTargetDefaults" => {
+            method if WORKSPACE_METHOD_NAMES.contains(&method) => {
                 let context = self
                     .current
                     .read()
                     .expect("RPC workspace lock poisoned")
                     .clone()
                     .ok_or_else(repository_not_open)?;
-                let result = self
-                    .core
-                    .get_diff_target_defaults(&context)
+                self.core
+                    .dispatch_workspace(&context, method, params)
                     .await
-                    .map_err(core_error)?;
-                serde_json::to_value(result).map_err(internal_json_error)
-            }
-            "listBranches" => {
-                let context = self
-                    .current
-                    .read()
-                    .expect("RPC workspace lock poisoned")
-                    .clone()
-                    .ok_or_else(repository_not_open)?;
-                let result = self
-                    .core
-                    .list_branches(&context)
-                    .await
-                    .map_err(core_error)?;
-                serde_json::to_value(result).map_err(internal_json_error)
+                    .map_err(core_error)
             }
             _ => Err(RpcError {
                 code: -32601,
@@ -99,6 +162,16 @@ impl RpcAdapter {
             }),
         }
     }
+}
+
+pub fn event_notification(event: WorkbenchEvent) -> Option<Value> {
+    CORE_EVENT_NAMES.contains(&event.kind.as_str()).then(|| {
+        json!({
+            "jsonrpc": "2.0",
+            "method": event.kind,
+            "params": event.payload,
+        })
+    })
 }
 
 struct ParsedRequest {
@@ -161,9 +234,19 @@ struct RpcError {
 }
 
 fn core_error(error: CoreError) -> RpcError {
-    RpcError {
-        code: -32000,
-        message: error.protocol_name(),
+    match error {
+        CoreError::MethodNotFound => RpcError {
+            code: -32601,
+            message: "MethodNotFound",
+        },
+        CoreError::InvalidParams(_) => RpcError {
+            code: -32602,
+            message: "InvalidParams",
+        },
+        error => RpcError {
+            code: -32000,
+            message: error.protocol_name(),
+        },
     }
 }
 
@@ -210,6 +293,175 @@ mod tests {
                 .handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"openRepository","params":{}}"#)
                 .await,
             Some(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"MissingParam"}}))
+        );
+
+        *adapter
+            .current
+            .write()
+            .expect("RPC workspace lock poisoned") = Some(WorkspaceRequestContext {
+            workspace_id: Default::default(),
+            workspace_generation: Default::default(),
+            request_id: "invalid-params-test".to_owned(),
+        });
+        assert_eq!(
+            adapter
+                .handle_line(r#"{"jsonrpc":"2.0","id":3,"method":"listChangedFiles","params":{}}"#,)
+                .await,
+            Some(json!({"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"InvalidParams"}}))
+        );
+    }
+
+    #[tokio::test]
+    async fn routes_every_contract_workspace_method() {
+        let adapter = adapter();
+        let expected = [
+            "getDiffTargetDefaults",
+            "listBranches",
+            "listChangedFiles",
+            "getDiffRenderModel",
+            "getSyntaxSpans",
+            "getLspConfigInfo",
+            "getLspInstallInfo",
+            "installLspServer",
+            "restartLspServer",
+            "getLspStatus",
+            "getLspHover",
+            "getLspDiagnostics",
+            "getReviewConfig",
+            "saveReviewConfig",
+            "getActiveReviewSession",
+            "listReviewSessions",
+            "createReviewSession",
+            "getReviewProgress",
+            "saveReviewProgress",
+            "getReviewedFiles",
+            "saveReviewedFiles",
+            "updateReviewedFiles",
+            "getReviewAgentStates",
+            "saveReviewAgentState",
+            "getReviewRuns",
+            "recoverStaleReviewRuns",
+            "saveReviewRun",
+            "createReviewRun",
+            "updateReviewRun",
+            "finishReviewRun",
+            "getReviewThreads",
+            "getReviewChatMessages",
+            "saveReviewChatMessage",
+            "addReviewCommentPayload",
+            "addReviewComment",
+            "saveReviewThread",
+            "listTreeSitterGrammars",
+            "syncTreeSitterRegistry",
+            "installTreeSitterGrammar",
+            "uninstallTreeSitterGrammar",
+            "startSearch",
+            "cancelSearch",
+        ];
+        assert_eq!(WORKSPACE_METHOD_NAMES, expected);
+
+        for (id, method) in WORKSPACE_METHOD_NAMES.iter().enumerate() {
+            let response = adapter
+                .handle_line(
+                    &json!({ "jsonrpc": "2.0", "id": id as i64, "method": method }).to_string(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response["error"]["code"], -32000, "{method}");
+            assert_eq!(
+                response["error"]["message"], "RepositoryNotOpen",
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_subscription_translates_core_events_and_filters_workspace_lifecycle_events() {
+        let adapter = adapter();
+        let (sequence, mut events, cancel) = adapter.subscribe_events(4);
+        adapter
+            .core
+            .events()
+            .publish("workspace/added", None, json!({ "ignored": true }));
+        adapter.core.events().publish(
+            "repository/changed",
+            None,
+            json!({ "root": "/repo", "paths": ["src/lib.rs"] }),
+        );
+        adapter.core.events().publish(
+            "review/changed",
+            None,
+            json!({ "root": "/repo", "change": "thread.created" }),
+        );
+
+        let notifications = (0..3)
+            .filter_map(|_| event_notification(events.next().unwrap()))
+            .collect::<Vec<_>>();
+        cancel();
+
+        assert_eq!(sequence, 0);
+        assert_eq!(
+            notifications,
+            vec![
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "repository/changed",
+                    "params": { "root": "/repo", "paths": ["src/lib.rs"] },
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "review/changed",
+                    "params": { "root": "/repo", "change": "thread.created" },
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn slow_live_subscription_does_not_lose_or_duplicate_events_past_replay_capacity() {
+        use std::thread;
+        use std::time::Duration;
+
+        const EVENT_COUNT: u64 = 2_048;
+
+        let adapter = adapter();
+        let (sequence, mut events, cancel) = adapter.subscribe_events(8);
+        let publisher = {
+            let adapter = adapter.clone();
+            thread::spawn(move || {
+                for index in 0..EVENT_COUNT {
+                    adapter.core.events().publish(
+                        "search/progress",
+                        None,
+                        json!({ "index": index }),
+                    );
+                }
+            })
+        };
+
+        let received = (0..EVENT_COUNT)
+            .map(|_| {
+                thread::sleep(Duration::from_micros(50));
+                events.next().unwrap()
+            })
+            .collect::<Vec<_>>();
+        publisher.join().unwrap();
+        cancel();
+
+        assert_eq!(sequence, 0);
+        assert_eq!(
+            received
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            (1..=EVENT_COUNT).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            received
+                .iter()
+                .map(|event| event.payload["index"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            (0..EVENT_COUNT).collect::<Vec<_>>()
         );
     }
 

@@ -27,10 +27,15 @@ function resolveCoreExecutable(): string {
 
   const executableName = process.platform === 'win32' ? 'diffuse.exe' : 'diffuse';
 
-  const devCandidates = [
+  const rustDevCandidates = [
+    resolve(__dirname, '../../../target/debug', executableName),
+    resolve(process.cwd(), '../target/debug', executableName),
+  ];
+  const zigDevCandidates = [
     resolve(__dirname, '../../../core/zig-out/bin', executableName),
     resolve(process.cwd(), '../core/zig-out/bin', executableName),
   ];
+  const devCandidates = [...rustDevCandidates, ...zigDevCandidates];
 
   for (const candidate of devCandidates) {
     if (existsSync(candidate)) return candidate;
@@ -48,7 +53,7 @@ function resolveCoreExecutable(): string {
   throw new Error(
     [
       'Diffuse core executable was not found.',
-      'Build it with `zig build` from the `core` directory, or set DIFFUSE_CORE_EXECUTABLE to a built diffuse binary.',
+      'Build it with `cargo build --workspace` from the repository root or `zig build` from the `core` directory, or set DIFFUSE_CORE_EXECUTABLE to a built diffuse binary.',
       `Checked: ${[...devCandidates, ...packagedCandidates, installedPath].join(', ')}`,
     ].join(' '),
   );

@@ -72,7 +72,7 @@ jobs:
         working-directory: app
         run: pnpm test:integration
 
-      - name: Test Rust repository RPC parity
+      - name: Test complete Rust RPC parity
         working-directory: app
         run: pnpm test:rust-integration
 

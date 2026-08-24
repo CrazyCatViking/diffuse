@@ -289,7 +289,7 @@ The core expands that payload into a normal thread, anchors it to the active dif
 
 ## Built-In opencode Runner
 
-The desktop app can start built-in opencode review runs for the active session. Zig core owns the review run state in `runs/<agent-run-id>.json`. Electron only acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
+The desktop app can start built-in opencode review runs for the active session. The selected core owns the review run state in `runs/<agent-run-id>.json`; both current core implementations preserve v1 files and unknown extension fields. Electron only acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
 
 Cancellation uses the opencode SDK `session.abort` API.
 

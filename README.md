@@ -6,7 +6,7 @@
 
 <p>
   <img alt="Status: Work in progress" src="https://img.shields.io/badge/status-work%20in%20progress-f5a524?style=for-the-badge">
-  <img alt="Core: Zig with Rust migration" src="https://img.shields.io/badge/core-Zig%20%2B%20Rust-f7a41d?style=for-the-badge">
+  <img alt="Core: Rust development with Zig releases" src="https://img.shields.io/badge/core-Rust%20dev%20%2B%20Zig%20releases-f7a41d?style=for-the-badge">
   <img alt="App: Vue and Electron" src="https://img.shields.io/badge/app-Vue%20%2B%20Electron-42b883?style=for-the-badge">
 </p>
 
@@ -59,13 +59,13 @@ Diffuse has these main source areas:
 
 ```text
 diffuse/
-  core/   Zig core: Git, diff rendering, syntax, LSP, review persistence, JSON-RPC
-  crates/ Rust AppCore and compatibility CLI under the Agent Workbench migration
+  core/   Packaged Zig core: Git, diff rendering, syntax, LSP, review persistence, JSON-RPC
+  crates/ Rust AppCore and development JSON-RPC CLI
   app/    Electron + Vue app: desktop UI, settings, review agent bridge
   docs/   GitHub-readable docs, architecture notes, and data-format specs
 ```
 
-The desktop app currently starts the Zig core as a child process using `diffuse rpc`. The UI talks to that process over JSON-RPC. A transport-neutral Rust `AppCore` and temporary compatible CLI are being introduced slice by slice; Rust currently covers durable workspace identity, repository opening, diff-target defaults, and branches, while Zig remains the packaged backend.
+The UI talks to a child core process over line-delimited JSON-RPC. Development builds prefer the transport-neutral Rust `AppCore` through `target/debug/diffuse`; it implements the complete desktop RPC and event contract, durable workspace identity, and local SQLite state. Packaged releases continue to include the Zig core until the later in-process N-API cutover.
 
 Review data is intentionally easy to inspect and integrate with:
 
@@ -124,8 +124,8 @@ To build and install Diffuse from source, install:
 | ---------------- | -------------------------------------------------- |
 | `git`            | Repository access and update/install commands.     |
 | `just`           | Project task runner.                               |
-| `zig`            | Builds the native core. Minimum version: `0.16.0`. |
-| `rustup`/`cargo` | Builds and tests the Phase 3 Rust core. The repository pins Rust `1.90.0`. |
+| `zig`            | Builds the packaged native core. Minimum version: `0.16.0`. |
+| `rustup`/`cargo` | Builds the development Rust core. The repository pins Rust `1.90.0`. |
 | `node`           | Builds and runs the Electron app.                  |
 | `pnpm`           | Installs app dependencies.                         |
 | `curl` and `tar` | Used by build/install tooling on Unix systems.     |
@@ -147,7 +147,7 @@ just install
 1. Check required tools.
 2. Build the Zig core.
 3. Format, lint, test, and build the Rust core.
-4. Run the Zig/Rust repository-slice differential tests.
+4. Run the complete Zig/Rust method, event, persistence, and CLI parity suite.
 5. Install app dependencies with `pnpm install --frozen-lockfile`.
 6. Build the Electron/Vue app.
 7. Install Diffuse into your user environment.
@@ -181,7 +181,7 @@ Open a specific repository:
 diffuse /path/to/repository
 ```
 
-If Diffuse is already running, another `diffuse /path/to/repository` command adds or activates that repository in the existing primary window. During migration, each open workspace still has its own isolated Zig core process behind the workspace-aware Electron facade.
+If Diffuse is already running, another `diffuse /path/to/repository` command adds or activates that repository in the existing primary window. Packaged builds keep each open workspace in an isolated Zig core process behind the workspace-aware Electron facade until the Phase 4 in-process Rust cutover.
 
 The desktop app also accepts the packaged-app launch argument `--open-repository <path>`.
 
@@ -222,7 +222,7 @@ After opening a repository, Diffuse shows a review overview alongside changed fi
 
 Selecting a file opens that file diff. Selecting a folder opens a virtualized multi-file folder diff for every changed file below that folder. Selecting a review thread from the overview opens its file, scrolls to the anchored review row, and briefly flashes the target.
 
-Use the changed-file search box or the top-bar `Search` action to find files by fuzzy filename/path matches, review state, comments, generated/test/docs classification, extension, status, and line-count filters. `Ctrl+P` or `Cmd+P` opens the global search palette, and matching results can be pinned into an independent right-side search drawer so you can walk through them while reviewing. Pinned search results are a frozen snapshot of the matches that existed when you clicked `Pin results`; later streaming search chunks or new searches do not change that pinned list. The global palette streams file, full changed-file content, and persisted comment results from the Zig core with cooperative cancellation; opening a content match automatically switches the diff viewer to full-file mode so the matched line is visible. Symbol extraction is planned next.
+Use the changed-file search box or the top-bar `Search` action to find files by fuzzy filename/path matches, review state, comments, generated/test/docs classification, extension, status, and line-count filters. `Ctrl+P` or `Cmd+P` opens the global search palette, and matching results can be pinned into an independent right-side search drawer so you can walk through them while reviewing. Pinned search results are a frozen snapshot of the matches that existed when you clicked `Pin results`; later streaming search chunks or new searches do not change that pinned list. The global palette streams file, full changed-file content, and persisted comment results from the selected core with cooperative cancellation; opening a content match automatically switches the diff viewer to full-file mode so the matched line is visible. Symbol extraction is planned next.
 
 The top-bar `Compare` menu controls what Diffuse reviews. Open it to search local or remote branches, choose suggested refs such as `HEAD` or the default upstream, or type a custom branch, tag, SHA, or Git ref.
 
@@ -252,10 +252,9 @@ just build
 Run the app in development mode:
 
 ```sh
-cd core
-zig build
+cargo build --workspace --locked
 
-cd ../app
+cd app
 pnpm install --frozen-lockfile
 pnpm dev
 ```
@@ -280,13 +279,15 @@ pnpm test:integration
 pnpm test:rust-integration
 ```
 
-The Electron app looks for the core binary in `core/zig-out/bin/diffuse`. You can point it at a custom binary with:
+The Electron app prefers the Rust development binary at `target/debug/diffuse`, then falls back to `core/zig-out/bin/diffuse`. You can point it at a custom binary with:
 
 ```sh
 DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse pnpm dev
 ```
 
-The Phase 3 Rust compatibility binary is built at `target/debug/diffuse`. It currently supports only version, repository opening, diff-target defaults, and branch listing, so use `DIFFUSE_CORE_EXECUTABLE` with it for focused parity work rather than a complete desktop session. Unported methods fail explicitly; they are never delegated to Zig inside the same workspace.
+The Phase 3 Rust compatibility binary is built at `target/debug/diffuse` and implements all desktop methods and events. Backend selection always applies to the whole workspace; requests are never delegated method by method between Rust and Zig.
+
+Rust workbench state defaults to the platform application-data directory as `workbench.sqlite3`. Set `DIFFUSE_WORKBENCH_DATABASE=/path/to/workbench.sqlite3` to isolate development or test state.
 
 When no explicit executable is configured, the Electron app checks development paths, packaged resources, and then the installed core under `DIFFUSE_INSTALL_ROOT` or `~/.local/share/diffuse/core/diffuse`.
 
@@ -318,9 +319,11 @@ just publish 0.1.5
 
 `just publish` updates the version, commits the release, creates and pushes the `v0.1.5` tag, and lets the GitHub Actions release workflow build Linux, macOS, and Windows archives. The workflow creates the GitHub Release and uploads those archives. Use `just publish-dry-run 0.1.5` to preview the local version/tag steps.
 
-Build only the core:
+Build only a core:
 
 ```sh
+cargo build --workspace --locked
+
 cd core
 zig build
 ```

@@ -12,10 +12,12 @@ const in_create: u32 = 0x00000100;
 const in_delete: u32 = 0x00000200;
 const in_delete_self: u32 = 0x00000400;
 const in_move_self: u32 = 0x00000800;
+const in_q_overflow: u32 = 0x00004000;
 const in_isdir: u32 = 0x40000000;
 const in_nonblock: u32 = 0o4000;
 const in_cloexec: u32 = 0o2000000;
 const watch_mask = in_close_write | in_moved_from | in_moved_to | in_create | in_delete | in_delete_self | in_move_self;
+const max_changed_paths = 4096;
 
 pub const RepositoryWatcher = struct {
     allocator: std.mem.Allocator,
@@ -80,7 +82,10 @@ pub const RepositoryWatcher = struct {
 
         var buffer: [32 * 1024]u8 align(@alignOf(linux.inotify_event)) = undefined;
         var changed_paths: std.ArrayList([]u8) = .empty;
-        defer clearChangedPaths(self.allocator, &changed_paths);
+        defer {
+            clearChangedPaths(self.allocator, &changed_paths);
+            changed_paths.deinit(self.allocator);
+        }
         var pending = false;
         var quiet_ticks: u8 = 0;
 
@@ -90,9 +95,18 @@ pub const RepositoryWatcher = struct {
                 else => break,
             };
 
-            if (read_len > 0 and handleEvents(self.allocator, self.io, fd, &paths, root, &changed_paths, buffer[0..read_len])) {
-                pending = true;
-                quiet_ticks = 5;
+            if (read_len > 0) {
+                var rescan_required = false;
+                if (handleEvents(self.allocator, self.io, fd, &paths, root, &changed_paths, buffer[0..read_len], &rescan_required)) {
+                    pending = true;
+                    quiet_ticks = 5;
+                }
+                if (rescan_required) {
+                    pending = false;
+                    clearChangedPaths(self.allocator, &changed_paths);
+                    self.emitRepositoryChanged(root, &.{}) catch {};
+                    self.emitReviewChanged(root, &.{}) catch {};
+                }
             }
 
             if (pending) {
@@ -216,7 +230,7 @@ fn addWatchPath(allocator: std.mem.Allocator, fd: i32, paths: *std.AutoHashMap(i
     result.value_ptr.* = owned_path;
 }
 
-fn handleEvents(allocator: std.mem.Allocator, io: std.Io, fd: i32, paths: *std.AutoHashMap(i32, []u8), root: []const u8, changed_paths: *std.ArrayList([]u8), bytes: []align(@alignOf(linux.inotify_event)) u8) bool {
+fn handleEvents(allocator: std.mem.Allocator, io: std.Io, fd: i32, paths: *std.AutoHashMap(i32, []u8), root: []const u8, changed_paths: *std.ArrayList([]u8), bytes: []align(@alignOf(linux.inotify_event)) u8, rescan_required: *bool) bool {
     var offset: usize = 0;
     var changed = false;
     while (offset + @sizeOf(linux.inotify_event) <= bytes.len) {
@@ -225,10 +239,18 @@ fn handleEvents(allocator: std.mem.Allocator, io: std.Io, fd: i32, paths: *std.A
         if (offset + event_size > bytes.len) break;
         defer offset += event_size;
 
+        if ((event.mask & in_q_overflow) != 0) {
+            rescan_required.* = true;
+            continue;
+        }
+
         const parent = paths.get(event.wd) orelse continue;
         const name = event.getName() orelse "";
         if (shouldIgnorePath(name)) continue;
-        appendChangedPath(allocator, changed_paths, root, parent, name) catch {};
+        appendChangedPath(allocator, changed_paths, root, parent, name) catch |err| switch (err) {
+            error.WatcherOverflow => rescan_required.* = true,
+            else => {},
+        };
 
         if ((event.mask & in_isdir) != 0 and (event.mask & (in_create | in_moved_to)) != 0 and name.len > 0) {
             const child_path = std.Io.Dir.path.join(allocator, &.{ parent, name }) catch continue;
@@ -252,7 +274,13 @@ fn appendChangedPath(allocator: std.mem.Allocator, changed_paths: *std.ArrayList
     }
     if (relative_path.len == 0 or shouldIgnorePath(relative_path)) return;
 
-    try changed_paths.append(allocator, try allocator.dupe(u8, relative_path));
+    for (changed_paths.items) |existing| {
+        if (std.mem.eql(u8, existing, relative_path)) return;
+    }
+    if (changed_paths.items.len >= max_changed_paths) return error.WatcherOverflow;
+    const owned_path = try allocator.dupe(u8, relative_path);
+    errdefer allocator.free(owned_path);
+    try changed_paths.append(allocator, owned_path);
 }
 
 fn clearChangedPaths(allocator: std.mem.Allocator, changed_paths: *std.ArrayList([]u8)) void {
@@ -271,4 +299,18 @@ fn shouldIgnorePath(path: []const u8) bool {
 fn sleepMs(ms: isize) void {
     var request = linux.timespec{ .sec = @divTrunc(ms, 1000), .nsec = @rem(ms, 1000) * std.time.ns_per_ms };
     while (linux.errno(linux.nanosleep(&request, &request)) == .INTR) {}
+}
+
+test "changed watcher paths are deduplicated and owned" {
+    var paths: std.ArrayList([]u8) = .empty;
+    defer {
+        clearChangedPaths(std.testing.allocator, &paths);
+        paths.deinit(std.testing.allocator);
+    }
+
+    try appendChangedPath(std.testing.allocator, &paths, "/repo", "/repo", "file.txt");
+    try appendChangedPath(std.testing.allocator, &paths, "/repo", "/repo", "file.txt");
+
+    try std.testing.expectEqual(@as(usize, 1), paths.items.len);
+    try std.testing.expectEqualStrings("file.txt", paths.items[0]);
 }

@@ -23,35 +23,37 @@ impl WorkbenchDatabase {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let lock = open_database_lock(path)?;
-        FileExt::lock_shared(&lock)?;
-        match Self::open_once(path, lock) {
-            Ok(database) => Ok(database),
-            Err((error, lock)) if is_corrupt_database(&error) => {
-                FileExt::unlock(&lock)?;
-                drop(lock);
-                let recovery_lock = open_database_lock(path)?;
-                FileExt::try_lock_exclusive(&recovery_lock)?;
+        loop {
+            let lock = open_database_lock(path)?;
+            FileExt::lock_shared(&lock)?;
+            match Self::open_once(path, lock) {
+                Ok(database) => return Ok(database),
+                Err((error, lock)) if is_corrupt_database(&error) => {
+                    FileExt::unlock(&lock)?;
+                    drop(lock);
+                    let recovery_lock = open_database_lock(path)?;
+                    FileExt::try_lock_exclusive(&recovery_lock)?;
 
-                // Another process may have recovered the file before the exclusive lock was acquired.
-                match Self::open_once(path, recovery_lock) {
-                    Ok(database) => {
-                        let recovery_lock = database.into_lock();
-                        FileExt::unlock(&recovery_lock)?;
-                        Self::open(path)
+                    // Another process may have recovered the file before this lock was acquired.
+                    match Self::open_once(path, recovery_lock) {
+                        Ok(database) => {
+                            let recovery_lock = database.into_lock();
+                            FileExt::unlock(&recovery_lock)?;
+                        }
+                        Err((recheck_error, recovery_lock))
+                            if is_corrupt_database(&recheck_error) =>
+                        {
+                            move_corrupt_database(path)?;
+                            let database =
+                                Self::open_once(path, recovery_lock).map_err(|(error, _)| error)?;
+                            let recovery_lock = database.into_lock();
+                            FileExt::unlock(&recovery_lock)?;
+                        }
+                        Err((recheck_error, _)) => return Err(recheck_error),
                     }
-                    Err((recheck_error, recovery_lock)) if is_corrupt_database(&recheck_error) => {
-                        move_corrupt_database(path)?;
-                        let database =
-                            Self::open_once(path, recovery_lock).map_err(|(error, _)| error)?;
-                        let recovery_lock = database.into_lock();
-                        FileExt::unlock(&recovery_lock)?;
-                        Self::open(path)
-                    }
-                    Err((recheck_error, _)) => Err(recheck_error),
                 }
+                Err((error, _)) => return Err(error),
             }
-            Err((error, _)) => Err(error),
         }
     }
 
@@ -67,7 +69,10 @@ impl WorkbenchDatabase {
             connection: Arc::new(Mutex::new(connection)),
             _lock: Arc::new(lock),
         };
-        match database.migrate() {
+        if let Err(error) = database.migrate() {
+            return Err((error, database.into_lock()));
+        }
+        match database.validate_integrity() {
             Ok(()) => Ok(database),
             Err(error) => Err((error, database.into_lock())),
         }
@@ -82,6 +87,7 @@ impl WorkbenchDatabase {
             _lock: Arc::new(lock),
         };
         database.migrate()?;
+        database.validate_integrity()?;
         Ok(database)
     }
 
@@ -189,6 +195,19 @@ impl WorkbenchDatabase {
 
         transaction.commit()?;
         Ok(())
+    }
+
+    fn validate_integrity(&self) -> CoreResult<()> {
+        let result = self
+            .connection
+            .lock()
+            .expect("database lock poisoned")
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))?;
+        if result == "ok" {
+            Ok(())
+        } else {
+            Err(CoreError::DatabaseCorrupt(result))
+        }
     }
 
     pub(crate) fn open_workspace(
@@ -334,11 +353,12 @@ fn now_millis() -> i64 {
 }
 
 fn is_corrupt_database(error: &CoreError) -> bool {
-    matches!(
-        error,
-        CoreError::Database(rusqlite::Error::SqliteFailure(failure, _))
+    matches!(error, CoreError::DatabaseCorrupt(_))
+        || matches!(
+            error,
+            CoreError::Database(rusqlite::Error::SqliteFailure(failure, _))
             if matches!(failure.code, ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
-    )
+        )
 }
 
 fn move_corrupt_database(path: &Path) -> CoreResult<PathBuf> {
@@ -397,6 +417,7 @@ fn null_device() -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{Seek, SeekFrom, Write};
 
     use tempfile::TempDir;
 
@@ -430,18 +451,42 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_database_is_preserved_and_recreated() {
+    fn corrupt_data_page_is_preserved_and_recreated() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
-        fs::write(&path, b"not a sqlite database").unwrap();
+        let (page_size, root_page) = create_multi_page_database(&path);
+        let page_offset = (root_page - 1) * page_size;
+        overwrite_bytes(&path, page_offset, &[0]);
+        let corrupted = fs::read(&path).unwrap();
 
         let database = WorkbenchDatabase::open(&path).expect("recover corrupt database");
         assert_eq!(database.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-        assert!(
-            fs::read_dir(temp.path())
-                .unwrap()
-                .filter_map(Result::ok)
-                .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+        let workspace_count: i64 = database
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(workspace_count, 0);
+        assert_eq!(
+            fs::read(corrupt_backup_path(temp.path())).unwrap(),
+            corrupted
+        );
+    }
+
+    #[test]
+    fn corrupt_header_segment_is_preserved_and_recreated() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
+        create_multi_page_database(&path);
+        overwrite_bytes(&path, 0, b"broken");
+        let corrupted = fs::read(&path).unwrap();
+
+        let database = WorkbenchDatabase::open(&path).expect("recover corrupt database");
+        assert_eq!(database.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            fs::read(corrupt_backup_path(temp.path())).unwrap(),
+            corrupted
         );
     }
 
@@ -453,7 +498,9 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
-                 INSERT INTO schema_migrations(version, applied_at) VALUES (2, 0);",
+                 INSERT INTO schema_migrations(version, applied_at) VALUES (2, 0);
+                 CREATE TABLE future_data (value TEXT NOT NULL);
+                 INSERT INTO future_data(value) VALUES ('preserve me');",
             )
             .unwrap();
         drop(connection);
@@ -462,12 +509,41 @@ mod tests {
             WorkbenchDatabase::open(&path),
             Err(CoreError::UnsupportedDatabaseVersion(2))
         ));
-        assert!(
-            !fs::read_dir(temp.path())
-                .unwrap()
-                .filter_map(Result::ok)
-                .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
-        );
+        assert_no_corrupt_backup(temp.path());
+        let connection = Connection::open(&path).unwrap();
+        let value: String = connection
+            .query_row("SELECT value FROM future_data", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "preserve me");
+    }
+
+    #[test]
+    fn migration_failure_is_rejected_without_replacement() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE workspaces (marker TEXT NOT NULL);
+                 INSERT INTO workspaces(marker) VALUES ('preserve me');",
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            WorkbenchDatabase::open(&path),
+            Err(CoreError::Database(_))
+        ));
+        assert_no_corrupt_backup(temp.path());
+        let connection = Connection::open(&path).unwrap();
+        let marker: String = connection
+            .query_row("SELECT marker FROM workspaces", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(marker, "preserve me");
     }
 
     #[test]
@@ -495,10 +571,117 @@ mod tests {
         let exclusive = open_database_lock(&path).unwrap();
 
         assert!(FileExt::try_lock_exclusive(&exclusive).is_err());
-        drop(exclusive);
+        drop((exclusive, database));
+    }
+
+    #[test]
+    fn moving_corrupt_database_preserves_sidecars() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
+        let (page_size, root_page) = create_multi_page_database(&path);
+        overwrite_bytes(&path, (root_page - 1) * page_size, &[0]);
+        let sidecars = [
+            ("-wal", b"wal contents".as_slice()),
+            ("-shm", b"shm contents".as_slice()),
+            ("-journal", b"journal contents".as_slice()),
+        ];
+        for (suffix, contents) in sidecars {
+            fs::write(sidecar_path(&path, suffix), contents).unwrap();
+        }
+
+        let backup = move_corrupt_database(&path).unwrap();
+
+        assert!(!path.exists());
+        for (suffix, contents) in sidecars {
+            assert!(!sidecar_path(&path, suffix).exists());
+            assert_eq!(fs::read(sidecar_path(&backup, suffix)).unwrap(), contents);
+        }
+    }
+
+    fn create_multi_page_database(path: &Path) -> (usize, usize) {
+        let database = WorkbenchDatabase::open(path).unwrap();
+        let mut connection = database.connection.lock().unwrap();
+        let transaction = connection.transaction().unwrap();
+        for index in 0..256 {
+            transaction
+                .execute(
+                    "INSERT INTO workspaces(
+                        id, canonical_root, root, display_name, rail_order, last_opened_at,
+                        is_open, generation, load_state
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, NULL, 'closed')",
+                    params![
+                        format!("workspace-{index}"),
+                        format!("/canonical/{index}"),
+                        format!("/root/{index}"),
+                        format!("workspace-{index}-{}", "x".repeat(512)),
+                        index,
+                    ],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+        connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .unwrap();
+        let page_size = connection
+            .query_row("PRAGMA page_size", [], |row| row.get::<_, usize>(0))
+            .unwrap();
+        let page_count = connection
+            .query_row("PRAGMA page_count", [], |row| row.get::<_, usize>(0))
+            .unwrap();
+        let root_page = connection
+            .query_row(
+                "SELECT rootpage FROM sqlite_schema WHERE name = 'workspaces'",
+                [],
+                |row| row.get::<_, usize>(0),
+            )
+            .unwrap();
+        assert!(page_count > 8, "test database must span multiple pages");
+        assert!(
+            root_page > 1,
+            "workspaces root must not share the file header"
+        );
+        drop(connection);
         drop(database);
-        let exclusive = open_database_lock(&path).unwrap();
-        FileExt::try_lock_exclusive(&exclusive).unwrap();
-        FileExt::unlock(&exclusive).unwrap();
+        (page_size, root_page)
+    }
+
+    fn overwrite_bytes(path: &Path, offset: usize, bytes: &[u8]) {
+        let mut file = OpenOptions::new().write(true).open(path).unwrap();
+        file.seek(SeekFrom::Start(offset.try_into().unwrap()))
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    fn corrupt_backup_path(directory: &Path) -> PathBuf {
+        let prefix = format!("{DEFAULT_DATABASE_FILE_NAME}.corrupt-");
+        fs::read_dir(directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find_map(|entry| {
+                let name = entry.file_name();
+                let name = name.to_str()?;
+                let timestamp = name.strip_prefix(&prefix)?;
+                timestamp
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+                    .then(|| entry.path())
+            })
+            .expect("corrupt database backup")
+    }
+
+    fn assert_no_corrupt_backup(directory: &Path) {
+        assert!(
+            fs::read_dir(directory)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".corrupt-"))
+        );
+    }
+
+    fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        path.with_file_name(format!("{file_name}{suffix}"))
     }
 }

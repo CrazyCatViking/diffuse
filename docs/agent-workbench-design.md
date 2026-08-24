@@ -689,7 +689,7 @@ Exit criteria:
 
 Purpose: remove per-window identity assumptions before replacing Zig.
 
-Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. Workspace IDs remain in-memory until Phase 3 adds SQLite persistence.
+Implementation status: Complete. The shared workbench contract, explicit request contexts, application-wide legacy workspace registry, canonical-root deduplication, generation rejection, contextual event envelopes, single primary window, second-instance activation, renderer snapshot restoration, and isolated single-owner legacy review runner are implemented. The legacy Electron facade still uses in-memory IDs; Phase 3 added stable SQLite identities inside Rust, which Electron will consume through the Phase 4 N-API boundary.
 
 Work:
 
@@ -744,7 +744,7 @@ Exit criteria:
 
 Purpose: create the transport-neutral application core and durable workspace model.
 
-Implementation status: In progress. The Cargo workspace, `diffuse-core`, and `diffuse-cli` are implemented. The first complete domain slice covers product version, repository opening and canonicalization, diff-target defaults, and local/remote branch listing. `AppCore` owns an explicit multi-workspace registry with stable SQLite workspace IDs, per-open generations, stale-generation rejection, bounded event replay, snapshots, and asynchronous Git execution. Schema migration v1 creates local workspace, UI restoration, agent session, input request, and attention tables. A focused differential suite runs the selected RPC slice against both Zig and Rust on the same deterministic repositories. Zig remains the packaged desktop backend while the remaining slices below are ported; selecting the Rust executable is whole-backend and unported methods return method-not-found rather than falling back to Zig.
+Implementation status: Complete. The Cargo workspace, transport-neutral `diffuse-core`, and temporary JSON-RPC `diffuse-cli` implement the complete 44-method and 10-event desktop contract. `AppCore` owns multiple workspace runtimes with stable SQLite workspace IDs, per-open generations, stale-generation rejection, operation draining, bounded gap-free live events, repository and diff operations, v1-compatible review persistence, cancellable search, cross-platform event-driven watchers, supervised LSP sessions, and syntax management. Optional native Tree-sitter grammars execute only in an isolated runner child. SQLite migration, integrity, corruption-recovery, cross-process locking, and future-schema tests are in place. The full differential suite compares methods, events, persisted artifacts, watcher behavior, mock-LSP behavior, and CLI failures against Zig. Development prefers the Rust executable as a whole backend; packaged releases remain Zig until the Phase 4 N-API cutover.
 
 Work:
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/diffuse-cli", "crates/diffuse-core"]
+members = ["crates/diffuse-cli", "crates/diffuse-core", "crates/diffuse-syntax-fixture"]
 resolver = "2"
 
 [workspace.package]
@@ -11,10 +11,14 @@ license = "MIT"
 [workspace.dependencies]
 dunce = "1.0"
 fs2 = "0.4"
+libloading = "=0.8.9"
+notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.20"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync"] }
+tree-sitter = { version = "=0.26.13", default-features = false, features = ["std"] }
+tree-sitter-json = "0.24"
 uuid = { version = "1.18", features = ["serde", "v4"] }

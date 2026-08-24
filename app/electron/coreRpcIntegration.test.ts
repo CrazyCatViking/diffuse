@@ -17,9 +17,11 @@ import { createRepositoryFixture, type RepositoryFixture } from '../src/test/rep
 import { CoreRpcClient, CoreRpcError } from './coreRpcClient';
 import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 
-const executable = resolve('../core/zig-out/bin', platform() === 'win32' ? 'diffuse.exe' : 'diffuse');
+const executable = process.env.DIFFUSE_CORE_EXECUTABLE
+  ? resolve(process.env.DIFFUSE_CORE_EXECUTABLE)
+  : resolve('../core/zig-out/bin', platform() === 'win32' ? 'diffuse.exe' : 'diffuse');
 
-describe('Zig core RPC baseline', () => {
+describe('core RPC baseline', () => {
   let fixture: RepositoryFixture;
   let child: ChildProcessWithoutNullStreams;
   let client: CoreRpcClient;
