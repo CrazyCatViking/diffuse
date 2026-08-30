@@ -269,6 +269,11 @@ impl SyntaxManagerOptions {
 }
 
 fn default_grammar_root() -> PathBuf {
+    if let Some(root) =
+        home_grammar_root(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")))
+    {
+        return root;
+    }
     if cfg!(windows)
         && let Some(path) = std::env::var_os("LOCALAPPDATA")
     {
@@ -286,11 +291,13 @@ fn default_grammar_root() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
         return PathBuf::from(path).join("diffuse").join("grammars");
     }
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
+    PathBuf::from(".diffuse/grammars")
+}
+
+fn home_grammar_root(home: Option<OsString>) -> Option<PathBuf> {
+    home.filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .map(|home| home.join(".diffuse/grammars"))
-        .unwrap_or_else(|| PathBuf::from(".diffuse/grammars"))
+        .map(|home| home.join(".diffuse").join("grammars"))
 }
 
 impl Default for SyntaxManagerOptions {
@@ -1571,6 +1578,17 @@ mod tests {
             SyntaxManagerOptions::from_environment_with_parser_backend(ParserBackend::Unavailable);
 
         assert_eq!(options.parser_backend, ParserBackend::Unavailable);
+    }
+
+    #[test]
+    fn home_grammar_root_preserves_the_existing_diffuse_storage_layout() {
+        let home = PathBuf::from("home").join("user");
+
+        assert_eq!(
+            home_grammar_root(Some(home.clone().into_os_string())),
+            Some(home.join(".diffuse").join("grammars"))
+        );
+        assert_eq!(home_grammar_root(Some(OsString::new())), None);
     }
 
     #[test]

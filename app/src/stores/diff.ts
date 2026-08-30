@@ -58,7 +58,8 @@ export const useDiffStore = defineStore('diff', () => {
   };
 
   const installMissingGrammar = async () => {
-    const language = current.value?.syntax.language;
+    const syntax = current.value?.syntax;
+    const language = syntax?.language;
     if (!language || installingGrammar.value) return;
 
     installingGrammar.value = true;
@@ -66,8 +67,14 @@ export const useDiffStore = defineStore('diff', () => {
     error.value = undefined;
 
     try {
-      const result = await client.installTreeSitterGrammar(language);
-      if (!result.installed) throw new Error(result.message ?? `Failed to install ${language} grammar`);
+      if (syntax.grammarInstalled) {
+        grammarInstallStep.value = 'Syncing highlight queries';
+        const result = await client.syncTreeSitterRegistry();
+        if (!result.synced) throw new Error(result.message ?? `Failed to sync ${language} highlight queries`);
+      } else {
+        const result = await client.installTreeSitterGrammar(language);
+        if (!result.installed) throw new Error(result.message ?? `Failed to install ${language} grammar`);
+      }
       if (currentFileId.value) await loadDiff(currentFileId.value);
     } catch (err) {
       error.value = err instanceof Error ? err.message : JSON.stringify(err);

@@ -392,7 +392,7 @@ DIFFUSE_TREE_SITTER_REGISTRY_DIR=/path/to/registry
 DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL=https://example.com/tree-sitter-registry.git
 ```
 
-`DIFFUSE_GRAMMARS_DIR` controls where installed parsers and queries live. `DIFFUSE_TREE_SITTER_REGISTRY_DIR` controls where the external registry checkout is stored. `DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL` overrides the registry source used by sync.
+`DIFFUSE_GRAMMARS_DIR` controls where installed parsers live. `DIFFUSE_TREE_SITTER_REGISTRY_DIR` controls where the external registry and highlight queries are stored. `DIFFUSE_TREE_SITTER_REGISTRY_GIT_URL` overrides the registry source used by sync. If a parser is installed but its highlight query is missing, the diff offers a Sync highlights action instead of reinstalling the parser.
 
 ## Uninstall
 

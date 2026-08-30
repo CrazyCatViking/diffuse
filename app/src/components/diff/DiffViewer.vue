@@ -23,7 +23,7 @@
           {{ syntaxMessage }}
 
           <button class="install-grammar" type="button" :disabled="installingGrammar" @click="diff.installMissingGrammar()">
-            {{ installingGrammar ? 'Installing...' : 'Install' }}
+            {{ syntaxActionLabel }}
           </button>
 
           <span v-if="grammarInstallStep" class="install-step">{{ grammarInstallStep }}</span>
@@ -330,6 +330,10 @@ const syntaxMessage = computed(() => {
   }
 
   return `No ${syntax.language} grammar installed`;
+});
+const syntaxActionLabel = computed(() => {
+  if (installingGrammar.value) return model.value?.syntax.grammarInstalled ? 'Syncing...' : 'Installing...';
+  return model.value?.syntax.grammarInstalled ? 'Sync highlights' : 'Install';
 });
 
 const diffTargetFingerprint = () =>
