@@ -13,13 +13,14 @@
         :tabindex="overviewSelected ? 0 : -1"
         :aria-selected="overviewSelected"
         aria-controls="workbench-content"
-        aria-label="Workbench overview"
-        title="Workbench overview"
+        :aria-label="overviewLabel"
+        :title="overviewLabel"
         @click="$emit('overview')"
         @keydown="handleTabKeydown($event, 0)"
       >
         <span aria-hidden="true">⌂</span>
         <span class="utility-label">Overview</span>
+        <span v-if="pendingInputCount > 0" class="overview-count" aria-hidden="true">{{ pendingInputCount }}</span>
       </button>
 
       <WorkspaceRailItem
@@ -43,11 +44,22 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick } from 'vue';
+import { computed, nextTick } from 'vue';
 import type { WorkspaceSummary } from '../../lib/workbenchContract';
 import WorkspaceRailItem from './WorkspaceRailItem.vue';
 
-const props = defineProps<{ workspaces: WorkspaceSummary[]; activeWorkspaceId: string | null; overviewSelected: boolean }>();
+const props = withDefaults(
+  defineProps<{
+    workspaces: WorkspaceSummary[];
+    activeWorkspaceId: string | null;
+    overviewSelected: boolean;
+    pendingInputCount?: number;
+  }>(),
+  { pendingInputCount: 0 },
+);
+const overviewLabel = computed(() =>
+  props.pendingInputCount ? `Workbench overview, ${props.pendingInputCount} input required` : 'Workbench overview',
+);
 
 const emit = defineEmits<{
   overview: [];
@@ -148,6 +160,16 @@ const handleTabKeydown = (event: KeyboardEvent, index: number) => {
 .utility-label {
   font-size: var(--font-size-caption);
   font-weight: 700;
+}
+
+.overview-count {
+  min-width: 18px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-primary);
+  background: var(--color-warning-muted);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-caption);
+  font-weight: 800;
 }
 
 @media (max-width: 900px) {

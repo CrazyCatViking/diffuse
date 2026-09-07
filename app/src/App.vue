@@ -29,6 +29,7 @@
         :workspaces="workbench.workspaces"
         :active-workspace-id="workbench.activeWorkspaceId"
         :overview-selected="route.name === workspaceRouteNames.workbench && workbench.activeWorkspaceId === null"
+        :pending-input-count="workbench.aggregateAttention.inputRequired"
         @overview="openWorkbenchOverview"
         @open="openNewWorkspace"
         @switch="openWorkspaceSwitcher"
@@ -91,6 +92,10 @@
     />
 
     <SearchPalette v-if="repo.repository" @open="openSearchResult" @preview="previewSearchResult" />
+
+    <p :key="workbench.announcementRevision" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+      {{ workbench.announcement }}
+    </p>
   </div>
 </template>
 
@@ -108,6 +113,9 @@ import EmptyState from './components/ui/EmptyState.vue';
 import WorkspaceRail from './components/workbench/WorkspaceRail.vue';
 import WorkspaceSwitcher from './components/workbench/WorkspaceSwitcher.vue';
 import { workbenchCommandForEvent } from './lib/workbenchKeybindings';
+import { closeWorkspaceWithPolicy } from './lib/workspaceClose';
+import { restoreReviewSessionRoute } from './lib/reviewSessionRestoration';
+import { dispatchWorkspaceNavigation, openWorkspaceSettingsEvent } from './lib/workspaceNavigation';
 import type { SearchResult } from './lib/search/searchTypes';
 import {
   captureWorkspaceRoute,
@@ -126,6 +134,7 @@ import { useReviewStore } from './stores/review';
 import { useSearchStore } from './stores/search';
 import { useWorkbenchStore, type WorkspaceUiState } from './stores/workbench';
 import { useSettingsStore } from './stores/settings';
+import { isSettingsSectionId } from './components/settings/settingsSections';
 
 const repo = useRepoStore();
 const diff = useDiffStore();
@@ -147,10 +156,11 @@ let resizeStartWidth = 0;
 let loadedWorkspaceId: string | undefined;
 let switchGeneration = 0;
 let switcherReturnFocus: HTMLElement | null = null;
+let unsubscribeAttentionNavigation: (() => void) | undefined;
 const globalKeydownOptions = { capture: true };
 
 const isWorkspaceRoute = computed(() =>
-  [workspaceRouteNames.overview, workspaceRouteNames.diff, workspaceRouteNames.folderDiff].includes(
+  [workspaceRouteNames.overview, workspaceRouteNames.diff, workspaceRouteNames.folderDiff, workspaceRouteNames.input].includes(
     route.name as typeof workspaceRouteNames.overview,
   ),
 );
@@ -237,11 +247,25 @@ const activateSnapshot = async (snapshot: WorkspaceSnapshot) => {
   review.restoreDraftState(state.draft);
   cursor.restoreRestorationState(snapshot.summary.workspaceId, state.cursor as CursorRestorationState | undefined);
   await repo.loadWorkspace(snapshot, state.diffTarget);
-  if (generation !== switchGeneration || workbench.activeWorkspaceId !== snapshot.summary.workspaceId) return;
-  await review.ensureSession();
-  if (generation !== switchGeneration || workbench.activeWorkspaceId !== snapshot.summary.workspaceId) return;
-  await router.replace(restoreWorkspaceRoute(snapshot.summary.workspaceId, state.route));
+  const isCurrent = () => generation === switchGeneration && workbench.activeWorkspaceId === snapshot.summary.workspaceId;
+  if (!isCurrent()) return;
+  const restoration = await restoreReviewSessionRoute(state.route, {
+    selectSession: review.selectSession,
+    ensureSession: async () => {
+      await review.ensureSession();
+      if (!review.session) throw new Error(review.error ?? 'Unable to restore a review session');
+    },
+    isCurrent,
+    navigate: async (restoredRoute) => {
+      if (restoredRoute !== state.route) {
+        workbench.saveUiState(snapshot.summary.workspaceId, { ...state, route: restoredRoute });
+      }
+      await router.replace(restoreWorkspaceRoute(snapshot.summary.workspaceId, restoredRoute));
+    },
+  });
+  if (!restoration.current) return;
   await nextTick();
+  if (!isCurrent()) return;
   restoreLogicalFocus(state);
 };
 
@@ -278,15 +302,33 @@ const openNewWorkspace = async () => {
 const closeWorkspace = async (workspaceId: string) => {
   const closingIndex = workbench.workspaces.findIndex((workspace) => workspace.workspaceId === workspaceId);
   const closingActive = workbench.activeWorkspaceId === workspaceId;
-  if (closingActive && (review.draftBody.trim() || review.activeRun)) {
-    const confirmed = window.confirm('This workspace has an unsaved draft or active agent work. Stop work and close it?');
-    if (!confirmed) return;
+  const savedDraft = workbench.uiState(workspaceId).draft?.body.trim();
+  const hasReviewRisk = Boolean(savedDraft || (closingActive && (review.draftBody.trim() || review.activeRun)));
+  const hasInputRisk = workbench.hasPendingInput(workspaceId) || workbench.hasInputDraft(workspaceId);
+  const force = hasReviewRisk || hasInputRisk;
+  let captured = false;
+  try {
+    const closed = await closeWorkspaceWithPolicy(
+      force,
+      async (forceClose) => {
+        if (closingActive && !captured) {
+          captureActiveWorkspace();
+          captured = true;
+        }
+        await workbench.closeWorkspace(workspaceId, forceClose);
+      },
+      () => window.confirm('This workspace has pending input, an unsaved draft, or active agent work. Stop work and close it?'),
+      () => window.confirm('Work requiring confirmation appeared while this workspace was closing. Stop it and force close?'),
+    );
+    if (!closed) return;
+  } catch (error) {
+    repo.error = error instanceof Error ? error.message : String(error);
+    return;
   }
-  if (closingActive) {
-    prepareSwitch();
+  if (closingActive && !workbench.activeWorkspaceId) {
+    clearActiveWorkspace(true);
     loadedWorkspaceId = undefined;
   }
-  await workbench.closeWorkspace(workspaceId);
   if (!workbench.activeWorkspaceId) await router.replace(workbenchRoute());
   await nextTick();
   const railItems = [...document.querySelectorAll<HTMLElement>('[role="tab"]')];
@@ -382,16 +424,42 @@ const isTextEntryTarget = (target: EventTarget | null) => {
 
 const captureBeforeRendererLoss = () => captureActiveWorkspace();
 
+const openWorkspaceSettings = (event: Event) => {
+  const section = (event as CustomEvent<{ section?: string }>).detail?.section;
+  if (section && isSettingsSectionId(section)) window.localStorage.setItem('diffuse.settings.activeSection', section);
+  showSettings.value = true;
+};
+
+const openSettingsTarget = (section?: string) => {
+  if (section && isSettingsSectionId(section)) window.localStorage.setItem('diffuse.settings.activeSection', section);
+  showSettings.value = true;
+};
+
 onMounted(async () => {
   cursor.setNavigator(async (targetRoute) => {
     await router.push(targetRoute);
   });
   window.addEventListener('keydown', handleGlobalKeydown, globalKeydownOptions);
   window.addEventListener('pagehide', captureBeforeRendererLoss);
+  window.addEventListener(openWorkspaceSettingsEvent, openWorkspaceSettings);
+  unsubscribeAttentionNavigation = window.diffuse.onAttentionNavigation(({ workspaceId, target, attentionId, revision }) => {
+    void dispatchWorkspaceNavigation(workspaceId, target, {
+      activateWorkspace,
+      router,
+      openSettings: openSettingsTarget,
+      selectReviewSession: review.selectSession,
+    })
+      .then(() => workbench.acknowledgeAttention(attentionId, revision))
+      .catch((error) => {
+        repo.error = error instanceof Error ? error.message : String(error);
+      });
+  });
   try {
     await repo.loadVersion();
     await workbench.initialize(activateSnapshot);
+    if (workbench.restoreStatus !== 'ready') return;
     if (!workbench.activeWorkspaceId) await router.replace(workbenchRoute());
+    await window.diffuse.readyForWorkbenchNavigation();
   } catch (error) {
     repo.error = error instanceof Error ? error.message : String(error);
   }
@@ -400,8 +468,11 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   captureActiveWorkspace();
   cursor.setNavigator(undefined);
+  unsubscribeAttentionNavigation?.();
+  unsubscribeAttentionNavigation = undefined;
   window.removeEventListener('keydown', handleGlobalKeydown, globalKeydownOptions);
   window.removeEventListener('pagehide', captureBeforeRendererLoss);
+  window.removeEventListener(openWorkspaceSettingsEvent, openWorkspaceSettings);
   window.removeEventListener('pointermove', resizeFileTree);
   window.removeEventListener('pointerup', stopFileTreeResize);
 });
@@ -435,6 +506,18 @@ watch(
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
 }
 
 .workbench-shell {

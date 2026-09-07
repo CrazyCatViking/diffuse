@@ -14,7 +14,7 @@ use crate::search::SearchCoordinator;
 use crate::watcher::{
     RepositoryWatchEvent, RepositoryWatcher, RepositoryWatcherConfig, RepositoryWatcherStatus,
 };
-use crate::{CoreError, CoreResult, EventHub, OpenRepositoryResult};
+use crate::{CoreError, CoreResult, EventHub, OpenRepositoryResult, WorkspaceAttentionSummary};
 
 macro_rules! uuid_id {
     ($name:ident) => {
@@ -57,6 +57,25 @@ pub struct WorkspaceRequestContext {
     pub request_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloseWorkspaceRequest {
+    pub workspace_id: WorkspaceId,
+    pub workspace_generation: WorkspaceGeneration,
+    #[serde(default)]
+    pub force: bool,
+}
+
+impl CloseWorkspaceRequest {
+    pub fn context(&self) -> WorkspaceRequestContext {
+        WorkspaceRequestContext {
+            workspace_id: self.workspace_id,
+            workspace_generation: self.workspace_generation,
+            request_id: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceState {
@@ -91,6 +110,8 @@ pub struct WorkspaceSummary {
     pub state: WorkspaceState,
     #[serde(default)]
     pub service_health: WorkspaceServiceHealth,
+    #[serde(default)]
+    pub attention: WorkspaceAttentionSummary,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +403,15 @@ impl WorkspaceRuntime {
         self.lifecycle.acquire()
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_operation_count(&self) -> usize {
+        self.lifecycle
+            .state
+            .lock()
+            .expect("workspace lifecycle lock poisoned")
+            .active_operations
+    }
+
     pub(crate) fn begin_close(&self) -> CoreResult<()> {
         self.lifecycle.begin_close()
     }
@@ -418,6 +448,7 @@ impl WorkspaceRuntime {
                 lifecycle_state
             },
             service_health,
+            attention: WorkspaceAttentionSummary::default(),
         }
     }
 
@@ -602,6 +633,7 @@ mod tests {
             service_health: WorkspaceServiceHealth {
                 repository_watcher: WorkspaceServiceStatus::Failed,
             },
+            attention: WorkspaceAttentionSummary::default(),
         })
         .expect("serialize summary");
 

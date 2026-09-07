@@ -63,6 +63,7 @@ type ReviewChatMessage = {
 };
 
 type ReviewRunStatus = 'starting' | 'planning' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
+type ReviewRunTerminalStatus = 'completed' | 'failed' | 'cancelled';
 
 type ReviewRun = {
   id: string;
@@ -93,6 +94,15 @@ export type ReviewAgentStatus = {
   message?: string;
 };
 
+export type ReviewRunTerminalEvent = {
+  runId: string;
+  sessionId: string;
+  status: 'completed' | 'failed';
+  message: string;
+};
+
+export type ReviewRunTerminalCallback = (event: ReviewRunTerminalEvent) => void | Promise<void>;
+
 type ActiveRun = {
   id: string;
   sessionId: string;
@@ -102,6 +112,10 @@ type ActiveRun = {
   opencodeSessionId?: string;
   bridge?: ReviewToolBridge;
   pollTimer?: NodeJS.Timeout;
+  startupOperation?: Promise<void>;
+  pollOperation?: Promise<void>;
+  cancellationOperation?: Promise<void>;
+  terminalOutcome?: ReviewRunTerminalStatus;
   stopping: boolean;
   seenBusy: boolean;
   idlePolls: number;
@@ -109,49 +123,115 @@ type ActiveRun = {
   finishing?: Promise<void>;
 };
 
+type StartAttempt = {
+  stopping: boolean;
+  operation?: Promise<ReviewAgentStatus>;
+};
+
+type ActiveChat = {
+  id: string;
+  request: ReviewChatRequest;
+  stopping: boolean;
+  opencode?: Awaited<ReturnType<typeof createOpencode>>;
+  opencodeSessionId?: string;
+  operation?: Promise<ReviewChatMessage>;
+  abortOperation?: Promise<void>;
+  cancellationOperation?: Promise<void>;
+  cancellationFailure?: unknown;
+  cancellationAttempts: number;
+  cancellationComplete: boolean;
+  serverClosed: boolean;
+};
+
+class ReviewChatStoppedError extends Error {
+  constructor() {
+    super('Review chat stopped because the workspace was closed');
+    this.name = 'ReviewChatStoppedError';
+  }
+}
+
+class ReviewRunStoppedError extends Error {
+  constructor() {
+    super('Review run stopped because the workspace was closed');
+    this.name = 'ReviewRunStoppedError';
+  }
+}
+
 export class ReviewAgentRunner {
   private activeRuns = new Map<string, ActiveRun>();
+  private activeChats = new Map<string, ActiveChat>();
+  private startAttempt?: StartAttempt;
+  private disposed = false;
 
-  constructor(private readonly coreRequest: CoreRequest) {}
+  constructor(
+    private readonly coreRequest: CoreRequest,
+    private readonly onTerminal?: ReviewRunTerminalCallback,
+  ) {}
 
   status(): ReviewAgentStatus {
-    if (this.activeRuns.size === 0) return { running: false };
+    if (!this.startAttempt && this.activeRuns.size === 0 && this.activeChats.size === 0) return { running: false };
+    const runIds = [...this.activeRuns.keys()];
     return {
       running: true,
-      runIds: [...this.activeRuns.keys()],
+      ...(runIds.length > 0 ? { runIds } : {}),
       provider: 'opencode',
-      status: [...this.activeRuns.values()].some((run) => run.stopping) ? 'stopping' : 'running',
+      status:
+        this.startAttempt?.stopping ||
+        [...this.activeRuns.values()].some((run) => run.stopping) ||
+        [...this.activeChats.values()].some((chat) => chat.stopping)
+          ? 'stopping'
+          : 'running',
     };
   }
 
-  async start(request: ReviewAgentStartRequest): Promise<ReviewAgentStatus> {
-    if (this.activeRuns.size > 0) return this.status();
-    if (!request.repositoryRoot || !request.sessionId) throw new Error('Missing review agent session context');
+  start(request: ReviewAgentStartRequest): Promise<ReviewAgentStatus> {
+    if (this.disposed) return Promise.reject(new Error('Review agent runner has been disposed'));
+    if (this.status().running) return Promise.resolve(this.status());
+    if (!request.repositoryRoot || !request.sessionId) return Promise.reject(new Error('Missing review agent session context'));
 
-    const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
+    const attempt: StartAttempt = { stopping: false };
+    this.startAttempt = attempt;
+    const operation = this.startReview(attempt, request).finally(() => {
+      if (this.startAttempt === attempt) this.startAttempt = undefined;
+    });
+    attempt.operation = operation;
+    void operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async startReview(attempt: StartAttempt, request: ReviewAgentStartRequest): Promise<ReviewAgentStatus> {
+    let config: ReviewConfig;
+    try {
+      config = await this.coreRequest<ReviewConfig>('getReviewConfig');
+    } catch (error) {
+      if (attempt.stopping) throw new ReviewRunStoppedError();
+      throw error;
+    }
+    this.requireStartRunning(attempt);
+
     const groups = partitionFiles(request.files, Math.max(1, Math.min(config.maxParallelAgents || 1, request.files.length || 1)));
-    const results = await Promise.allSettled(groups.map((files, index) => this.startRun(request, config, files, index + 1, groups.length)));
+    const operations = groups.map((files, index) => {
+      const run = this.createRun(request, files);
+      const operation = this.startRun(run, request, config, files, index + 1, groups.length);
+      run.startupOperation = operation;
+      void operation.catch(() => undefined);
+      return operation;
+    });
+    const results = await Promise.allSettled(operations);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (attempt.stopping && !failed) throw new ReviewRunStoppedError();
     if (failed) {
-      try {
-        await this.stop();
-      } catch {
-        // Preserve the shard startup error after making a best effort to persist cancellation.
-      } finally {
-        this.dispose();
-      }
+      attempt.stopping = true;
+      const runs = [...this.activeRuns.values()];
+      for (const run of runs) this.prepareRunStop(run);
+      // Preserve the shard startup error after making a best effort to persist cancellation.
+      await Promise.allSettled(runs.map((run) => this.cancelRun(run)));
       throw failed.reason;
     }
     return this.status();
   }
 
-  private async startRun(
-    request: ReviewAgentStartRequest,
-    config: ReviewConfig,
-    files: ChangedFile[],
-    index: number,
-    total: number,
-  ): Promise<void> {
+  private createRun(request: ReviewAgentStartRequest, files: ChangedFile[]): ActiveRun {
     const run: ActiveRun = {
       id: createId('agent-run'),
       sessionId: request.sessionId,
@@ -163,29 +243,45 @@ export class ReviewAgentRunner {
       startedAt: new Date().toISOString(),
     };
     this.activeRuns.set(run.id, run);
+    return run;
+  }
 
-    await this.saveRun(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
-    await this.saveAgentState(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
-    await this.saveProgress(
-      run,
-      'planning',
-      `Preparing review shard ${index}/${total} for ${files.length} changed file${files.length === 1 ? '' : 's'}`,
-      files,
-      [],
-    );
-
-    const prompt = reviewPrompt(run, files, config, index, total);
-    await writePrompt(request.repositoryRoot, request.sessionId, run.id, prompt);
-    await writeOpencodeTools(request.repositoryRoot);
-
+  private async startRun(
+    run: ActiveRun,
+    request: ReviewAgentStartRequest,
+    config: ReviewConfig,
+    files: ChangedFile[],
+    index: number,
+    total: number,
+  ): Promise<void> {
     try {
+      await this.saveRun(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
+      this.requireRunRunning(run);
+      await this.saveAgentState(run, 'starting', `Preparing opencode review prompt ${index}/${total}`);
+      this.requireRunRunning(run);
+      await this.saveProgress(
+        run,
+        'planning',
+        `Preparing review shard ${index}/${total} for ${files.length} changed file${files.length === 1 ? '' : 's'}`,
+        files,
+        [],
+      );
+      this.requireRunRunning(run);
+
+      const prompt = reviewPrompt(run, files, config, index, total);
+      await writePrompt(request.repositoryRoot, request.sessionId, run.id, prompt);
+      this.requireRunRunning(run);
+      await writeOpencodeTools(request.repositoryRoot);
+      this.requireRunRunning(run);
       run.bridge = await ReviewToolBridge.start(this.coreRequest, run, files);
+      this.requireRunRunning(run);
       process.env.DIFFUSE_REVIEW_BRIDGE_URL = run.bridge.url;
       process.env.DIFFUSE_REVIEW_BRIDGE_TOKEN = run.bridge.token;
       const opencode = await createOpencode({
         config: opencodeConfig(config),
       });
       run.opencode = opencode;
+      this.requireRunRunning(run);
 
       const created = await opencode.client.session.create({
         query: { directory: request.repositoryRoot },
@@ -193,7 +289,9 @@ export class ReviewAgentRunner {
         throwOnError: true,
       });
       run.opencodeSessionId = created.data.id;
+      this.requireRunRunning(run);
       await this.saveRun(run, 'planning', 'Created opencode review session');
+      this.requireRunRunning(run);
 
       await opencode.client.session.promptAsync({
         path: { id: run.opencodeSessionId },
@@ -205,33 +303,76 @@ export class ReviewAgentRunner {
         },
         throwOnError: true,
       });
+      this.requireRunRunning(run);
       await this.saveRun(run, 'running', 'opencode review is running');
+      this.requireRunRunning(run);
       await this.saveAgentState(run, 'running', 'opencode review is running');
+      this.requireRunRunning(run);
       await this.saveProgress(run, 'running', 'opencode review is running', files, []);
+      this.requireRunRunning(run);
       this.pollStatus(run, files);
     } catch (error) {
-      this.activeRuns.delete(run.id);
-      this.closeRun(run);
-      await this.saveRun(run, 'failed', errorMessage(error));
-      await this.saveAgentState(run, 'failed', errorMessage(error));
-      await this.saveProgress(run, 'failed', errorMessage(error), files, []);
+      if (run.stopping || error instanceof ReviewRunStoppedError) {
+        if (this.disposed) {
+          this.activeRuns.delete(run.id);
+          this.closeRun(run);
+        }
+        return;
+      }
+      const message = errorMessage(error);
+      const finishing = this.finishRun(run, files, 'failed', message);
+      if (run.terminalOutcome !== 'failed') {
+        await finishing.catch(() => undefined);
+        return;
+      }
+      try {
+        await finishing;
+      } catch (persistenceError) {
+        console.error('Review terminal ancillary persistence failed:', persistenceError);
+      }
       throw error;
     }
   }
 
   async stop(): Promise<ReviewAgentStatus> {
-    if (this.activeRuns.size === 0) return { running: false };
+    const attempt = this.startAttempt;
+    if (!attempt && this.activeRuns.size === 0 && this.activeChats.size === 0) return { running: false };
 
-    const results = await Promise.allSettled([...this.activeRuns.values()].map((run) => this.cancelRun(run)));
+    if (attempt) attempt.stopping = true;
+    for (const run of this.activeRuns.values()) this.prepareRunStop(run);
+    for (const chat of this.activeChats.values()) chat.stopping = true;
+
+    if (attempt?.operation) await attempt.operation.catch(() => undefined);
+
+    const results = await Promise.allSettled([
+      ...[...this.activeRuns.values()].map((run) => this.cancelRun(run)),
+      ...[...this.activeChats.values()].map((chat) => this.cancelChat(chat)),
+    ]);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failed) throw failed.reason;
     return this.status();
   }
 
   private async cancelRun(run: ActiveRun): Promise<void> {
-    run.stopping = true;
-    if (run.pollTimer) clearTimeout(run.pollTimer);
-    run.pollTimer = undefined;
+    this.prepareRunStop(run);
+    if (!run.cancellationOperation) {
+      run.cancellationOperation = this.persistRunCancellation(run).finally(() => {
+        run.cancellationOperation = undefined;
+      });
+    }
+    return await run.cancellationOperation;
+  }
+
+  private async persistRunCancellation(run: ActiveRun): Promise<void> {
+    await run.startupOperation?.catch(() => undefined);
+    await run.pollOperation?.catch(() => undefined);
+
+    if (run.terminalOutcome !== 'cancelled') {
+      await run.finishing?.catch(() => undefined);
+      return;
+    }
+
+    await run.bridge?.drain();
 
     let failure: unknown;
     try {
@@ -250,34 +391,56 @@ export class ReviewAgentRunner {
     try {
       await this.finishRun(run, run.files, 'cancelled', 'Review stopped');
     } catch (error) {
+      run.finishing = undefined;
       failure ??= error;
     }
+    this.closeRun(run);
     if (failure) throw failure;
   }
 
-  async chat(request: ReviewChatRequest): Promise<ReviewChatMessage> {
+  chat(request: ReviewChatRequest): Promise<ReviewChatMessage> {
+    if (this.disposed) return Promise.reject(new Error('Review agent runner has been disposed'));
     if (!request.repositoryRoot || !request.sessionId) throw new Error('Missing review chat session context');
     const question = request.question.trim();
     if (!question) throw new Error('Missing review chat question');
+    const chat: ActiveChat = {
+      id: createId('chat-run'),
+      request,
+      stopping: false,
+      cancellationAttempts: 0,
+      cancellationComplete: false,
+      serverClosed: false,
+    };
+    this.activeChats.set(chat.id, chat);
+    const operation = this.runChat(chat);
+    chat.operation = operation;
+    void operation.catch(() => undefined);
+    return operation;
+  }
 
-    const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
-    const opencode = await createOpencode({ config: opencodeConfig(config) });
-    const chatRunId = createId('chat-run');
-
+  private async runChat(chat: ActiveChat): Promise<ReviewChatMessage> {
+    const { request } = chat;
     try {
-      const created = await opencode.client.session.create({
+      const config = await this.coreRequest<ReviewConfig>('getReviewConfig');
+      this.requireChatRunning(chat);
+      chat.opencode = await createOpencode({ config: opencodeConfig(config) });
+      this.requireChatRunning(chat);
+      const created = await chat.opencode.client.session.create({
         query: { directory: request.repositoryRoot },
         body: { title: `Diffuse thread chat ${request.thread.id}` },
         throwOnError: true,
       });
+      chat.opencodeSessionId = created.data.id;
+      this.requireChatRunning(chat);
 
       const diff = await this.coreRequest<unknown>('getDiffRenderModel', {
         fileId: request.thread.fileId,
         options: { mode: 'inline', context: 'full' },
         target: { includeStaged: true, includeUnstaged: true },
       });
+      this.requireChatRunning(chat);
 
-      const response = await opencode.client.session.prompt({
+      const response = await chat.opencode.client.session.prompt({
         path: { id: created.data.id },
         query: { directory: request.repositoryRoot },
         body: {
@@ -289,6 +452,7 @@ export class ReviewAgentRunner {
         },
         throwOnError: true,
       });
+      this.requireChatRunning(chat);
 
       const body = textFromOpencodeParts(response.data.parts) || 'I could not produce a response for this thread.';
       const message: ReviewChatMessage = {
@@ -298,48 +462,162 @@ export class ReviewAgentRunner {
         body,
         createdAt: new Date().toISOString(),
         provider: 'opencode',
-        runId: chatRunId,
+        runId: chat.id,
         context: {
           fileId: request.thread.fileId,
           selection: request.thread.anchor,
           threadIds: [request.thread.id],
         },
       };
-      return await this.coreRequest<ReviewChatMessage>('saveReviewChatMessage', { sessionId: request.sessionId, message });
+      const saved = await this.coreRequest<ReviewChatMessage>('saveReviewChatMessage', { sessionId: request.sessionId, message });
+      this.requireChatRunning(chat);
+      return saved;
+    } catch (error) {
+      if (!chat.stopping) throw error;
+      let failure: unknown;
+      try {
+        await this.abortChat(chat);
+      } catch (abortError) {
+        failure = abortError;
+      }
+      try {
+        await this.persistChatCancellation(chat);
+      } catch (persistenceError) {
+        failure ??= persistenceError;
+      }
+      throw failure ?? new ReviewChatStoppedError();
     } finally {
-      opencode.server.close();
+      this.closeChat(chat);
+      if (!chat.stopping || chat.cancellationComplete) this.activeChats.delete(chat.id);
     }
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.startAttempt) this.startAttempt.stopping = true;
     for (const run of this.activeRuns.values()) this.closeRun(run);
+    for (const chat of this.activeChats.values()) this.closeChat(chat);
     this.activeRuns.clear();
+    this.activeChats.clear();
+  }
+
+  private async cancelChat(chat: ActiveChat): Promise<void> {
+    const cancellationAttempts = chat.cancellationAttempts;
+    chat.stopping = true;
+    let failure: unknown;
+    try {
+      await this.abortChat(chat);
+    } catch (error) {
+      failure = error;
+    }
+    await chat.operation?.catch(() => undefined);
+    if (!chat.cancellationComplete) {
+      if (chat.cancellationAttempts > cancellationAttempts) failure ??= chat.cancellationFailure;
+      else {
+        try {
+          await this.persistChatCancellation(chat);
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+    }
+    if (chat.cancellationComplete) this.activeChats.delete(chat.id);
+    if (failure) throw failure;
+  }
+
+  private async abortChat(chat: ActiveChat): Promise<void> {
+    if (!chat.opencode || !chat.opencodeSessionId) return;
+    if (!chat.abortOperation) {
+      chat.abortOperation = chat.opencode.client.session
+        .abort({
+          path: { id: chat.opencodeSessionId },
+          query: { directory: chat.request.repositoryRoot },
+          throwOnError: true,
+        })
+        .then(() => undefined);
+    }
+    await chat.abortOperation;
+  }
+
+  private async persistChatCancellation(chat: ActiveChat): Promise<void> {
+    if (chat.cancellationComplete) return;
+    if (!chat.request.responseMessageId) {
+      chat.cancellationComplete = true;
+      return;
+    }
+    if (!chat.cancellationOperation) {
+      chat.cancellationAttempts += 1;
+      const placeholder = chat.request.chatMessages?.find((message) => message.id === chat.request.responseMessageId);
+      const message: ReviewChatMessage = {
+        id: chat.request.responseMessageId,
+        sessionId: chat.request.sessionId,
+        role: 'assistant',
+        body: 'Response cancelled because the workspace was closed.',
+        createdAt: placeholder?.createdAt ?? new Date().toISOString(),
+        provider: 'opencode',
+        runId: chat.id,
+        context: placeholder?.context ?? {
+          fileId: chat.request.thread.fileId,
+          selection: chat.request.thread.anchor,
+          threadIds: [chat.request.thread.id],
+        },
+      };
+      chat.cancellationOperation = this.coreRequest('saveReviewChatMessage', {
+        sessionId: chat.request.sessionId,
+        message,
+      }).then(() => undefined);
+    }
+    try {
+      await chat.cancellationOperation;
+      chat.cancellationComplete = true;
+      chat.cancellationFailure = undefined;
+    } catch (error) {
+      chat.cancellationFailure = error;
+      throw error;
+    } finally {
+      chat.cancellationOperation = undefined;
+    }
+  }
+
+  private requireChatRunning(chat: ActiveChat): void {
+    if (chat.stopping) throw new ReviewChatStoppedError();
+  }
+
+  private closeChat(chat: ActiveChat): void {
+    if (!chat.opencode || chat.serverClosed) return;
+    chat.serverClosed = true;
+    chat.opencode.server.close();
+    chat.opencode = undefined;
   }
 
   private pollStatus(run: ActiveRun, files: ChangedFile[]): void {
+    if (run.stopping || !this.activeRuns.has(run.id)) return;
     run.pollTimer = setTimeout(() => {
-      void this.checkStatus(run, files);
+      run.pollTimer = undefined;
+      const operation = this.checkStatus(run, files);
+      run.pollOperation = operation;
+      void operation.finally(() => {
+        if (run.pollOperation === operation) run.pollOperation = undefined;
+      });
     }, 1000);
   }
 
   private async checkStatus(run: ActiveRun, files: ChangedFile[]): Promise<void> {
-    if (!this.activeRuns.has(run.id) || !run.opencode || !run.opencodeSessionId) return;
+    if (run.stopping || !this.activeRuns.has(run.id) || !run.opencode || !run.opencodeSessionId) return;
 
     try {
       const statuses = await run.opencode.client.session.status({
         query: { directory: run.repositoryRoot },
         throwOnError: true,
       });
+      if (run.stopping || !this.activeRuns.has(run.id)) return;
       const status = statuses.data[run.opencodeSessionId];
       if (status?.type === 'busy') {
         run.seenBusy = true;
         await this.saveRun(run, 'running', 'opencode is reviewing changed files');
+        if (run.stopping || !this.activeRuns.has(run.id)) return;
         this.pollStatus(run, files);
-        return;
-      }
-
-      if (run.stopping) {
-        await this.finishRun(run, files, 'cancelled', 'Review stopped');
         return;
       }
 
@@ -356,11 +634,23 @@ export class ReviewAgentRunner {
 
       this.pollStatus(run, files);
     } catch (error) {
-      await this.finishRun(run, files, 'failed', errorMessage(error));
+      if (run.stopping) return;
+      if (!this.activeRuns.has(run.id)) {
+        console.error('Review terminal ancillary persistence failed:', error);
+        return;
+      }
+      try {
+        await this.finishRun(run, files, 'failed', errorMessage(error));
+      } catch (persistenceError) {
+        console.error('Review terminal ancillary persistence failed:', persistenceError);
+      }
     }
   }
 
   private finishRun(run: ActiveRun, files: ChangedFile[], status: 'completed' | 'failed' | 'cancelled', message: string): Promise<void> {
+    if (run.terminalOutcome && run.terminalOutcome !== status) return run.finishing ?? Promise.resolve();
+    run.terminalOutcome = status;
+    run.bridge?.stopAccepting();
     if (!run.finishing) run.finishing = this.persistFinishedRun(run, files, status, message);
     return run.finishing;
   }
@@ -371,11 +661,55 @@ export class ReviewAgentRunner {
     status: 'completed' | 'failed' | 'cancelled',
     message: string,
   ): Promise<void> {
-    this.activeRuns.delete(run.id);
-    this.closeRun(run);
-    await this.saveRun(run, status, message);
-    await this.saveAgentState(run, status, message);
-    await this.saveProgress(run, status, message, [], files.map(filePath));
+    let completed = false;
+    try {
+      await run.bridge?.drain();
+      await this.saveRun(run, status, message);
+      if (status === 'cancelled') {
+        await this.saveAgentState(run, status, message);
+        await this.saveProgress(run, status, message, [], files.map(filePath));
+        completed = true;
+        return;
+      }
+      const ancillaryFailure = await this.persistTerminalAncillary(run, files, status, message);
+      await this.reportTerminal(run, status, message);
+      if (ancillaryFailure) throw ancillaryFailure;
+      completed = true;
+    } finally {
+      if (completed || status !== 'cancelled') {
+        this.activeRuns.delete(run.id);
+        this.closeRun(run);
+      }
+    }
+  }
+
+  private async persistTerminalAncillary(
+    run: ActiveRun,
+    files: ChangedFile[],
+    status: 'completed' | 'failed',
+    message: string,
+  ): Promise<unknown> {
+    let failure: unknown;
+    try {
+      await this.saveAgentState(run, status, message);
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      await this.saveProgress(run, status, message, status === 'failed' ? files : [], status === 'completed' ? files.map(filePath) : []);
+    } catch (error) {
+      failure ??= error;
+    }
+    return failure;
+  }
+
+  private async reportTerminal(run: ActiveRun, status: 'completed' | 'failed', message: string): Promise<void> {
+    if (!this.onTerminal) return;
+    try {
+      await this.onTerminal({ runId: run.id, sessionId: run.sessionId, status, message });
+    } catch (error) {
+      console.error('Review terminal callback failed:', error);
+    }
   }
 
   private closeRun(run: ActiveRun): void {
@@ -385,6 +719,22 @@ export class ReviewAgentRunner {
     run.pollTimer = undefined;
     run.opencode = undefined;
     run.bridge = undefined;
+  }
+
+  private prepareRunStop(run: ActiveRun): void {
+    run.stopping = true;
+    run.terminalOutcome ??= 'cancelled';
+    run.bridge?.stopAccepting();
+    if (run.pollTimer) clearTimeout(run.pollTimer);
+    run.pollTimer = undefined;
+  }
+
+  private requireStartRunning(attempt: StartAttempt): void {
+    if (attempt.stopping || this.disposed) throw new ReviewRunStoppedError();
+  }
+
+  private requireRunRunning(run: ActiveRun): void {
+    if (run.stopping || this.disposed || !this.activeRuns.has(run.id)) throw new ReviewRunStoppedError();
   }
 
   private async saveAgentState(run: ActiveRun, status: string, message: string): Promise<void> {
@@ -455,16 +805,25 @@ const opencodeConfig = (config: ReviewConfig) => {
 };
 
 class ReviewToolBridge {
+  private accepting = true;
+  private serverClosed = false;
+  private drainOperation?: Promise<void>;
+  private readonly operations = new Set<Promise<void>>();
+
   private constructor(
     private readonly server: http.Server,
+    private readonly coreRequest: CoreRequest,
+    private readonly run: ActiveRun,
+    private readonly files: ChangedFile[],
     readonly url: string,
     readonly token: string,
   ) {}
 
   static async start(coreRequest: CoreRequest, run: ActiveRun, files: ChangedFile[]): Promise<ReviewToolBridge> {
     const token = createId('tool-token');
+    let bridge: ReviewToolBridge | undefined;
     const server = http.createServer((request, response) => {
-      void handleToolRequest(coreRequest, run, files, token, request, response);
+      bridge?.admit(request, response);
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -477,11 +836,41 @@ class ReviewToolBridge {
 
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Failed to start review tool bridge');
-    return new ReviewToolBridge(server, `http://127.0.0.1:${address.port}`, token);
+    bridge = new ReviewToolBridge(server, coreRequest, run, files, `http://127.0.0.1:${address.port}`, token);
+    return bridge;
   }
 
   close(): void {
+    this.stopAccepting();
+  }
+
+  stopAccepting(): void {
+    this.accepting = false;
+    if (this.serverClosed) return;
+    this.serverClosed = true;
     this.server.close();
+  }
+
+  drain(): Promise<void> {
+    this.stopAccepting();
+    if (!this.drainOperation) {
+      this.drainOperation = Promise.allSettled([...this.operations]).then(() => undefined);
+    }
+    return this.drainOperation;
+  }
+
+  private admit(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.accepting || this.run.stopping) {
+      writeJson(response, 409, { error: 'Review run is stopping' });
+      return;
+    }
+
+    const operation = handleToolRequest(this.coreRequest, this.run, this.files, this.token, request, response);
+    this.operations.add(operation);
+    void operation.then(
+      () => this.operations.delete(operation),
+      () => this.operations.delete(operation),
+    );
   }
 }
 
@@ -494,6 +883,7 @@ const handleToolRequest = async (
   response: ServerResponse,
 ): Promise<void> => {
   try {
+    if (run.stopping) return writeJson(response, 409, { error: 'Review run is stopping' });
     if (request.method !== 'POST') return writeJson(response, 405, { error: 'Method not allowed' });
     if (request.headers.authorization !== `Bearer ${token}`) return writeJson(response, 401, { error: 'Unauthorized' });
 

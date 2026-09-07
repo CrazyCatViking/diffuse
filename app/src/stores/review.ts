@@ -180,6 +180,41 @@ export const useReviewStore = defineStore('review', () => {
     ]);
   };
 
+  const selectSession = async (sessionId: string) => {
+    if (!repo.repository) throw new Error('Cannot select a review session without an active repository');
+    const epoch = ++workspaceEpoch;
+    loading.value = true;
+    error.value = undefined;
+    try {
+      const loadedSessions = await client.listReviewSessions();
+      const selected = loadedSessions.find((item) => item.id === sessionId);
+      if (!selected) throw new Error(`Review session not found: ${sessionId}`);
+      const [loadedProgress, loadedReviewedFiles, loadedRuns, loadedAgentStates, loadedChatMessages, loadedThreads] = await Promise.all([
+        client.getReviewProgress(sessionId),
+        client.getReviewedFiles(sessionId),
+        client.getReviewRuns(sessionId),
+        client.getReviewAgentStates(sessionId),
+        client.getReviewChatMessages(sessionId),
+        client.getReviewThreads(sessionId),
+      ]);
+      if (epoch !== workspaceEpoch) throw new Error(`Review session selection superseded: ${sessionId}`);
+      sessions.value = loadedSessions;
+      session.value = selected;
+      progress.value = loadedProgress;
+      reviewedFiles.value = loadedReviewedFiles;
+      runs.value = loadedRuns;
+      agentStates.value = loadedAgentStates;
+      chatMessages.value = loadedChatMessages.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+      threads.value = loadedThreads;
+      cancelDraft();
+    } catch (err) {
+      if (epoch === workspaceEpoch) error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      throw err;
+    } finally {
+      if (epoch === workspaceEpoch) loading.value = false;
+    }
+  };
+
   const startNewSession = async () => {
     if (!repo.repository) return false;
     const epoch = workspaceEpoch;
@@ -663,6 +698,7 @@ export const useReviewStore = defineStore('review', () => {
     replyDrafts,
     pendingAgentChatKeys,
     ensureSession,
+    selectSession,
     startNewSession,
     loadSessions,
     loadProgress,

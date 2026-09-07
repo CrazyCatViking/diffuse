@@ -8,9 +8,11 @@ use std::time::{Duration, Instant};
 
 use diffuse_core_lib::syntax::{ParserBackend, SyntaxManagerOptions};
 use diffuse_core_lib::{
-    AppCore, AppCoreOptions, CoreError, EventSubscription, WorkbenchDatabase, WorkbenchEvent,
-    WorkspaceGeneration, WorkspaceId, WorkspaceRequestContext, WorkspaceServiceHealth,
-    WorkspaceServiceStatus, default_database_path, version_info,
+    AnswerInputRequest, AppCore, AppCoreOptions, AttentionCasRequest, CloseWorkspaceRequest,
+    CoreError, CreateAttentionRequest, CreateInputRequest, EventSubscription, InputCasRequest,
+    SaveWorkspaceUiStateRequest, WorkbenchDatabase, WorkbenchEvent, WorkspaceGeneration,
+    WorkspaceId, WorkspaceRequestContext, WorkspaceServiceHealth, WorkspaceServiceStatus,
+    default_database_path, version_info,
 };
 use napi::bindgen_prelude::{AsyncTask, Env, JsFunction, Task};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -52,6 +54,7 @@ struct ClosedWorkspaceSummary {
     display_name: String,
     state: &'static str,
     service_health: WorkspaceServiceHealth,
+    attention: diffuse_core_lib::WorkspaceAttentionSummary,
 }
 
 impl NativeFailure {
@@ -363,6 +366,36 @@ struct AddonInner {
     runtime: tokio::runtime::Runtime,
     health: Arc<HealthState>,
     events: EventDrain,
+    restoration: Arc<RestorationState>,
+}
+
+#[derive(Default)]
+struct RestorationState {
+    result: Mutex<Option<std::result::Result<(), NativeFailure>>>,
+    complete: Condvar,
+}
+
+impl RestorationState {
+    fn finish(&self, result: std::result::Result<(), NativeFailure>) {
+        *lock_unpoisoned(&self.result) = Some(result);
+        self.complete.notify_all();
+    }
+
+    fn wait(&self) -> std::result::Result<(), NativeFailure> {
+        let mut result = lock_unpoisoned(&self.result);
+        while result.is_none() {
+            result = self
+                .complete
+                .wait(result)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        result.clone().unwrap_or_else(|| {
+            Err(NativeFailure::new(
+                "NATIVE_ADDON_INIT_FAILED",
+                "Native core restoration result was unavailable",
+            ))
+        })
+    }
 }
 
 impl Drop for AddonInner {
@@ -410,7 +443,28 @@ impl AddonInner {
             runtime,
             health,
             events,
+            restoration: Arc::new(RestorationState::default()),
         })
+    }
+
+    fn start_restoration(self: &Arc<Self>) {
+        let inner = self.clone();
+        self.runtime.spawn(async move {
+            let result = inner
+                .core
+                .restore_workbench()
+                .await
+                .map(|_| ())
+                .map_err(|error| initialization_failure(error.to_string()));
+            if let Err(failure) = &result {
+                inner.health.mark_unhealthy(failure.clone());
+            }
+            inner.restoration.finish(result);
+        });
+    }
+
+    fn wait_for_restoration(&self) -> std::result::Result<(), NativeFailure> {
+        self.restoration.wait()
     }
 
     fn run_shutdown(self: &Arc<Self>, leader: bool) -> OperationResult {
@@ -420,8 +474,13 @@ impl AddonInner {
                 .name("diffuse-node-shutdown".to_owned())
                 .spawn(move || {
                     let result = catch_unwind(AssertUnwindSafe(|| {
+                        let restoration = inner.wait_for_restoration();
                         inner.core.begin_shutdown();
-                        inner.core.shutdown()
+                        let shutdown = inner.core.shutdown();
+                        restoration.map_err(|failure| {
+                            CoreError::TaskFailed(format!("{}: {}", failure.code, failure.message))
+                        })?;
+                        shutdown
                     }));
                     let result = match result {
                         Ok(Ok(())) => Ok(()),
@@ -487,7 +546,7 @@ impl DiffuseCore {
     #[napi(js_name = "getWorkbenchSnapshot")]
     pub fn get_workbench_snapshot(&self) -> AsyncTask<CoreTask> {
         self.task("getWorkbenchSnapshot", |inner| {
-            serialize(inner.core.workbench_snapshot()).map_err(Into::into)
+            serialize(inner.core.workbench_snapshot()?).map_err(Into::into)
         })
     }
 
@@ -527,9 +586,10 @@ impl DiffuseCore {
     #[napi(js_name = "closeWorkspace")]
     pub fn close_workspace(&self, reference: Value) -> AsyncTask<CoreTask> {
         self.task("closeWorkspace", move |inner| {
-            let context = context_from_reference(reference, "close")?;
+            let request: CloseWorkspaceRequest = deserialize_request(reference)?;
+            let context = request.context();
             let summary = inner.core.get_workspace_snapshot(&context)?.summary;
-            inner.core.close_workspace(&context)?;
+            inner.core.close_workspace(&request)?;
             serialize(ClosedWorkspaceSummary {
                 workspace_id: summary.workspace_id,
                 workspace_generation: summary.workspace_generation,
@@ -539,8 +599,119 @@ impl DiffuseCore {
                 service_health: WorkspaceServiceHealth {
                     repository_watcher: WorkspaceServiceStatus::Stopped,
                 },
+                attention: summary.attention,
             })
             .map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "dismissRestoreFailure")]
+    pub fn dismiss_restore_failure(&self, workspace_id: String) -> AsyncTask<CoreTask> {
+        self.task("dismissRestoreFailure", move |inner| {
+            let workspace_id = WorkspaceId::parse(&workspace_id).map_err(|error| {
+                NativeFailure::new(
+                    "InvalidParams",
+                    format!("InvalidParams: invalid workspace ID: {error}"),
+                )
+            })?;
+            serialize(inner.core.dismiss_restore_failure(workspace_id)?).map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "reorderWorkspaces")]
+    pub fn reorder_workspaces(&self, workspace_ids: Vec<String>) -> AsyncTask<CoreTask> {
+        self.task("reorderWorkspaces", move |inner| {
+            let ids = workspace_ids
+                .iter()
+                .map(|id| {
+                    WorkspaceId::parse(id).map_err(|error| {
+                        NativeFailure::new(
+                            "InvalidParams",
+                            format!("InvalidParams: invalid workspace ID: {error}"),
+                        )
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            serialize(json!({ "workspaceIds": inner.core.reorder_workspaces(ids)? }))
+                .map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "saveWorkspaceUiState")]
+    pub fn save_workspace_ui_state(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("saveWorkspaceUiState", move |inner| {
+            let request: SaveWorkspaceUiStateRequest = deserialize_request(request)?;
+            let result = inner.core.save_workspace_ui_state(request)?;
+            serialize(result).map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "createAttention")]
+    pub fn create_attention(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("createAttention", move |inner| {
+            let request: CreateAttentionRequest = deserialize_request(request)?;
+            serialize(inner.core.create_attention(request)?).map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "acknowledgeAttention")]
+    pub fn acknowledge_attention(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.attention_cas_task("acknowledgeAttention", request, false)
+    }
+
+    #[napi(js_name = "claimAttentionNotification")]
+    pub fn claim_attention_notification(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.attention_cas_task("claimAttentionNotification", request, true)
+    }
+
+    #[napi(js_name = "createInputRequest")]
+    pub fn create_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("createInputRequest", move |inner| {
+            let request: CreateInputRequest = deserialize_request(request)?;
+            serialize(inner.core.create_input_request(request)?).map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "answerInputRequest")]
+    pub fn answer_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("answerInputRequest", move |inner| {
+            let request: AnswerInputRequest = deserialize_request(request)?;
+            serialize(inner.core.answer_input_request(request)?).map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "acceptInputRequest")]
+    pub fn accept_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.input_cas_task("acceptInputRequest", request, |core, request| {
+            core.accept_input_request(request)
+        })
+    }
+
+    #[napi(js_name = "rejectInputRequest")]
+    pub fn reject_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.input_cas_task("rejectInputRequest", request, |core, request| {
+            core.reject_input_request(request)
+        })
+    }
+
+    #[napi(js_name = "cancelInputRequest")]
+    pub fn cancel_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.input_cas_task("cancelInputRequest", request, |core, request| {
+            core.cancel_input_request(request)
+        })
+    }
+
+    #[napi(js_name = "expireInputRequest")]
+    pub fn expire_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.input_cas_task("expireInputRequest", request, |core, request| {
+            core.expire_input_request(request)
+        })
+    }
+
+    #[napi(js_name = "supersedeInputRequest")]
+    pub fn supersede_input_request(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.input_cas_task("supersedeInputRequest", request, |core, request| {
+            core.supersede_input_request(request)
         })
     }
 
@@ -574,6 +745,44 @@ impl DiffuseCore {
 }
 
 impl DiffuseCore {
+    fn attention_cas_task(
+        &self,
+        operation_name: &'static str,
+        request: Value,
+        notification_claim: bool,
+    ) -> AsyncTask<CoreTask> {
+        self.task(operation_name, move |inner| {
+            let request: AttentionCasRequest = deserialize_request(request)?;
+            let result = if notification_claim {
+                inner.core.claim_attention_notification(request)?
+            } else {
+                inner.core.acknowledge_attention(request)?
+            };
+            serialize(result).map_err(Into::into)
+        })
+    }
+
+    fn input_cas_task<F>(
+        &self,
+        operation_name: &'static str,
+        request: Value,
+        operation: F,
+    ) -> AsyncTask<CoreTask>
+    where
+        F: FnOnce(
+                &AppCore,
+                InputCasRequest,
+            )
+                -> std::result::Result<diffuse_core_lib::InputMutationResult, CoreError>
+            + Send
+            + 'static,
+    {
+        self.task(operation_name, move |inner| {
+            let request: InputCasRequest = deserialize_request(request)?;
+            serialize(operation(&inner.core, request)?).map_err(Into::into)
+        })
+    }
+
     fn task<F>(&self, operation_name: &'static str, operation: F) -> AsyncTask<CoreTask>
     where
         F: FnOnce(&AddonInner) -> OperationResult + Send + 'static,
@@ -601,9 +810,11 @@ fn create_addon(env: Env, options: DiffuseCoreOptions) -> Result<DiffuseCore> {
     match catch_unwind(AssertUnwindSafe(|| {
         AddonInner::build(options, on_event_batch, &env)
     })) {
-        Ok(Ok(inner)) => Ok(DiffuseCore {
-            inner: Arc::new(inner),
-        }),
+        Ok(Ok(inner)) => {
+            let inner = Arc::new(inner);
+            inner.start_restoration();
+            Ok(DiffuseCore { inner })
+        }
         Ok(Err(failure)) => Err(safe_napi_error(&env, failure)),
         Err(_) => Err(safe_napi_error(&env, NativeFailure::panic())),
     }
@@ -671,6 +882,7 @@ impl Task for CoreTask {
     fn compute(&mut self) -> Result<Self::Output> {
         let result = catch_unwind(AssertUnwindSafe(|| match self.kind {
             TaskKind::Normal => {
+                self.inner.wait_for_restoration()?;
                 self.inner.health.require_running()?;
                 let operation = self.operation.take().ok_or_else(|| {
                     NativeFailure::new(
@@ -804,6 +1016,38 @@ fn invalid_params(label: &str, error: serde_json::Error) -> NativeFailure {
     )
 }
 
+fn deserialize_request<T: serde::de::DeserializeOwned>(
+    mut request: Value,
+) -> std::result::Result<T, NativeFailure> {
+    if let Value::Object(object) = &mut request {
+        if let Some(context_value) = object.get("context").cloned() {
+            let Value::Object(context) = context_value else {
+                return Err(NativeFailure::new(
+                    "InvalidParams",
+                    "InvalidParams: request.context must be an object",
+                ));
+            };
+            for key in ["workspaceId", "workspaceGeneration"] {
+                if let Some(nested) = context.get(key) {
+                    if let Some(flat) = object.get(key) {
+                        if flat != nested {
+                            return Err(NativeFailure::new(
+                                "InvalidParams",
+                                format!(
+                                    "InvalidParams: conflicting flat and nested {key} identities"
+                                ),
+                            ));
+                        }
+                    } else {
+                        object.insert(key.to_owned(), nested.clone());
+                    }
+                }
+            }
+        }
+    }
+    serde_json::from_value(request).map_err(|error| invalid_params("request", error))
+}
+
 fn serialize(value: impl Serialize) -> std::result::Result<Value, CoreError> {
     serde_json::to_value(value).map_err(|error| CoreError::Serialization(error.to_string()))
 }
@@ -878,6 +1122,63 @@ mod tests {
                 args: vec!["syntax-runner".into()],
             }
         );
+    }
+
+    #[test]
+    fn close_request_keeps_plain_references_compatible_and_defaults_force_to_false() {
+        let workspace_id = WorkspaceId::new();
+        let workspace_generation = WorkspaceGeneration::new();
+        let plain: CloseWorkspaceRequest = deserialize_request(json!({
+            "workspaceId": workspace_id,
+            "workspaceGeneration": workspace_generation,
+        }))
+        .unwrap();
+        assert!(!plain.force);
+
+        let forced: CloseWorkspaceRequest = deserialize_request(json!({
+            "workspaceId": workspace_id,
+            "workspaceGeneration": workspace_generation,
+            "force": true,
+        }))
+        .unwrap();
+        assert!(forced.force);
+        assert_eq!(
+            NativeFailure::from(CoreError::WorkspaceHasPendingInput).code,
+            "WorkspaceHasPendingInput"
+        );
+    }
+
+    #[test]
+    fn ui_state_mutation_envelopes_keep_the_napi_serialized_contract() {
+        for outcome in [
+            diffuse_core_lib::MutationOutcome::Applied,
+            diffuse_core_lib::MutationOutcome::Stale,
+        ] {
+            let value = serialize(diffuse_core_lib::WorkspaceUiStateMutationResult {
+                outcome,
+                record: diffuse_core_lib::WorkspaceUiStateRecord {
+                    revision: 7,
+                    state: json!({ "route": "review" }),
+                    updated_at: "1234".to_owned(),
+                },
+            })
+            .unwrap();
+            assert_eq!(
+                value,
+                json!({
+                    "outcome": match outcome {
+                        diffuse_core_lib::MutationOutcome::Applied => "applied",
+                        diffuse_core_lib::MutationOutcome::Stale => "stale",
+                        _ => unreachable!(),
+                    },
+                    "record": {
+                        "revision": 7,
+                        "state": { "route": "review" },
+                        "updatedAt": "1234",
+                    },
+                })
+            );
+        }
     }
 
     #[test]
@@ -977,6 +1278,98 @@ mod tests {
         ] {
             health.state.store(state, Ordering::Release);
             assert_eq!(health.snapshot()["status"], expected);
+        }
+    }
+
+    #[test]
+    fn request_helper_accepts_nested_desktop_context_and_contract_id_names() {
+        let workspace_id = WorkspaceId::new();
+        let generation = WorkspaceGeneration::new();
+        let attention: AttentionCasRequest = deserialize_request(json!({
+            "context": {
+                "workspaceId": workspace_id,
+                "workspaceGeneration": generation,
+                "requestId": "ack"
+            },
+            "attentionId": "attention-1",
+            "revision": 7
+        }))
+        .unwrap();
+        assert_eq!(attention.workspace_id, workspace_id);
+        assert_eq!(attention.workspace_generation, generation);
+        assert_eq!(attention.attention_id, "attention-1");
+        assert_eq!(attention.expected_revision, 7);
+
+        let input: InputCasRequest = deserialize_request(json!({
+            "context": {
+                "workspaceId": workspace_id,
+                "workspaceGeneration": generation,
+                "requestId": "cancel"
+            },
+            "inputRequestId": "input-1",
+            "revision": 3
+        }))
+        .unwrap();
+        assert_eq!(input.input_id, "input-1");
+        assert_eq!(input.expected_revision, 3);
+
+        let ui: SaveWorkspaceUiStateRequest = deserialize_request(json!({
+            "workspaceId": workspace_id,
+            "workspaceGeneration": generation,
+            "expectedRevision": 9_007_199_254_740_991_u64,
+            "state": { "route": "review" }
+        }))
+        .unwrap();
+        assert_eq!(ui.workspace_id, workspace_id);
+        assert_eq!(ui.workspace_generation, generation);
+        assert_eq!(ui.expected_revision, 9_007_199_254_740_991);
+    }
+
+    #[test]
+    fn request_helper_rejects_conflicting_or_malformed_nested_contexts() {
+        let workspace_id = WorkspaceId::new();
+        let other_workspace_id = WorkspaceId::new();
+        let generation = WorkspaceGeneration::new();
+        let conflict = deserialize_request::<AttentionCasRequest>(json!({
+            "workspaceId": workspace_id,
+            "workspaceGeneration": generation,
+            "context": {
+                "workspaceId": other_workspace_id,
+                "workspaceGeneration": generation
+            },
+            "attentionId": "attention",
+            "revision": 1
+        }))
+        .unwrap_err();
+        assert_eq!(conflict.code, "InvalidParams");
+        assert!(conflict.message.contains("conflicting"));
+
+        let malformed = deserialize_request::<AttentionCasRequest>(json!({
+            "workspaceId": workspace_id,
+            "workspaceGeneration": generation,
+            "context": "wrong",
+            "attentionId": "attention",
+            "revision": 1
+        }))
+        .unwrap_err();
+        assert_eq!(malformed.code, "InvalidParams");
+        assert!(malformed.message.contains("must be an object"));
+    }
+
+    #[test]
+    fn restoration_state_is_a_shared_completion_barrier() {
+        let restoration = Arc::new(RestorationState::default());
+        let waiters = (0..2)
+            .map(|_| {
+                let restoration = restoration.clone();
+                thread::spawn(move || restoration.wait())
+            })
+            .collect::<Vec<_>>();
+        thread::sleep(Duration::from_millis(5));
+        restoration.finish(Ok(()));
+
+        for waiter in waiters {
+            waiter.join().unwrap().unwrap();
         }
     }
 }

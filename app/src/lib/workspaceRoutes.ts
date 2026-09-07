@@ -7,6 +7,7 @@ export const workspaceRouteNames = {
   overview: 'workspace-review',
   diff: 'workspace-file',
   folderDiff: 'workspace-folder',
+  input: 'workspace-input',
 } as const;
 
 export type WorkspaceRouteName = (typeof workspaceRouteNames)[keyof typeof workspaceRouteNames];
@@ -39,6 +40,11 @@ export const folderDiffRoute = (workspaceId: string, folderPath: string) => ({
   params: { workspaceId, folderPath },
 });
 
+export const inputRoute = (workspaceId: string, inputRequestId: string) => ({
+  name: workspaceRouteNames.input,
+  params: { workspaceId, inputRequestId },
+});
+
 export const threadDiffRoute = (workspaceId: string, thread: ReviewThread) =>
   diffRoute(workspaceId, thread.fileId, {
     threadId: thread.id,
@@ -62,7 +68,8 @@ export const captureWorkspaceRoute = (route: RouteLocationNormalizedLoaded): Wor
   if (
     route.name !== workspaceRouteNames.overview &&
     route.name !== workspaceRouteNames.diff &&
-    route.name !== workspaceRouteNames.folderDiff
+    route.name !== workspaceRouteNames.folderDiff &&
+    route.name !== workspaceRouteNames.input
   ) {
     return undefined;
   }

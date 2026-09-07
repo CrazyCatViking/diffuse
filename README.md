@@ -49,7 +49,8 @@ These scripts are hosted directly in this repository and served by GitHub throug
 | Syntax awareness      | Uses Tree-sitter grammars for highlighting where available.                                      |
 | Token highlights      | Shows cheap Git diffs immediately and computes precise token highlights for partial line edits. |
 | LSP support           | Shows hover information and diagnostics from language servers.                                   |
-| Review state          | Stores review sessions, threads, progress, and chat as plain files under `.diffuse/reviews`.     |
+| Review state          | Keeps portable review sessions, progress, reviewed files, and threads under `.diffuse/reviews`.  |
+| Durable attention     | Prioritizes input, errors, unread completions, and core-recorded running work across workspaces.  |
 | AI review             | Can run opencode-based review agents and save their findings back into Diffuse.                  |
 | Local-first design    | One in-process Rust core works through local Git, local files, and local helper processes.       |
 
@@ -65,26 +66,30 @@ diffuse/
   docs/   GitHub-readable docs, architecture notes, and data-format specs
 ```
 
-The renderer calls a typed preload bridge, Electron main validates IPC, and one native addon hosts one application-wide Rust `AppCore`. Normal desktop use does not start a Diffuse core child per workspace. Git commands, language servers, the isolated syntax helper, and the existing review-agent provider remain child-process boundaries. SQLite provides stable local workspace identity and `.diffuse/reviews` remains the portable review store.
+The renderer calls a typed preload bridge, Electron main validates IPC, and one native addon hosts one application-wide Rust `AppCore`. Normal desktop use does not start a Diffuse core child per workspace. Git commands, language servers, the isolated syntax helper, and the existing review-agent provider remain child-process boundaries.
 
-Review data is intentionally easy to inspect and integrate with:
+Persistence uses a hybrid boundary. Portable review configuration, sessions, progress, reviewed-file state, and threads remain inspectable under `.diffuse/reviews`. The device-local `<Electron userData>/workbench.sqlite3` owns workspace order and restoration, pending input, attention, acknowledgement, notification delivery, and compatibility archives of legacy runner files.
 
 ```text
 your-repo/
   .diffuse/
     reviews/
+      config.json
       active-session
       sessions/
         <session-id>/
           review.json
           progress.json
+          reviewed-files.json
           threads/
+          # Transitional files still written by the retained Node runner:
           runs/
           agents/
-          chat/
+          chat/messages/
+          prompts/
 ```
 
-See [`docs/`](docs/) for the documentation index, [`docs/architecture.md`](docs/architecture.md) for internal architecture notes, [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for the review file format, and [`docs/lsp.md`](docs/lsp.md) for language server details.
+The four transitional families are imported read-only into SQLite when a workspace opens, but their source files remain untouched and the current runner still uses them. See [`docs/`](docs/) for the documentation index, [`docs/architecture.md`](docs/architecture.md) for internal architecture notes, [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for retained file formats, [`docs/review-spec-v2.md`](docs/review-spec-v2.md) for hybrid ownership and migration, and [`docs/lsp.md`](docs/lsp.md) for language server details.
 
 ## Install Prebuilt Release
 
@@ -200,9 +205,15 @@ diffuse diff --repo /path/to/repository --file src/example.ts
 
 When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository. Opening another repository reuses the primary Diffuse window and keeps the previous workspace loaded in the background; invoking `diffuse <path>` again activates or adds that repository in the existing application instead of opening another workspace window.
 
-The workspace rail keeps open repositories in stable order and provides the Workbench Overview, native open action, and searchable All Workspaces switcher. `Ctrl+Tab` and `Ctrl+Shift+Tab` move through workspaces, `Ctrl+1` through `Ctrl+9` select visible rail slots, `Ctrl+Shift+O` opens the overview, `Ctrl+O` opens a repository, and `Ctrl+K` opens the switcher. These workbench shortcuts are configurable under Keyboard settings. Each workspace restores its last review/file/folder route, diff target and layout, search and pinned results, cursor history, unsaved review draft, and logical focus while retaining only one heavy workspace view in renderer memory.
+The workspace rail keeps open repositories in stable order and provides the Workbench Overview, native open action, and searchable All Workspaces switcher. Each workspace shows its highest-priority state and count: input required, error, unread completion, running, or idle. The overview groups workspaces by that priority without rearranging the rail and keeps the separate input, error, unread, and running counts visible. In Phase 5, `running` counts come from core-recorded agent sessions; activity in the retained Node/opencode runner remains visible in its review surface and protected by close handling, but is not projected into that SQLite count.
 
-Closing the primary window hides Diffuse while open workspaces and background work remain available. Use the tray icon to show the workbench again or explicitly quit the application. At narrow desktop widths, the rail compacts and changed files plus pinned search results open as drawers so the diff remains the primary reading surface.
+`Ctrl+Tab` and `Ctrl+Shift+Tab` move through workspaces, `Ctrl+1` through `Ctrl+9` select visible rail slots, `Ctrl+Shift+O` opens the overview, `Ctrl+O` opens a repository, and `Ctrl+K` opens the switcher. These workbench shortcuts are configurable under Keyboard settings. Each workspace restores its last review/file/folder/input route, selected review session, diff target and layout, search and pinned results, cursor history, review drafts, non-secret input drafts, and logical focus while retaining only one heavy workspace view in renderer memory. If a selected review session no longer exists, Diffuse falls back to the repository's portable active session and removes the stale route selection.
+
+Pending questions, permissions, authentication requests, and conflict decisions open in the workspace input drawer. Submitting an answer changes it to `response-submitted`; it remains unresolved until the producer reports `accepted` or `rejected`. Requests can also finish as `expired`, `cancelled`, or `superseded`. Secret authentication values are not saved. Opening a workspace alone never clears attention: Diffuse acknowledges only the exact item revision after its owning surface is visibly focused or after you explicitly open that item from the overview or a notification.
+
+Closing a workspace with pending input, an unsaved draft, or active legacy review/chat work asks for confirmation. A confirmed forced close stops matching legacy review work, aborts in-flight chat, replaces its pending response with a cancellation record, and changes pending or `response-submitted` input to `cancelled`; if work appears during a normal close, Diffuse asks again before forcing cancellation. Application quit also stops the retained runner before shutting down the core. Closing the primary window instead hides Diffuse while open workspaces and background work remain available. The tray summarizes all workspace counts, and an unfocused or hidden app can issue deduplicated notifications for new input and errors when desktop notifications are available. Notification clicks return to the exact owning workspace and item after renderer restoration is ready.
+
+At startup, Diffuse restores the previously active workspace first and then restores other open workspaces with bounded concurrency. Repositories that are missing, inaccessible, or no longer valid remain listed under Restore Failures with Retry and Dismiss actions instead of silently disappearing. At narrow desktop widths, the rail compacts and changed files plus pinned search results open as drawers so the diff remains the primary reading surface.
 
 After opening a repository, Diffuse shows a review overview alongside changed files in a collapsible folder tree. The overview summarizes review progress, change totals, review threads, AI activity, and LSP diagnostics for supported changed files. Use the overview to create review sessions and start or stop AI review runs. Diagnostics are checked while the overview is open, so the diff workspace does not spend space on always-visible review controls.
 
@@ -281,7 +292,7 @@ DIFFUSE_NATIVE_ADDON=/absolute/path/to/diffuse_core.node pnpm dev
 DIFFUSE_SYNTAX_RUNNER=/absolute/path/to/diffuse-rpc pnpm dev
 ```
 
-`DIFFUSE_DESKTOP_CORE=rpc` selects the whole legacy process backend for rollback; it never mixes methods between backends. `DIFFUSE_NATIVE_ADDON` overrides addon discovery. `DIFFUSE_SYNTAX_RUNNER` overrides the isolated helper used for optional native Tree-sitter grammars. On the RPC path, `DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse` selects a specific Rust or Zig compatibility executable.
+`DIFFUSE_DESKTOP_CORE=rpc` selects the whole legacy process backend for rollback; it never mixes methods between backends. RPC mode is degraded and does not support durable Phase 5 attention, input, or restore-failure operations. `DIFFUSE_NATIVE_ADDON` overrides addon discovery. `DIFFUSE_SYNTAX_RUNNER` overrides the isolated helper used for optional native Tree-sitter grammars. On the RPC path, `DIFFUSE_CORE_EXECUTABLE=/path/to/diffuse` selects a specific Rust or Zig compatibility executable.
 
 The normal Electron backend stores `workbench.sqlite3` under Electron's platform `userData` directory. The standalone Rust RPC adapter supports `DIFFUSE_WORKBENCH_DATABASE` for isolated tests.
 
@@ -355,9 +366,9 @@ Built-in defaults exist for TypeScript/JavaScript, Rust, Python, Go, Zig, and Lu
 
 ## AI Review
 
-Diffuse includes an experimental opencode review runner. When started from the review bar, the Electron app creates opencode sessions for the opened repository, sends review prompts, and persists findings through the Diffuse core.
+Diffuse includes an experimental opencode review runner. When started from the review bar, the Electron app creates opencode sessions for the opened repository, sends review prompts, and persists findings through the Diffuse core. Completed runs create unread completion attention; failed runs create error attention.
 
-The review bar also shows recent review sessions and agent runs. Agent progress, run state, comments, and chat are persisted under `.diffuse/reviews` so the UI can recover state after refreshes or restarts.
+The review bar also shows recent review sessions and agent runs. Portable session, progress, reviewed-file, comment, and thread state remains under `.diffuse/reviews`. During the Phase 5 transition, the retained Node runner still writes v1 run, agent, chat-message, and prompt files there; Diffuse imports read-only copies into its local SQLite compatibility archive on workspace open and leaves the source files untouched. This runner is not ACP supervision; ACP remains a later phase. See [`docs/review-spec-v1.md`](docs/review-spec-v1.md) and [`docs/review-spec-v2.md`](docs/review-spec-v2.md).
 
 Agent behavior can be configured per repository in `.diffuse/reviews/config.json`. If the file does not exist, Diffuse uses this default:
 

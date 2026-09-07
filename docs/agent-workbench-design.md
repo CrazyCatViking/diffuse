@@ -4,22 +4,22 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Proposed |
-| Last updated | 2026-08-24 |
+| Status | Implemented through Phase 5; Phase 6 and later proposed |
+| Last updated | 2026-09-03 |
 | Target shell | Electron and Vue |
 | Target core | One application-wide Rust core loaded through N-API |
 | Window model | One primary workbench window with multiple workspaces |
 | Agent protocol | Agent Client Protocol (ACP) with Diffuse tools exposed through MCP |
 
-This document defines the target architecture and user experience and records implementation status by phase. The current implementation through Phase 4 is documented in [`architecture.md`](architecture.md); later attention, ACP, hardening, and fallback-removal phases remain proposals here.
+This document defines the target architecture and user experience and records implementation status by phase. The current implementation through Phase 5 is documented in [`architecture.md`](architecture.md), with hybrid persistence ownership in [`review-spec-v2.md`](review-spec-v2.md). ACP supervision, hardening, and fallback-removal phases remain proposals here.
 
 ## Executive Summary
 
-Diffuse will become a single-window Agent Workbench for reviewing changes, running coding agents, and moving between multiple repositories without losing context.
+Diffuse is a single-window workbench for reviewing changes, running the retained review agent, and moving between multiple repositories without losing context. Phase 6 extends it into the target ACP Agent Workbench.
 
-The application will create one primary `BrowserWindow`. Opening another repository adds or activates a workspace inside that window instead of creating another window. A compact workspace rail and a searchable workbench overview will show all open workspaces, their background activity, and whether any workspace requires user input.
+The application creates one primary `BrowserWindow`. Opening another repository adds or activates a workspace inside that window instead of creating another window. A compact workspace rail and searchable workbench overview show all open workspaces, their background activity, and whether any workspace requires user input.
 
-The long-term backend will be a transport-neutral Rust library loaded into Electron main through N-API. One application-wide `AppCore` will own all workspace runtimes, repository intelligence, persisted workbench state, and agent supervision. ACP agents, language servers, and Git commands remain child processes because they are external failure and trust boundaries; there is no separate Diffuse core daemon.
+The current backend is a transport-neutral Rust library loaded into Electron main through N-API. One application-wide `AppCore` owns all workspace runtimes, repository intelligence, persisted workbench state, and durable attention. Phase 6 adds Rust-owned ACP supervision. ACP agents, language servers, and Git commands remain child processes because they are external failure and trust boundaries; there is no separate Diffuse core daemon.
 
 The architecture must satisfy these central rules:
 
@@ -28,7 +28,7 @@ The architecture must satisfy these central rules:
 - Inactive workspaces may continue watching files, running agents, and waiting for input.
 - Every workspace-bound command, result, and event carries explicit workspace identity.
 - Selecting a workspace never accidentally acknowledges or resolves its pending attention.
-- SQLite owns local workbench and ACP state; `.diffuse/reviews` owns portable review artifacts.
+- SQLite owns local workbench state and future ACP state; `.diffuse/reviews` owns portable review artifacts under the hybrid v2 boundary.
 - The Vue renderer depends on a shell-neutral typed bridge, not directly on Electron or N-API.
 
 ## Terminology
@@ -170,7 +170,7 @@ Workspace status is an aggregate over durable attention and transient activity.
 
 | Priority | Summary state | Examples | Clearing rule |
 | --- | --- | --- | --- |
-| 1 | `input-required` | ACP permission, agent question, authentication, conflict decision | Clears only after the exact request is accepted, cancelled, expires, or is superseded. |
+| 1 | `input-required` | Permission, question, authentication, conflict decision | Clears only after the exact request is `accepted`, `rejected`, `expired`, `cancelled`, or `superseded`. |
 | 2 | `error` | Agent crash, failed Git operation, restore failure, unrecoverable LSP failure | Clears when resolved; acknowledgement only removes unread emphasis. |
 | 3 | `unread` | Agent completed, review produced findings, background task finished | Clears when the exact revision is explicitly viewed or acknowledged. |
 | 4 | `running` | Agent turn, indexing, refresh, search, install | Derived live state; it is not acknowledged. |
@@ -286,7 +286,7 @@ Workspace load state and presentation state are separate.
 | `degraded` | The workspace remains usable, but one or more services failed. |
 | `closing` | New work is rejected while jobs and services are being stopped. |
 | `closed` | The runtime is unloaded but its recent-workspace record may remain. |
-| `restore-failed` | The root is missing, inaccessible, or no longer a repository. Retry and remove actions remain available. |
+| `restore-failed` | The root is missing, inaccessible, or no longer a repository. It is represented by a persisted restore diagnostic rather than a live workspace summary. |
 
 ### Presentation States
 
@@ -299,15 +299,11 @@ Opening the same canonical worktree root twice activates the existing workspace.
 
 Closing a workspace is different from switching away from it or closing the application window.
 
-If a workspace has active agents, pending input, or unsaved drafts, Close Workspace presents these choices:
-
-- Return to workspace.
-- Stop work and close.
-- Keep workspace open in the background.
+If a workspace has active legacy review or chat work, pending input, or unsaved drafts, Close Workspace requires confirmation before stopping work and forcing the close. Cancelling the confirmation keeps the workspace open. Forced close aborts in-flight retained-runner chat and replaces its pending response with a durable cancellation message before workspace removal. If work races with a normal close, a second confirmation is required before it is stopped or changed to `cancelled`.
 
 There is no state in which a workspace is removed from all workbench surfaces while Diffuse-owned agents continue invisibly. A user may hide the application window while agents continue because the tray, operating-system notification, and next launch restore the workbench.
 
-Startup restores the previously active workspace first. Other open workspaces restore with bounded parallelism. A failed restore remains visible with Retry, Locate, and Remove actions instead of silently disappearing.
+Startup restores the previously active workspace first. Other open workspaces restore with bounded parallelism. A failed restore remains visible with Retry and Dismiss actions instead of silently disappearing; a moved repository can be reopened through the normal Open Workspace action.
 
 After system sleep or wake, each workspace revalidates its repository root, watcher, LSP processes, ACP hosts, and pending operations. Watcher overflow or uncertainty triggers a full repository rescan.
 
@@ -469,17 +465,16 @@ N-API events are delivered through a thread-safe callback and batched before ent
 
 The application database lives in the platform application-data directory. It uses versioned migrations, WAL mode, foreign keys, and transactionally consistent updates.
 
-SQLite is authoritative for:
+SQLite is currently authoritative for:
 
 - Known workspaces, canonical roots, display names, rail order, and last-opened state.
 - Per-workspace local UI restoration state.
-- ACP host metadata and capabilities.
-- Agent sessions, turns, messages, and resumable remote session IDs.
-- Queued prompts and terminal outcomes.
-- Tool-call summaries and user-visible activity.
 - Pending input requests and non-secret response state.
 - Attention items, revisions, acknowledgement, and resolution.
+- Typed archives of imported legacy v1 run, agent, chat-message, and prompt records.
 - Rebuildable indexes over local workbench history.
+
+Phase 6 extends that same device-local authority to ACP host metadata and capabilities, agent sessions, turns, messages, resumable remote session IDs, queued prompts, terminal outcomes, tool-call summaries, and user-visible activity. The current `agent_sessions` table establishes part of that schema boundary but does not imply that ACP supervision exists.
 
 Secrets, provider tokens, and authentication credentials do not belong in SQLite or `.diffuse`. Authentication remains owned by the ACP harness or the platform credential store.
 
@@ -495,9 +490,9 @@ Database writes that create input or attention state are transactional. For exam
 - Reviewed-file state.
 - Findings and discussion threads.
 
-Workbench-only ACP transcripts, run telemetry, permission requests, unread state, and local UI state move to SQLite in the future v2 format. Existing v1 `runs`, `agents`, `chat`, and `prompts` data receives an idempotent importer because it is already persisted user data. Legacy files are not deleted automatically during migration.
+Workbench-only input requests, unread state, and local UI state now live in SQLite under the hybrid v2 boundary. Existing v1 `runs`, `agents`, `chat/messages`, and `prompts` data is imported read-only into typed SQLite archive tables because it is already persisted user data. The retained Node runner continues writing those legacy files, and they are never deleted automatically during migration. Future ACP transcripts, turns, and telemetry belong in SQLite rather than the repository.
 
-The current [`review-spec-v1.md`](review-spec-v1.md) remains authoritative until the persistence migration is implemented. That implementation must introduce and document a v2 specification before cutover.
+[`review-spec-v2.md`](review-spec-v2.md) defines current ownership and migration guarantees. [`review-spec-v1.md`](review-spec-v1.md) continues to define portable file formats and the retained runner's legacy families.
 
 External review artifact writes remain atomic. Rust serializes local read-modify-write operations per repository and uses stable revisions or compare-and-swap where external writers may race. Watcher events are deduplicated so Diffuse's own writes do not produce duplicate attention.
 
@@ -507,7 +502,7 @@ Attention is device-local and must not be committed into `.diffuse/reviews`.
 
 Acknowledgement is revision-based rather than timestamp-based. An acknowledgement transaction identifies the attention item and exact revision. If a newer revision already exists, the operation does not mark it read.
 
-Input responses persist only the data needed for delivery and recovery. Secret values are never retained by default. A response changes an input request to resolved only after the ACP peer confirms acceptance; rejected, stale, timed-out, and superseded requests retain explicit terminal states.
+Input responses persist only the data needed for delivery and recovery. Secret values are never retained; only a redacted secret marker may be stored. A response enters `response-submitted` and remains unresolved until its owning producer records `accepted` or `rejected`; `accepted`, `rejected`, `expired`, `cancelled`, and `superseded` remain distinct terminal states. Phase 5 implements these core transitions, while ACP delivery and confirmation remain Phase 6 work.
 
 ## Agent Architecture
 
@@ -713,7 +708,7 @@ Exit criteria:
 
 Purpose: deliver and validate the final workspace interaction model while the legacy backend remains available.
 
-Implementation status: Complete. `useWorkbenchStore()` owns summaries, stable rail order, active presentation, event sequence, restore state, and bounded workspace-keyed UI records. The `76px` rail compacts to `52px` near the `900px` boundary; changed files and pinned search become drawers there. Workspace-prefixed routes, global overview, searchable switcher, roving tablist focus, configurable navigation commands, one active heavy component tree, route/diff/search/cursor/draft/focus restoration, renderer reload capture, and hide/reopen/tray lifecycle are implemented. Full input/error/unread attention counts remain Phase 5 because Phase 1 does not yet expose those durable entities.
+Implementation status: Complete. `useWorkbenchStore()` owns summaries, stable rail order, active presentation, event sequence, restore state, and bounded workspace-keyed UI records. The `76px` rail compacts to `52px` near the `900px` boundary; changed files and pinned search become drawers there. Workspace-prefixed routes, global overview, searchable switcher, roving tablist focus, configurable navigation commands, one active heavy component tree, route/diff/search/cursor/draft/focus restoration, renderer reload capture, and hide/reopen/tray lifecycle are implemented. Phase 5 now supplies the durable input/error/unread counts and exact attention navigation that the initial Phase 2 shell reserved.
 
 Work:
 
@@ -799,13 +794,15 @@ Exit criteria:
 
 Purpose: implement the exact needs-input and unread behavior defined by this specification.
 
+Implementation status: Complete. SQLite schema v2 owns stable workspace order/active state, revisioned UI restoration, input requests and non-secret responses, attention lifecycle, acknowledgement and notification claims, restore diagnostics, and typed provenance-preserving archives for legacy v1 runs, agents, chat messages, and prompts. Input and attention compare-and-swap invariants, transaction-before-event sequencing, generation fencing, stale UI-state rebasing, active-first bounded startup restoration, exact review-session restoration, close confirmation and forced input/review/chat cancellation, priority summaries, grouped overview, the `/w/:workspaceId/input/:inputRequestId` surface, focus-gated exact acknowledgement, live announcements, tray aggregation, renderer-ready notification navigation, notification claim deduplication, and review completion/error attention production are implemented. The hybrid ownership contract is [`review-spec-v2.md`](review-spec-v2.md). ACP supervision is not implemented: the legacy Electron/Node opencode runner remains process-local, continues writing v1 files, and is not projected into SQLite `running` counts. `DIFFUSE_DESKTOP_CORE=rpc` remains a degraded rollback path and does not support durable Phase 5 attention, input, or restore-failure operations.
+
 Work:
 
 - Implement input and attention state machines with revision-based compare-and-swap.
 - Make input creation, attention creation, and event publication transactionally ordered.
 - Persist rail order, active workspace, restoration state, and exact acknowledgement revisions.
 - Add aggregate workspace summaries and attention navigation targets.
-- Add one-time idempotent import for current v1 run, agent, chat, and prompt records.
+- Add content-aware idempotent import for current v1 run, agent, chat, and prompt records on workspace open.
 - Introduce `review-spec-v2.md` before changing canonical storage ownership.
 - Keep portable review sessions, progress, reviewed files, and threads under `.diffuse/reviews`.
 - Add OS notifications and tray aggregation for pending input and terminal failures.
@@ -816,11 +813,13 @@ Exit criteria:
 - A new revision racing with acknowledgement remains unread.
 - Viewing, answering, rejecting, expiring, superseding, and cancelling input produce distinct correct states.
 - Device-local attention never modifies repository review artifacts.
-- Legacy review data imports once without deletion or duplication.
+- Unchanged legacy review data is a no-op, changed data replaces its archive entity, and source files are never deleted or duplicated.
 
 ### Phase 6: ACP Agent Workbench
 
 Purpose: replace the provider-specific Electron runner with reusable Rust ACP supervision.
+
+Implementation status: Not implemented.
 
 Work:
 
@@ -892,7 +891,7 @@ Exit criteria:
 - Workspace root canonicalization and worktree deduplication.
 - Workspace load-state transitions and generation rejection.
 - Attention priority, acknowledgement, resolution, and revision races.
-- Input accepted, rejected, stale, expired, cancelled, and superseded states.
+- Input `pending`, `response-submitted`, `accepted`, `rejected`, `expired`, `cancelled`, and `superseded` states, plus stale revision outcomes.
 - Resource priority and cancellation.
 - SQLite migrations and v1 import idempotence.
 - ACP capability gating and host-pool assignment.
@@ -910,7 +909,7 @@ Exit criteria:
 
 ### End-To-End Tests
 
-- Open, switch, reorder, close, restore, locate, and remove workspaces.
+- Open, switch, reorder, close, restore, retry, and dismiss workspaces and restore failures.
 - Navigate the rail, overview, and input surfaces using only the keyboard.
 - Preserve file, folder, review, agent, search, cursor, and draft context across switches.
 - Show input-required, error, unread, running, and idle states without relying on color.

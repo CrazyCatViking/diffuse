@@ -84,6 +84,16 @@ describe('native core addon loading', () => {
     expect(factory({ onEventBatch: callback })).toBe(addon);
     expect(classFactory({ onEventBatch: callback })).toMatchObject(addon);
   });
+
+  it('rejects an addon missing any Phase 5 native method', () => {
+    const addon = completeAddon();
+    const { claimAttentionNotification: _missing, ...incomplete } = addon;
+    const factory = nativeAddonFactoryFromModule({ createCore: () => incomplete });
+
+    expect(() => factory({ onEventBatch: () => undefined })).toThrowError(
+      expect.objectContaining<Partial<CoreBackendError>>({ code: 'NATIVE_ADDON_INVALID' }),
+    );
+  });
 });
 
 function completeAddon() {
@@ -94,6 +104,19 @@ function completeAddon() {
     activateWorkspace: async () => undefined,
     getWorkspaceSnapshot: async () => undefined,
     closeWorkspace: async () => undefined,
+    dismissRestoreFailure: async () => undefined,
+    reorderWorkspaces: async () => undefined,
+    saveWorkspaceUiState: async () => undefined,
+    createAttention: async () => undefined,
+    acknowledgeAttention: async () => undefined,
+    claimAttentionNotification: async () => undefined,
+    createInputRequest: async () => undefined,
+    answerInputRequest: async () => undefined,
+    acceptInputRequest: async () => undefined,
+    rejectInputRequest: async () => undefined,
+    cancelInputRequest: async () => undefined,
+    expireInputRequest: async () => undefined,
+    supersedeInputRequest: async () => undefined,
     request: async () => undefined,
     health: async () => undefined,
     shutdown: async () => undefined,

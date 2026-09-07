@@ -44,7 +44,7 @@
             <strong>{{ item.name }}</strong>
             <span>{{ item.path }}</span>
           </span>
-          <WorkspaceAttentionBadge v-if="item.workspace" :state="item.workspace.state" />
+          <WorkspaceAttentionBadge v-if="item.workspace" :attention="item.workspace.attention" :state="item.workspace.state" />
           <span v-else class="recent-label">Recent</span>
         </button>
 

@@ -53,8 +53,10 @@ export function getActiveWorkspace(): WorkspaceReference | undefined {
   return activeWorkspace ? { ...activeWorkspace } : undefined;
 }
 
-export function isActiveWorkspace(reference: WorkspaceReference): boolean {
-  return activeWorkspace?.workspaceId === reference.workspaceId && activeWorkspace.workspaceGeneration === reference.workspaceGeneration;
+export function isActiveWorkspace(reference: unknown): boolean {
+  if (!activeWorkspace || typeof reference !== 'object' || reference === null) return false;
+  const candidate = reference as Partial<WorkspaceReference>;
+  return activeWorkspace.workspaceId === candidate.workspaceId && activeWorkspace.workspaceGeneration === candidate.workspaceGeneration;
 }
 
 export const useClient = () => {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { diffRoute, folderDiffRoute, overviewRoute, restoreWorkspaceRoute, workbenchRoute, workspaceRouteNames } from './workspaceRoutes';
+import {
+  diffRoute,
+  folderDiffRoute,
+  inputRoute,
+  overviewRoute,
+  restoreWorkspaceRoute,
+  workbenchRoute,
+  workspaceRouteNames,
+} from './workspaceRoutes';
 
 describe('workspace routes', () => {
   it('always includes explicit workspace identity', () => {
@@ -12,6 +20,10 @@ describe('workspace routes', () => {
       params: { workspaceId: 'workspace-b', folderPath: 'src/lib' },
     });
     expect(workbenchRoute()).toEqual({ name: workspaceRouteNames.workbench });
+    expect(inputRoute('workspace-a', 'input-1')).toEqual({
+      name: workspaceRouteNames.input,
+      params: { workspaceId: 'workspace-a', inputRequestId: 'input-1' },
+    });
   });
 
   it('restores a saved route under the requested workspace', () => {

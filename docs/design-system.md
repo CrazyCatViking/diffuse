@@ -167,9 +167,17 @@ Use `TreeList.vue` for shared hierarchy behavior: indentation, collapse state, a
 
 The Agent Workbench uses one primary desktop window with a `76px` workspace rail, a global overview, and one rendered workspace at a time. At the existing `900px` layout boundary the rail uses its `52px` compact token and secondary labels become accessible-only. Changed files and pinned search results become foreground drawers rather than permanently reducing the diff.
 
-`WorkspaceRail.vue` uses a vertical tablist with roving focus. Overview and workspace tabs support arrows, Home, End, Enter, and Space while ordinary Tab enters and exits the rail normally. `WorkspaceSwitcher.vue` is the searchable listbox surface for open and recent workspaces; it traps modal focus and restores focus when dismissed. Status always includes text exposed to assistive technology and never relies only on the rail marker color.
+`WorkspaceRail.vue` uses a vertical tablist with roving focus. Overview and workspace tabs support arrows, Home, End, Enter, and Space while ordinary Tab enters and exits the rail normally. `WorkspaceSwitcher.vue` is the searchable listbox surface for open and recent workspaces; it traps modal focus and restores focus when dismissed.
 
-Workbench layout sizes use `--size-workspace-rail`, `--size-workspace-rail-narrow`, `--size-workspace-rail-item`, and `--size-workspace-status`. Keep workspace controls under `app/src/components/workbench/`; they are application-domain components rather than generic UI primitives. Workspace identity, attention priority, acknowledgement, and future durable status behavior remain specified in [`agent-workbench-design.md`](agent-workbench-design.md). Merely selecting a workspace must never clear attention.
+Durable status uses the fixed priority `input-required`, `error`, `unread`, `running`, then `idle`. `WorkspaceAttentionBadge.vue` shows the highest priority with its relevant count, symbol, visible text, and a complete accessible count label. Preserve category counts even when only the highest priority fits in the rail. Never encode attention with color alone; use labels such as Needs input, Error, Unread, Running, and Ready plus symbols/counts. Merely selecting a workspace must never clear attention or hide an unresolved input/error.
+
+`WorkbenchOverview.vue` groups rows by Needs Input, Errors Requiring Attention, Unread Completions, Running, and Ready while leaving rail order unchanged. Rows show all non-zero category counts and expose separate actions for exact attention items. Restore failures stay visible with the repository path, diagnostic message, Retry, and Dismiss actions. A failed workspace must not silently disappear.
+
+`WorkspaceInputDrawer.vue` is the canonical response surface at `/w/:workspaceId/input/:inputRequestId`. It presents the request kind, status, prompt, choices or text entry, submit action, and cancellation only when supported. The submitted state is `response-submitted`, not success; keep the surface visibly unresolved while waiting for `accepted` or `rejected`, and distinguish `expired`, `cancelled`, and `superseded`. Authentication inputs use password treatment, are never restored as drafts, and are cleared on revision change and unmount.
+
+Acknowledgement is exact and focus-gated. The input surface may acknowledge only its own attention ID and revision while it is connected, visible, and contains document focus. Explicit overview and notification navigation may acknowledge only the selected revision after routing to its target. Never acknowledge all attention on workspace activation, and never equate acknowledgement with resolution. New input, errors, completions, submitted responses, and terminal input states use the single polite, atomic live region in `App.vue`; do not announce high-frequency running progress.
+
+Workbench layout sizes use `--size-workspace-rail`, `--size-workspace-rail-narrow`, `--size-workspace-rail-item`, and `--size-workspace-status`. Keep workspace controls under `app/src/components/workbench/`; they are application-domain components rather than generic UI primitives. Durable ownership and status behavior are specified in [`review-spec-v2.md`](review-spec-v2.md) and [`agent-workbench-design.md`](agent-workbench-design.md).
 
 ### Diff Viewer
 
@@ -324,7 +332,7 @@ When a UI change is user-facing, update the relevant docs:
 
 - `README.md` for product-level workflows and visible behavior.
 - `docs/lsp.md` for LSP setup, diagnostics, hover, install, and lifecycle behavior.
-- `docs/review-spec-v1.md` for review persistence and integration contracts.
+- `docs/review-spec-v1.md` for retained review file formats and `docs/review-spec-v2.md` for hybrid ownership, durable attention, and migration contracts.
 - `docs/architecture.md` for process boundaries, state ownership, JSON-RPC flow, or build wiring.
 - This document when tokens, shared primitives, or durable UI patterns change.
 

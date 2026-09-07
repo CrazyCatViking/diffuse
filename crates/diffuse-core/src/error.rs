@@ -12,8 +12,14 @@ pub enum CoreError {
     WorkspaceNotFound,
     #[error("StaleWorkspaceGeneration")]
     StaleWorkspaceGeneration,
+    #[error("StaleRevision")]
+    StaleRevision,
     #[error("WorkspaceClosing")]
     WorkspaceClosing,
+    #[error("WorkspaceHasPendingInput")]
+    WorkspaceHasPendingInput,
+    #[error("CannotDismissLiveWorkspace")]
+    CannotDismissLiveWorkspace,
     #[error("AppCoreShuttingDown")]
     AppCoreShuttingDown,
     #[error("WorkspaceFileNotFound")]
@@ -51,7 +57,10 @@ impl CoreError {
             Self::RepositoryNotOpen => "RepositoryNotOpen",
             Self::WorkspaceNotFound => "WorkspaceNotFound",
             Self::StaleWorkspaceGeneration => "StaleWorkspaceGeneration",
+            Self::StaleRevision => "StaleRevision",
             Self::WorkspaceClosing => "WorkspaceClosing",
+            Self::WorkspaceHasPendingInput => "WorkspaceHasPendingInput",
+            Self::CannotDismissLiveWorkspace => "CannotDismissLiveWorkspace",
             Self::AppCoreShuttingDown => "AppCoreShuttingDown",
             Self::WorkspaceFileNotFound => "WorkspaceFileNotFound",
             Self::InvalidParams(_) => "InvalidParams",

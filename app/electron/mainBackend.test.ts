@@ -25,6 +25,9 @@ vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn() },
   Menu: { buildFromTemplate: vi.fn(), setApplicationMenu: vi.fn() },
   nativeImage: { createFromDataURL: vi.fn() },
+  Notification: class Notification {
+    static isSupported = vi.fn(() => false);
+  },
   shell: { openPath: vi.fn() },
   Tray: class Tray {},
 }));
@@ -35,7 +38,7 @@ vi.mock('./nativeCoreAddon', () => {
   return { loadNativeAddonFactory: vi.fn() };
 });
 
-import { desktopCoreMode, parseLaunchRepository, resolveNativeSyntaxRunnerPath } from './main';
+import { createReviewAgentCoreRequest, desktopCoreMode, parseLaunchRepository, resolveNativeSyntaxRunnerPath } from './main';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -100,4 +103,28 @@ describe('Electron main backend configuration', () => {
     expect(repeatedEvent.preventDefault).toHaveBeenCalledOnce();
     expect(nativeAddonModuleLoaded).not.toHaveBeenCalled();
   });
+
+  it('keeps a retained review runner request bound to its backend during shutdown', async () => {
+    const request = vi.fn(async () => ({ result: { maxParallelAgents: 1 } }));
+    const retainedRequest = createReviewAgentCoreRequest(requestBackend(request), {
+      workspaceId: 'workspace-1',
+      workspaceGeneration: 'generation-1',
+      requestId: 'initial-request',
+    });
+
+    await expect(retainedRequest('getReviewConfig')).resolves.toEqual({ maxParallelAgents: 1 });
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'workspace-1',
+        workspaceGeneration: 'generation-1',
+        requestId: expect.any(String),
+      }),
+      'getReviewConfig',
+      undefined,
+    );
+  });
 });
+
+function requestBackend(request: ReturnType<typeof vi.fn>) {
+  return { request } as never;
+}

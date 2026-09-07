@@ -13,7 +13,8 @@ This directory contains the project documentation that should be readable direct
 | [`design-system.md`](design-system.md) | Contributors | Design tokens, shared UI primitives, feature UI patterns, and frontend implementation rules. |
 | [`refactor-report.md`](refactor-report.md) | Contributors | Historical pre-workbench architecture assessment, risks, and prioritized cleanup plan. |
 | [`lsp.md`](lsp.md) | Users and contributors | Language server configuration, built-in defaults, diagnostics, install actions, and lifecycle. |
-| [`review-spec-v1.md`](review-spec-v1.md) | Contributors and integrations | File layout and JSON formats for `.diffuse/reviews`. |
+| [`review-spec-v1.md`](review-spec-v1.md) | Contributors and integrations | Legacy `.diffuse/reviews` file layout, JSON formats, and retained runner contract. |
+| [`review-spec-v2.md`](review-spec-v2.md) | Contributors and integrations | Phase 5 hybrid ownership, durable attention, SQLite boundary, and legacy import guarantees. |
 
 The top-level [`README.md`](../README.md) is the GitHub landing page for installation, usage, and project status.
 
@@ -26,6 +27,6 @@ Use this directory for durable docs:
 - Add or update user-facing docs when commands, settings, UI behavior, environment variables, install steps, or workflows change.
 - Update [`architecture.md`](architecture.md) when process boundaries, app/core responsibilities, persistence, JSON-RPC flow, or build wiring changes.
 - Update [`agent-workbench-design.md`](agent-workbench-design.md) while implementing or revising the target workspace, attention, Rust core, ACP, or migration design.
-- Update specs like [`review-spec-v1.md`](review-spec-v1.md) when persisted formats or integration contracts change.
+- Update [`review-spec-v1.md`](review-spec-v1.md) for retained file formats and [`review-spec-v2.md`](review-spec-v2.md) for hybrid ownership, migration, and device-local persistence contracts.
 - Update [`lsp.md`](lsp.md) when LSP configuration, server lifecycle, diagnostics, hover behavior, or install actions change.
 - Keep links relative so docs work in GitHub, local editors, and checked-out source trees.

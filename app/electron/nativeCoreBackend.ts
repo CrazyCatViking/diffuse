@@ -1,10 +1,25 @@
 import type { CoreMethods } from '../src/lib/coreContract';
+import { isDeepStrictEqual } from 'node:util';
 import type { VersionInfo } from '../src/lib/protocol';
 import {
+  isAttentionMutationResult,
+  isInputMutationResult,
   isWorkbenchEvent,
   isWorkbenchSnapshot,
   isWorkspaceSnapshot,
   isWorkspaceSummary,
+  isWorkspaceOrderResult,
+  isSaveWorkspaceUiStateRequest,
+  isDismissRestoreFailureResult,
+  isWorkspaceUiStateMutationResult,
+  type AnswerInputRequest,
+  type AttentionCasRequest,
+  type AttentionMutationResult,
+  type CreateAttentionRequest,
+  type CreateInputRequest,
+  type InputCasRequest,
+  type InputMutationResult,
+  type SaveWorkspaceUiStateRequest,
   type WorkbenchEvent,
   type WorkbenchSnapshot,
   type WorkspaceCoreMethod,
@@ -13,6 +28,10 @@ import {
   type WorkspaceResponse,
   type WorkspaceSnapshot,
   type WorkspaceSummary,
+  type WorkspaceOrderResult,
+  type WorkspaceUiStateMutationResult,
+  type CloseWorkspaceRequest,
+  type DismissRestoreFailureResult,
 } from '../src/lib/workbenchContract';
 import { CoreBackendError, type CoreBackend, type CoreBackendEventListener, type CoreBackendHealth } from './coreBackend';
 import type { NativeCoreAddon, NativeCoreAddonCreateOptions, NativeCoreAddonFactory } from './nativeCoreAddon';
@@ -73,12 +92,104 @@ export class NativeCoreBackend implements CoreBackend {
     return value;
   }
 
-  async closeWorkspace(reference: WorkspaceReference): Promise<WorkspaceSummary> {
-    const value = await this.call('closeWorkspace', () => this.addon.closeWorkspace(reference));
-    if (!isWorkspaceSummary(value) || !matchesReference(value, reference) || value.state !== 'closed') {
+  async closeWorkspace(request: CloseWorkspaceRequest): Promise<WorkspaceSummary> {
+    const nativeRequest: CloseWorkspaceRequest = {
+      workspaceId: request.workspaceId,
+      workspaceGeneration: request.workspaceGeneration,
+      force: request.force,
+    };
+    const value = await this.call('closeWorkspace', () => this.addon.closeWorkspace(nativeRequest));
+    if (!isWorkspaceSummary(value) || !matchesReference(value, request) || value.state !== 'closed') {
       throw protocolError('closeWorkspace', 'matching workspace summary');
     }
     return value;
+  }
+
+  async dismissRestoreFailure(workspaceId: string): Promise<DismissRestoreFailureResult> {
+    const value = await this.call('dismissRestoreFailure', () => this.addon.dismissRestoreFailure(workspaceId));
+    if (!isDismissRestoreFailureResult(value) || value.workspaceId !== workspaceId) {
+      throw protocolError('dismissRestoreFailure', 'restore failure dismissal result');
+    }
+    return value;
+  }
+
+  async reorderWorkspaces(workspaceIds: string[]): Promise<WorkspaceOrderResult> {
+    const value = await this.call('reorderWorkspaces', () => this.addon.reorderWorkspaces(workspaceIds));
+    if (!isWorkspaceOrderResult(value) || !sameStrings(value.workspaceIds, workspaceIds)) {
+      throw protocolError('reorderWorkspaces', 'matching workspace order');
+    }
+    return value;
+  }
+
+  async saveWorkspaceUiState(request: SaveWorkspaceUiStateRequest): Promise<WorkspaceUiStateMutationResult> {
+    if (!isSaveWorkspaceUiStateRequest(request)) throw invalidRequest('saveWorkspaceUiState');
+    const value = await this.call('saveWorkspaceUiState', () => this.addon.saveWorkspaceUiState(request));
+    if (!isWorkspaceUiStateMutationResult(value) || !validUiStateMutation(value, request)) {
+      throw protocolError('saveWorkspaceUiState', 'workspace UI state mutation result');
+    }
+    return value;
+  }
+
+  async createAttention(request: CreateAttentionRequest): Promise<AttentionMutationResult> {
+    const value = await this.call('createAttention', () => this.addon.createAttention(request));
+    if (
+      !isAttentionMutationResult(value) ||
+      value.item.workspaceId !== request.workspaceId ||
+      value.item.sourceId !== request.sourceId ||
+      value.item.kind !== request.kind ||
+      !validCreateRevision(value.outcome, value.item.revision, request.revision) ||
+      (value.outcome === 'applied' && value.item.status !== (request.status ?? 'unread'))
+    ) {
+      throw protocolError('createAttention', 'attention mutation result');
+    }
+    return value;
+  }
+
+  acknowledgeAttention(request: AttentionCasRequest): Promise<AttentionMutationResult> {
+    return this.mutateAttention('acknowledgeAttention', request, () => this.addon.acknowledgeAttention(request), 'acknowledged');
+  }
+
+  claimAttentionNotification(request: AttentionCasRequest): Promise<AttentionMutationResult> {
+    return this.mutateAttention('claimAttentionNotification', request, () => this.addon.claimAttentionNotification(request));
+  }
+
+  async createInputRequest(request: CreateInputRequest): Promise<InputMutationResult> {
+    const value = await this.call('createInputRequest', () => this.addon.createInputRequest(request));
+    if (
+      !isInputMutationResult(value) ||
+      value.input.workspaceId !== request.workspaceId ||
+      (request.id !== undefined && value.input.id !== request.id) ||
+      !validCreateRevision(value.outcome, value.input.revision, request.revision) ||
+      (value.outcome === 'applied' && value.input.status !== 'pending') ||
+      !validInputAttention(value)
+    ) {
+      throw protocolError('createInputRequest', 'input mutation result');
+    }
+    return value;
+  }
+
+  answerInputRequest(request: AnswerInputRequest): Promise<InputMutationResult> {
+    return this.mutateInput('answerInputRequest', request, () => this.addon.answerInputRequest(request), 'response-submitted');
+  }
+
+  acceptInputRequest(request: InputCasRequest): Promise<InputMutationResult> {
+    return this.mutateInput('acceptInputRequest', request, () => this.addon.acceptInputRequest(request), 'accepted');
+  }
+
+  rejectInputRequest(request: InputCasRequest): Promise<InputMutationResult> {
+    return this.mutateInput('rejectInputRequest', request, () => this.addon.rejectInputRequest(request), 'rejected');
+  }
+
+  cancelInputRequest(request: InputCasRequest): Promise<InputMutationResult> {
+    return this.mutateInput('cancelInputRequest', request, () => this.addon.cancelInputRequest(request), 'cancelled');
+  }
+
+  expireInputRequest(request: InputCasRequest): Promise<InputMutationResult> {
+    return this.mutateInput('expireInputRequest', request, () => this.addon.expireInputRequest(request), 'expired');
+  }
+
+  supersedeInputRequest(request: InputCasRequest): Promise<InputMutationResult> {
+    return this.mutateInput('supersedeInputRequest', request, () => this.addon.supersedeInputRequest(request), 'superseded');
   }
 
   async request<M extends WorkspaceCoreMethod>(
@@ -142,6 +253,45 @@ export class NativeCoreBackend implements CoreBackend {
     }
   }
 
+  private async mutateAttention(
+    operation: string,
+    request: AttentionCasRequest,
+    invoke: () => Promise<unknown>,
+    appliedStatus?: string,
+  ): Promise<AttentionMutationResult> {
+    const value = await this.call(operation, invoke);
+    if (
+      !isAttentionMutationResult(value) ||
+      value.item.workspaceId !== request.workspaceId ||
+      value.item.id !== request.attentionId ||
+      !validCasRevision(value.outcome, value.item.revision, request.expectedRevision) ||
+      (appliedStatus !== undefined && (value.outcome === 'applied' || value.outcome === 'unchanged') && value.item.status !== appliedStatus)
+    ) {
+      throw protocolError(operation, 'attention mutation result');
+    }
+    return value;
+  }
+
+  private async mutateInput(
+    operation: string,
+    request: InputCasRequest | AnswerInputRequest,
+    invoke: () => Promise<unknown>,
+    appliedStatus: string,
+  ): Promise<InputMutationResult> {
+    const value = await this.call(operation, invoke);
+    if (
+      !isInputMutationResult(value) ||
+      value.input.workspaceId !== request.workspaceId ||
+      value.input.id !== request.inputRequestId ||
+      !validCasRevision(value.outcome, value.input.revision, request.expectedRevision) ||
+      ((value.outcome === 'applied' || value.outcome === 'unchanged') && value.input.status !== appliedStatus) ||
+      !validInputAttention(value)
+    ) {
+      throw protocolError(operation, 'input mutation result');
+    }
+    return value;
+  }
+
   private receiveEventBatch(value: unknown): void {
     if (this.state !== 'running') return;
     let events: WorkbenchEvent[];
@@ -181,8 +331,47 @@ function matchesReference(value: WorkspaceReference, reference: WorkspaceReferen
   return value.workspaceId === reference.workspaceId && value.workspaceGeneration === reference.workspaceGeneration;
 }
 
+function validCreateRevision(outcome: string, actual: number, requested: number): boolean {
+  return outcome === 'stale' ? actual > requested : actual === requested;
+}
+
+function validCasRevision(outcome: string, actual: number, expected: number): boolean {
+  if (outcome === 'stale') return actual !== expected;
+  return actual === expected;
+}
+
+function validInputAttention(value: InputMutationResult): boolean {
+  return (
+    value.attention === undefined ||
+    (value.attention.workspaceId === value.input.workspaceId &&
+      value.attention.id === value.input.attentionId &&
+      value.attention.kind === 'input' &&
+      value.attention.sourceId === value.input.id &&
+      value.attention.revision === value.input.revision)
+  );
+}
+
+function validUiStateMutation(value: WorkspaceUiStateMutationResult, request: SaveWorkspaceUiStateRequest): boolean {
+  if (value.outcome === 'applied') {
+    return value.record.revision === request.expectedRevision + 1 && isDeepStrictEqual(value.record.state, request.state);
+  }
+  if (value.outcome === 'stale') return value.record.revision !== request.expectedRevision;
+  if (value.outcome === 'unchanged') {
+    return value.record.revision === request.expectedRevision && isDeepStrictEqual(value.record.state, request.state);
+  }
+  return true;
+}
+
+function sameStrings(first: string[], second: string[]): boolean {
+  return first.length === second.length && first.every((value, index) => value === second[index]);
+}
+
 function protocolError(operation: string, expected: string): CoreBackendError {
   return new CoreBackendError('NATIVE_PROTOCOL_ERROR', `Native core returned an invalid ${expected} for ${operation}`);
+}
+
+function invalidRequest(operation: string): CoreBackendError {
+  return new CoreBackendError('INVALID_ARGUMENT', `Invalid request for native core ${operation}`);
 }
 
 function normalizeNativeError(operation: string, error: unknown, fallbackCode = 'NATIVE_CALL_FAILED'): CoreBackendError {

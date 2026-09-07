@@ -15,7 +15,7 @@
     >
       <span class="workspace-monogram" aria-hidden="true">{{ monogram }}</span>
       <span class="workspace-name">{{ workspace.displayName }}</span>
-      <WorkspaceAttentionBadge :state="workspace.state" compact />
+      <WorkspaceAttentionBadge :attention="workspace.attention" :state="workspace.state" compact />
     </button>
 
     <button
@@ -46,7 +46,10 @@ defineEmits<{
 
 const monogram = computed(() => props.workspace.displayName.trim().slice(0, 2).toUpperCase() || 'WS');
 const accessibleLabel = computed(
-  () => `${props.workspace.displayName}, ${props.workspace.root}, ${props.selected ? 'selected, ' : ''}${props.workspace.state}`,
+  () =>
+    `${props.workspace.displayName}, ${props.workspace.root}, ${props.selected ? 'selected, ' : ''}${props.workspace.attention.state}, ` +
+    `${props.workspace.attention.inputRequired} input required, ${props.workspace.attention.errors} errors, ` +
+    `${props.workspace.attention.unread} unread, ${props.workspace.attention.running} running, load ${props.workspace.state}`,
 );
 </script>
 

@@ -1,23 +1,61 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray, type Input, type IpcMainInvokeEvent } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  shell,
+  Tray,
+  type Input,
+  type IpcMainInvokeEvent,
+} from 'electron';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
 import { ReviewAgentRunner } from './reviewAgentRunner';
+import { createReviewAttentionWithRetry } from './reviewAttention';
 import { coreMethodNames, type CoreMethods } from '../src/lib/coreContract';
 import type { ReviewAgentChatRequest, ReviewAgentStartRequest } from '../src/lib/desktopBridge';
 import {
   isWorkspaceReference,
   isWorkspaceRequestContext,
+  type AttentionItem,
   type WorkbenchEvent,
   type WorkspaceCoreMethod,
   type WorkspaceRequestContext,
+  type WorkbenchSnapshot,
+  type WorkspaceSummary,
 } from '../src/lib/workbenchContract';
 import type { CoreBackend } from './coreBackend';
 import { LegacyCoreBackend } from './legacyCoreBackend';
-import { closeWorkspaceWithLegacyReviewAgent } from './legacyReviewAgentLifecycle';
+import {
+  assertLegacyReviewAllowsClose,
+  closeWorkspaceWithLegacyReviewAgent,
+  stopLegacyReviewAgentForShutdown,
+} from './legacyReviewAgentLifecycle';
 import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 import { windowCloseDisposition } from './windowLifecycle';
+import {
+  attentionNotificationContent,
+  claimAttentionNotification,
+  shouldNotify,
+  trayAttentionState,
+  type TrayAttentionState,
+} from './attentionPresentation';
+import {
+  parseAttentionAcknowledgeRequest,
+  parseInputAnswerRequest,
+  parseInputCancelRequest,
+  parseDismissRestoreFailureRequest,
+  parseWorkspaceCloseRequest,
+  parseWorkspaceOrderRequest,
+  parseWorkspaceSnapshotRequest,
+  parseWorkspaceUiStateRequest,
+} from './phase5Ipc';
+import { WorkbenchNavigationQueue } from './workbenchNavigationQueue';
 
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 7_000;
 const workspaceMethodNames = coreMethodNames.filter(
@@ -33,6 +71,9 @@ let allowQuitAfterShutdown = false;
 let coreBackendPromise: Promise<CoreBackend> | null = null;
 let unsubscribeBackendEvents: (() => void) | null = null;
 let shutdownOperation: Promise<void> | null = null;
+const workspaceSummaries = new Map<string, WorkspaceSummary>();
+const workbenchNavigationQueue = new WorkbenchNavigationQueue();
+let workspaceSummarySequence = 0;
 
 if (!app.requestSingleInstanceLock({ cwd: process.cwd() })) {
   app.exit(0);
@@ -44,6 +85,12 @@ function forwardWorkbenchEvent(event: WorkbenchEvent): void {
     reviewAgentOwner = null;
   }
   if (primaryWindow && !primaryWindow.isDestroyed()) primaryWindow.webContents.send('workbench:event', event);
+  updateWorkspaceSummary(event);
+  if (event.kind === 'workspace/attentionChanged') {
+    void showAttentionNotification(event.payload.item).catch((error) => {
+      console.error('Failed to process workspace attention notification:', error);
+    });
+  }
 }
 
 function getCoreBackend(): Promise<CoreBackend> {
@@ -124,6 +171,14 @@ function isWorkspaceMethod(method: string): method is WorkspaceCoreMethod {
   return allowedWorkspaceMethods.has(method as WorkspaceCoreMethod);
 }
 
+export function createReviewAgentCoreRequest(backend: CoreBackend, context: WorkspaceRequestContext) {
+  return async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
+    if (!isWorkspaceMethod(method)) throw new Error(`Unknown workspace method: ${method}`);
+    const response = await backend.request({ ...context, requestId: randomUUID() }, method, params as CoreMethods[typeof method]['params']);
+    return response.result as T;
+  };
+}
+
 function focusWindow(window: BrowserWindow): void {
   if (window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
@@ -149,10 +204,12 @@ function createWindow(): BrowserWindow {
     },
   });
   primaryWindow = window;
+  workbenchNavigationQueue.markNotReady(window.webContents);
 
   window.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error(`Failed to load preload script ${preloadPath}:`, error);
   });
+  window.webContents.on('did-start-loading', () => workbenchNavigationQueue.markNotReady(window.webContents));
   installKeyboardDefaultGuards(window);
   window.on('close', (event) => {
     const disposition = windowCloseDisposition(isQuitting, Boolean(tray));
@@ -166,6 +223,7 @@ function createWindow(): BrowserWindow {
     window.hide();
   });
   window.on('closed', () => {
+    workbenchNavigationQueue.markNotReady(window.webContents);
     if (primaryWindow === window) primaryWindow = null;
   });
 
@@ -186,31 +244,9 @@ function showPrimaryWindow(): BrowserWindow {
 function createTray(): void {
   if (tray) return;
   try {
-    const svg = [
-      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
-      '<rect width="32" height="32" rx="7" fill="#4b7bec"/>',
-      '<path d="M9 7h7.5C22.4 7 26 10.4 26 16s-3.6 9-9.5 9H9V7zm6 5v8h1.3c2.6 0 4.2-1.3 4.2-4s-1.6-4-4.2-4H15z" fill="white"/>',
-      '</svg>',
-    ].join('');
-    const icon = nativeImage
-      .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
-      .resize({ width: 18, height: 18 });
-    tray = new Tray(icon);
-    tray.setToolTip('Diffuse');
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: 'Show Diffuse', click: () => showPrimaryWindow() },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          click: () => {
-            isQuitting = true;
-            app.quit();
-          },
-        },
-      ]),
-    );
+    tray = new Tray(createTrayIcon('idle'));
     tray.on('click', () => showPrimaryWindow());
+    updateTray();
   } catch (error) {
     tray = null;
     console.error('Could not create Diffuse tray icon:', error);
@@ -276,11 +312,18 @@ export function parseLaunchRepository(args: string[], cwd = process.cwd()): stri
 app
   .whenReady()
   .then(async () => {
-    await getCoreBackend();
+    const backend = await getCoreBackend();
     if (isQuitting) return;
+    const snapshot = await backend.getWorkbenchSnapshot();
+    applyWorkbenchSnapshot(snapshot);
     Menu.setApplicationMenu(null);
     createTray();
     createWindow();
+    for (const item of snapshot.attentionItems) {
+      void showAttentionNotification(item).catch((error) => {
+        console.error('Failed to process restored workspace attention notification:', error);
+      });
+    }
     const launchPath = parseLaunchRepository(process.argv);
     if (launchPath) {
       initialWorkspaceOpen = openWorkspaceFromMain(launchPath);
@@ -330,15 +373,18 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   if (shutdownOperation) return;
 
-  reviewAgentOwner?.runner.dispose();
+  const owner = reviewAgentOwner;
   reviewAgentOwner = null;
   tray?.destroy();
   tray = null;
   const existingBackend = coreBackendPromise;
-  shutdownOperation = shutdownBackend(existingBackend).finally(() => {
-    allowQuitAfterShutdown = true;
-    app.quit();
-  });
+  shutdownOperation = stopLegacyReviewAgentForShutdown(owner)
+    .catch((error) => console.error('Failed to stop the legacy review agent during shutdown:', error))
+    .then(() => shutdownBackend(existingBackend))
+    .finally(() => {
+      allowQuitAfterShutdown = true;
+      app.quit();
+    });
 });
 
 async function shutdownBackend(existingBackend: Promise<CoreBackend> | null): Promise<void> {
@@ -415,6 +461,12 @@ ipcMain.handle('workbench:getSnapshot', async (event) => {
   return await backend.getWorkbenchSnapshot();
 });
 
+ipcMain.handle('workbench:rendererReady', async (event, request: unknown) => {
+  const window = getRequestWindow(event);
+  if (request !== undefined) throw new Error('Renderer-ready handshake does not accept a payload');
+  workbenchNavigationQueue.markReady(window.webContents);
+});
+
 ipcMain.handle('workspace:open', async (event, request: unknown) => {
   getRequestWindow(event);
   if (!isRecord(request) || typeof request.path !== 'string' || !request.path.trim()) throw new Error('Workspace path is required');
@@ -432,13 +484,72 @@ ipcMain.handle('workspace:activate', async (event, reference: unknown) => {
   return await backend.activateWorkspace(reference);
 });
 
-ipcMain.handle('workspace:close', async (event, reference: unknown) => {
+ipcMain.handle('workspace:close', async (event, request: unknown) => {
   getRequestWindow(event);
-  if (!isWorkspaceReference(reference)) throw new Error('Invalid workspace reference');
+  const parsed = parseWorkspaceCloseRequest(request);
   const backend = await getCoreBackend();
   const owner = reviewAgentOwner;
-  if (owner && matchesContext(owner.context, reference)) reviewAgentOwner = null;
-  return await closeWorkspaceWithLegacyReviewAgent(reference, owner, (workspaceReference) => backend.closeWorkspace(workspaceReference));
+  const matchingOwner = owner && matchesContext(owner.context, parsed) ? owner : null;
+  assertLegacyReviewAllowsClose(parsed, matchingOwner);
+  const summary = await closeWorkspaceWithLegacyReviewAgent(parsed, parsed.force ? matchingOwner : null, (closeRequest) =>
+    backend.closeWorkspace(closeRequest),
+  );
+  if (matchingOwner) {
+    if (parsed.force) reviewAgentOwner = null;
+    else if (!matchingOwner.runner.status().running) {
+      matchingOwner.runner.dispose();
+      reviewAgentOwner = null;
+    }
+  }
+  return summary;
+});
+
+ipcMain.handle('workspace:dismissRestoreFailure', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const workspaceId = parseDismissRestoreFailureRequest(request);
+  const backend = await getCoreBackend();
+  return await backend.dismissRestoreFailure(workspaceId);
+});
+
+ipcMain.handle('workspace:getSnapshot', async (event, reference: unknown) => {
+  getRequestWindow(event);
+  const backend = await getCoreBackend();
+  return await backend.getWorkspaceSnapshot(parseWorkspaceSnapshotRequest(reference));
+});
+
+ipcMain.handle('workspace:reorder', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const { workspaceIds } = parseWorkspaceOrderRequest(request);
+  const backend = await getCoreBackend();
+  return await backend.reorderWorkspaces(workspaceIds);
+});
+
+ipcMain.handle('workspace:saveUiState', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const parsed = parseWorkspaceUiStateRequest(request);
+  const backend = await getCoreBackend();
+  return await backend.saveWorkspaceUiState(parsed);
+});
+
+ipcMain.handle('attention:acknowledge', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const parsed = parseAttentionAcknowledgeRequest(request);
+  const backend = await getCoreBackend();
+  return await backend.acknowledgeAttention(parsed);
+});
+
+ipcMain.handle('input:answer', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const parsed = parseInputAnswerRequest(request);
+  const backend = await getCoreBackend();
+  return await backend.answerInputRequest(parsed);
+});
+
+ipcMain.handle('input:cancel', async (event, request: unknown) => {
+  getRequestWindow(event);
+  const parsed = parseInputCancelRequest(request);
+  const backend = await getCoreBackend();
+  return await backend.cancelInputRequest(parsed);
 });
 
 ipcMain.handle('workspace:request', async (event, request: unknown) => {
@@ -500,16 +611,9 @@ async function getReviewAgentRunner(context: WorkspaceRequestContext, existingBa
   if (reviewAgentOwner) return (await requireReviewAgentOwner(context)).runner;
 
   const ownerContext = context;
-  const runner = new ReviewAgentRunner(async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
-    if (!isWorkspaceMethod(method)) throw new Error(`Unknown workspace method: ${method}`);
-    const requestBackend = await getCoreBackend();
-    const response = await requestBackend.request(
-      { ...ownerContext, requestId: randomUUID() },
-      method,
-      params as CoreMethods[typeof method]['params'],
-    );
-    return response.result as T;
-  });
+  const runner = new ReviewAgentRunner(createReviewAgentCoreRequest(backend, ownerContext), (terminal) =>
+    createReviewAttentionWithRetry(async () => backend, ownerContext, terminal),
+  );
   reviewAgentOwner = { context: ownerContext, runner };
   return runner;
 }
@@ -528,6 +632,89 @@ function matchesContext(
   second: { workspaceId: string; workspaceGeneration: string },
 ): boolean {
   return first.workspaceId === second.workspaceId && first.workspaceGeneration === second.workspaceGeneration;
+}
+
+function applyWorkbenchSnapshot(snapshot: WorkbenchSnapshot): void {
+  if (snapshot.sequence < workspaceSummarySequence) return;
+  workspaceSummarySequence = snapshot.sequence;
+  workspaceSummaries.clear();
+  for (const workspace of snapshot.workspaces) workspaceSummaries.set(workspace.workspaceId, workspace);
+  updateTray();
+}
+
+function updateWorkspaceSummary(event: WorkbenchEvent): void {
+  workspaceSummarySequence = Math.max(workspaceSummarySequence, event.sequence);
+  if (event.kind === 'workspace/removed') workspaceSummaries.delete(event.workspaceId);
+  else if (event.kind === 'workspace/added' || event.kind === 'workspace/summaryChanged' || event.kind === 'workspace/attentionChanged') {
+    workspaceSummaries.set(event.workspaceId, event.kind === 'workspace/attentionChanged' ? event.payload.summary : event.payload);
+  } else if (event.kind === 'workspace/activated') {
+    workspaceSummaries.set(event.workspaceId, event.payload.summary);
+  }
+  updateTray();
+}
+
+async function showAttentionNotification(item: AttentionItem): Promise<void> {
+  const workspace = workspaceSummaries.get(item.workspaceId);
+  if (!workspace) return;
+  const content = attentionNotificationContent(workspace, item);
+  if (!content) return;
+  const primaryWindowFocused = Boolean(primaryWindow && !primaryWindow.isDestroyed() && primaryWindow.isFocused());
+  if (!shouldNotify(Notification.isSupported(), primaryWindowFocused)) return;
+  const backend = await getCoreBackend();
+  if (!(await claimAttentionNotification(backend, workspace, item))) return;
+  const notification = new Notification({ title: content.title, body: content.body });
+  notification.on('click', () => {
+    const window = showPrimaryWindow();
+    workbenchNavigationQueue.enqueue(
+      {
+        workspaceId: content.workspaceId,
+        target: content.target,
+        attentionId: content.attentionId,
+        revision: content.revision,
+      },
+      window.webContents,
+    );
+  });
+  notification.show();
+}
+
+function updateTray(): void {
+  if (!tray) return;
+  const state = trayAttentionState(workspaceSummaries.values());
+  tray.setImage(createTrayIcon(state.icon));
+  tray.setToolTip(state.text);
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: state.text, enabled: false },
+      { type: 'separator' },
+      { label: 'Show Diffuse', click: () => showPrimaryWindow() },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+}
+
+function createTrayIcon(state: TrayAttentionState['icon']) {
+  const mark =
+    state === 'attention'
+      ? '<circle cx="25" cy="7" r="6" fill="#ffb020"/><path d="M25 3.5v4.2M25 10.2v.3" stroke="#111318" stroke-width="2" stroke-linecap="round"/>'
+      : '';
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
+    '<rect width="32" height="32" rx="7" fill="#4b7bec"/>',
+    '<path d="M9 7h7.5C22.4 7 26 10.4 26 16s-3.6 9-9.5 9H9V7zm6 5v8h1.3c2.6 0 4.2-1.3 4.2-4s-1.6-4-4.2-4H15z" fill="white"/>',
+    mark,
+    '</svg>',
+  ].join('');
+  return nativeImage
+    .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+    .resize({ width: 18, height: 18 });
 }
 
 function isReviewAgentStartRequest(value: unknown): value is ReviewAgentStartRequest {

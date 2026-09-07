@@ -2,7 +2,18 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { CoreMethods } from '../src/lib/coreContract';
-import type { WorkspaceCoreMethod, WorkspaceReference, WorkspaceRequestContext } from '../src/lib/workbenchContract';
+import type {
+  AnswerInputRequest,
+  AttentionCasRequest,
+  CreateAttentionRequest,
+  CreateInputRequest,
+  InputCasRequest,
+  SaveWorkspaceUiStateRequest,
+  WorkspaceCoreMethod,
+  WorkspaceReference,
+  WorkspaceRequestContext,
+  CloseWorkspaceRequest,
+} from '../src/lib/workbenchContract';
 import { CoreBackendError } from './coreBackend';
 
 export type NativeEventBatchCallback = (events: unknown) => void;
@@ -18,7 +29,20 @@ export interface NativeCoreAddon {
   openWorkspace(path: string): Promise<unknown>;
   activateWorkspace(reference: WorkspaceReference | null): Promise<unknown>;
   getWorkspaceSnapshot(reference: WorkspaceReference): Promise<unknown>;
-  closeWorkspace(reference: WorkspaceReference): Promise<unknown>;
+  closeWorkspace(request: CloseWorkspaceRequest): Promise<unknown>;
+  dismissRestoreFailure(workspaceId: string): Promise<unknown>;
+  reorderWorkspaces(workspaceIds: string[]): Promise<unknown>;
+  saveWorkspaceUiState(request: SaveWorkspaceUiStateRequest): Promise<unknown>;
+  createAttention(request: CreateAttentionRequest): Promise<unknown>;
+  acknowledgeAttention(request: AttentionCasRequest): Promise<unknown>;
+  claimAttentionNotification(request: AttentionCasRequest): Promise<unknown>;
+  createInputRequest(request: CreateInputRequest): Promise<unknown>;
+  answerInputRequest(request: AnswerInputRequest): Promise<unknown>;
+  acceptInputRequest(request: InputCasRequest): Promise<unknown>;
+  rejectInputRequest(request: InputCasRequest): Promise<unknown>;
+  cancelInputRequest(request: InputCasRequest): Promise<unknown>;
+  expireInputRequest(request: InputCasRequest): Promise<unknown>;
+  supersedeInputRequest(request: InputCasRequest): Promise<unknown>;
   request<M extends WorkspaceCoreMethod>(context: WorkspaceRequestContext, method: M, params: CoreMethods[M]['params']): Promise<unknown>;
   health(): Promise<unknown>;
   shutdown(): Promise<unknown>;
@@ -97,6 +121,19 @@ function validateAddon(value: unknown): NativeCoreAddon {
     'activateWorkspace',
     'getWorkspaceSnapshot',
     'closeWorkspace',
+    'dismissRestoreFailure',
+    'reorderWorkspaces',
+    'saveWorkspaceUiState',
+    'createAttention',
+    'acknowledgeAttention',
+    'claimAttentionNotification',
+    'createInputRequest',
+    'answerInputRequest',
+    'acceptInputRequest',
+    'rejectInputRequest',
+    'cancelInputRequest',
+    'expireInputRequest',
+    'supersedeInputRequest',
     'request',
     'health',
     'shutdown',

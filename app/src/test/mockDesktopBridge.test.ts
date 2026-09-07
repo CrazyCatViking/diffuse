@@ -32,4 +32,17 @@ describe('mock DesktopBridge', () => {
     await expect(bridge.stopReviewAgent(context)).resolves.toEqual({ running: false });
     expect(bridge.startReviewAgent).toHaveBeenCalledWith(request);
   });
+
+  it('supports Phase 5 workspace persistence commands', async () => {
+    const bridge = createMockDesktopBridge();
+
+    await expect(bridge.reorderWorkspaces(['workspace-b', 'workspace-a'])).resolves.toEqual({
+      workspaceIds: ['workspace-b', 'workspace-a'],
+    });
+    const reference = { workspaceId: 'workspace-a', workspaceGeneration: 'generation-a' };
+    await expect(bridge.saveWorkspaceUiState(reference, 4, { logicalFocus: 'file-a' })).resolves.toMatchObject({
+      outcome: 'applied',
+      record: { revision: 5, state: { logicalFocus: 'file-a' } },
+    });
+  });
 });

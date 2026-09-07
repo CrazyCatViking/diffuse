@@ -56,7 +56,7 @@ describe('LegacyWorkspaceRegistry', () => {
     clients[0].responses.set('listBranches', pending.promise);
     const staleRequest = registry.request(context(first, 'stale-request'), 'listBranches', undefined);
 
-    registry.closeWorkspace(first.summary);
+    registry.closeWorkspace({ ...first.summary, force: false });
     clients[0].emitCoreEvent({ method: 'search/started', params: { searchId: 'stale-search' } });
     pending.resolve([]);
     await expect(staleRequest).rejects.toBeInstanceOf(StaleWorkspaceError);
@@ -94,6 +94,48 @@ describe('LegacyWorkspaceRegistry', () => {
 
     expect(registry.getWorkbenchSnapshot().activeWorkspaceId).toBe(first.summary.workspaceId);
     expect(events.filter((event) => event.kind === 'workspace/activated').at(-1)?.workspaceId).toBe(first.summary.workspaceId);
+  });
+
+  it('provides strict idle defaults and process-local order and UI state', async () => {
+    const events: WorkbenchEvent[] = [];
+    const clients: FakeCoreClient[] = [];
+    const registry = createRegistry(clients, events);
+    const first = await registry.openWorkspace('/repo-a');
+    const second = await registry.openWorkspace('/repo-b');
+
+    expect(registry.getWorkbenchSnapshot()).toMatchObject({
+      aggregateAttention: { state: 'idle', inputRequired: 0, errors: 0, unread: 0, running: 0, total: 0 },
+      attentionItems: [],
+      inputRequests: [],
+      workspaceUiState: {},
+      legacyReviewImports: [],
+    });
+    expect(first.summary.attention).toEqual({ state: 'idle', inputRequired: 0, errors: 0, unread: 0, running: 0, total: 0 });
+
+    expect(registry.reorderWorkspaces([second.summary.workspaceId, first.summary.workspaceId])).toEqual({
+      workspaceIds: [second.summary.workspaceId, first.summary.workspaceId],
+    });
+    const firstUi = registry.saveWorkspaceUiState({ ...first.summary, expectedRevision: 0, state: { route: 'review' } });
+    const secondUi = registry.saveWorkspaceUiState({
+      ...first.summary,
+      expectedRevision: firstUi.record.revision,
+      state: { route: 'file' },
+    });
+
+    expect(registry.getWorkbenchSnapshot().workspaces.map((workspace) => workspace.workspaceId)).toEqual([
+      second.summary.workspaceId,
+      first.summary.workspaceId,
+    ]);
+    expect(secondUi).toMatchObject({ outcome: 'applied', record: { revision: 2, state: { route: 'file' } } });
+    expect(registry.getWorkbenchSnapshot().workspaceUiState[first.summary.workspaceId]).toEqual(secondUi.record);
+    expect(events.map((event) => event.kind)).toEqual(expect.arrayContaining(['workspace/orderChanged', 'workspace/uiStateChanged']));
+    expect(registry.saveWorkspaceUiState({ ...first.summary, expectedRevision: 1, state: {} })).toMatchObject({
+      outcome: 'stale',
+      record: { revision: 2, state: { route: 'file' } },
+    });
+    expect(() =>
+      registry.saveWorkspaceUiState({ ...first.summary, workspaceGeneration: 'stale-generation', expectedRevision: 2, state: {} }),
+    ).toThrow('generation is stale');
   });
 });
 

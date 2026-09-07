@@ -10,7 +10,16 @@ describe('WorkspaceSwitcher', () => {
     const wrapper = mount(WorkspaceSwitcher, {
       attachTo: document.body,
       props: {
-        workspaces: [{ workspaceId: 'a', workspaceGeneration: 'ga', root: '/repo/alpha', displayName: 'alpha', state: 'ready' as const }],
+        workspaces: [
+          {
+            workspaceId: 'a',
+            workspaceGeneration: 'ga',
+            root: '/repo/alpha',
+            displayName: 'alpha',
+            state: 'ready' as const,
+            attention: { state: 'idle' as const, inputRequired: 0, errors: 0, unread: 0, running: 0, total: 0 },
+          },
+        ],
         recentRepositories: [{ path: '/repo/beta', name: 'beta', openedAt: 1 }],
       },
     });

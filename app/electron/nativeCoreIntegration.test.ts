@@ -59,7 +59,7 @@ describe('native core addon integration', () => {
       expect(batches.some((batch) => batch.length > 0)).toBe(true);
 
       const stale = first.summary;
-      await backend.closeWorkspace(stale);
+      await backend.closeWorkspace({ ...stale, force: false });
       const reopened = await backend.openWorkspace(firstFixture.root);
       expect(reopened.summary.workspaceId).toBe(stale.workspaceId);
       expect(reopened.summary.workspaceGeneration).not.toBe(stale.workspaceGeneration);

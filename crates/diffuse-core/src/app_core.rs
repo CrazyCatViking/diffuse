@@ -24,17 +24,44 @@ use crate::syntax::{
 };
 use crate::workspace::{WorkspaceRegistry, WorkspaceRuntime};
 use crate::{
-    BranchInfo, CoreError, CoreResult, DiffTargetDefaults, EventHub, WorkspaceGeneration,
-    WorkspaceId, WorkspaceRequestContext, WorkspaceSnapshot, WorkspaceSummary,
+    AnswerInputRequest, AttentionCasRequest, AttentionItem, AttentionMutationResult, BranchInfo,
+    CloseWorkspaceRequest, CoreError, CoreResult, CreateAttentionRequest, CreateInputRequest,
+    DiffTargetDefaults, EventHub, InputCasRequest, InputMutationResult, InputRequest,
+    InputRequestStatus, LegacyReviewImportReport, MutationOutcome, SaveWorkspaceUiStateRequest,
+    WorkspaceAttentionSummary, WorkspaceGeneration, WorkspaceId, WorkspaceRequestContext,
+    WorkspaceSnapshot, WorkspaceSummary, WorkspaceUiStateMutationResult, WorkspaceUiStateRecord,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreDiagnostic {
+    pub workspace_id: WorkspaceId,
+    pub root: String,
+    pub display_name: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DismissRestoreFailureResult {
+    pub workspace_id: WorkspaceId,
+    pub dismissed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSnapshot {
     pub workspaces: Vec<WorkspaceSummary>,
     pub active_workspace_id: Option<WorkspaceId>,
     #[serde(default)]
     pub active_workspace: Option<WorkspaceSnapshot>,
+    pub aggregate_attention: WorkspaceAttentionSummary,
+    pub attention_items: Vec<AttentionItem>,
+    pub input_requests: Vec<InputRequest>,
+    pub workspace_ui_state: std::collections::BTreeMap<String, WorkspaceUiStateRecord>,
+    pub legacy_review_imports: Vec<LegacyReviewImportReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restore_diagnostics: Vec<RestoreDiagnostic>,
     pub sequence: u64,
 }
 
@@ -68,9 +95,11 @@ struct AppCoreInner {
     active_workspace_id: RwLock<Option<WorkspaceId>>,
     lifecycle_state: RwLock<AppCoreLifecycleState>,
     state_gate: StdMutex<()>,
+    phase5_gate: StdMutex<()>,
     lifecycle_events: StdMutex<()>,
     open_commit: AsyncMutex<()>,
     shutdown_gate: StdMutex<()>,
+    restore_diagnostics: RwLock<Vec<RestoreDiagnostic>>,
 }
 
 #[derive(Clone)]
@@ -206,9 +235,11 @@ impl AppCore {
                 active_workspace_id: RwLock::new(None),
                 lifecycle_state: RwLock::new(AppCoreLifecycleState::Running),
                 state_gate: StdMutex::new(()),
+                phase5_gate: StdMutex::new(()),
                 lifecycle_events: StdMutex::new(()),
                 open_commit: AsyncMutex::new(()),
                 shutdown_gate: StdMutex::new(()),
+                restore_diagnostics: RwLock::new(Vec::new()),
             }),
         })
     }
@@ -217,14 +248,36 @@ impl AppCore {
         &self.inner.events
     }
 
-    pub fn workbench_snapshot(&self) -> WorkbenchSnapshot {
+    pub fn workbench_snapshot(&self) -> CoreResult<WorkbenchSnapshot> {
         let _state = self
             .inner
             .state_gate
             .lock()
             .expect("app core state lock poisoned");
+        let _phase5 = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 coordination lock poisoned");
         let mut workspaces = self.inner.registry.summaries();
-        workspaces.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        for summary in &mut workspaces {
+            summary.attention = self
+                .inner
+                .database
+                .attention_summary(summary.workspace_id)?;
+        }
+        let order = self.inner.database.ordered_open_workspace_ids()?;
+        let positions = order
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect::<std::collections::HashMap<_, _>>();
+        workspaces.sort_by_key(|summary| {
+            positions
+                .get(&summary.workspace_id)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
         let active_workspace_id = *self
             .inner
             .active_workspace_id
@@ -232,13 +285,41 @@ impl AppCore {
             .expect("active workspace lock poisoned");
         let active_workspace = active_workspace_id
             .and_then(|workspace_id| self.inner.registry.by_id(workspace_id))
-            .map(|runtime| runtime.snapshot());
-        WorkbenchSnapshot {
+            .map(|runtime| self.runtime_snapshot(&runtime))
+            .transpose()?;
+        let aggregate_attention =
+            WorkspaceAttentionSummary::aggregate(workspaces.iter().map(|item| &item.attention));
+        let legacy_review_imports = workspaces
+            .iter()
+            .map(|workspace| {
+                self.inner
+                    .database
+                    .legacy_review_import_report(workspace.workspace_id)
+            })
+            .collect::<CoreResult<Vec<_>>>()?;
+        Ok(WorkbenchSnapshot {
             workspaces,
             active_workspace_id,
             active_workspace,
+            aggregate_attention,
+            attention_items: self.inner.database.attention_items()?,
+            input_requests: self.inner.database.input_requests()?,
+            workspace_ui_state: self.inner.database.workspace_ui_states()?,
+            legacy_review_imports,
+            restore_diagnostics: self
+                .inner
+                .restore_diagnostics
+                .read()
+                .expect("restore diagnostics lock poisoned")
+                .clone(),
             sequence: self.inner.events.current_sequence(),
-        }
+        })
+    }
+
+    fn runtime_snapshot(&self, runtime: &WorkspaceRuntime) -> CoreResult<WorkspaceSnapshot> {
+        let mut snapshot = runtime.snapshot();
+        snapshot.summary.attention = self.inner.database.attention_summary(runtime.id)?;
+        Ok(snapshot)
     }
 
     pub fn lifecycle_state(&self) -> AppCoreLifecycleState {
@@ -271,19 +352,6 @@ impl AppCore {
             .unwrap_or(&result.root)
             .to_owned();
         let generation = WorkspaceGeneration::new();
-        let id = self.inner.database.open_workspace(
-            &canonical_root,
-            &result.root,
-            &display_name,
-            generation,
-        )?;
-        let mut runtime =
-            WorkspaceRuntime::new(id, generation, canonical_root, display_name, repository);
-        if let Err(error) = runtime.start_watcher(self.inner.events.clone()) {
-            let _ = self.inner.database.close_workspace(id);
-            return Err(error);
-        }
-        let runtime = Arc::new(runtime);
         let lifecycle_event = self
             .inner
             .lifecycle_events
@@ -295,19 +363,68 @@ impl AppCore {
             .lock()
             .expect("app core state lock poisoned");
         if self.lifecycle_state() != AppCoreLifecycleState::Running {
-            drop(state);
-            runtime.stop_watcher();
-            self.inner.database.close_workspace(id)?;
             return Err(CoreError::AppCoreShuttingDown);
         }
+        let phase5 = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 coordination lock poisoned");
+        let opened = self.inner.database.open_workspace(
+            &canonical_root,
+            &result.root,
+            &display_name,
+            generation,
+        )?;
+        let id = opened.id;
+        if let Err(error) =
+            crate::legacy_import::import_legacy_reviews(&self.inner.database, id, repository.root())
+        {
+            if opened.was_open {
+                self.inner.database.mark_restore_failed(id)?;
+            } else {
+                self.inner.database.close_workspace(id)?;
+            }
+            return Err(error);
+        }
+        let mut runtime =
+            WorkspaceRuntime::new(id, generation, canonical_root, display_name, repository);
+        if let Err(error) = runtime.start_watcher(self.inner.events.clone()) {
+            if opened.was_open {
+                let _ = self.inner.database.mark_restore_failed(id);
+            } else {
+                let _ = self.inner.database.close_workspace(id);
+            }
+            return Err(error);
+        }
+        let runtime = Arc::new(runtime);
         self.inner.registry.insert(runtime.clone());
-        let snapshot = runtime.snapshot();
-        drop(state);
-        self.inner.events.publish(
+        let snapshot = match self.runtime_snapshot(&runtime) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = self.inner.registry.remove(id, generation);
+                runtime.stop_watcher();
+                if opened.was_open {
+                    let _ = self.inner.database.mark_restore_failed(id);
+                } else {
+                    let _ = self.inner.database.close_workspace(id);
+                }
+                return Err(error);
+            }
+        };
+        self.inner
+            .restore_diagnostics
+            .write()
+            .expect("restore diagnostics lock poisoned")
+            .retain(|diagnostic| diagnostic.workspace_id != id);
+        let event = self.inner.events.enqueue(
             "workspace/added",
             Some((id, generation)),
             serde_json::to_value(&snapshot.summary).expect("workspace summary is serializable"),
         );
+        drop(phase5);
+        drop(state);
+        self.inner.events.deliver(event);
         drop(lifecycle_event);
         self.activate_workspace(id, generation)
     }
@@ -333,19 +450,28 @@ impl AppCore {
             return Err(CoreError::AppCoreShuttingDown);
         }
         let runtime = self.inner.registry.get(workspace_id, generation)?;
-        self.inner.database.activate_workspace(workspace_id)?;
-        *self
-            .inner
-            .active_workspace_id
-            .write()
-            .expect("active workspace lock poisoned") = Some(workspace_id);
-        let snapshot = runtime.snapshot();
+        let (snapshot, event) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            self.inner.database.activate_workspace(workspace_id)?;
+            *self
+                .inner
+                .active_workspace_id
+                .write()
+                .expect("active workspace lock poisoned") = Some(workspace_id);
+            let snapshot = self.runtime_snapshot(&runtime)?;
+            let event = self.inner.events.enqueue(
+                "workspace/activated",
+                Some((workspace_id, generation)),
+                serde_json::to_value(&snapshot).expect("workspace snapshot is serializable"),
+            );
+            (snapshot, event)
+        };
         drop(state);
-        self.inner.events.publish(
-            "workspace/activated",
-            Some((workspace_id, generation)),
-            serde_json::to_value(&snapshot).expect("workspace snapshot is serializable"),
-        );
+        self.inner.events.deliver(event);
         Ok(snapshot)
     }
 
@@ -360,6 +486,14 @@ impl AppCore {
             .state_gate
             .lock()
             .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        let _phase5 = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 coordination lock poisoned");
         self.inner.database.deactivate_workspace()?;
         *self
             .inner
@@ -378,7 +512,7 @@ impl AppCore {
             .registry
             .get(context.workspace_id, context.workspace_generation)?;
         let _permit = runtime.acquire_operation()?;
-        Ok(runtime.snapshot())
+        self.runtime_snapshot(&runtime)
     }
 
     pub async fn get_diff_target_defaults(
@@ -963,7 +1097,552 @@ impl AppCore {
         self.inner.registry.get(workspace.0, workspace.1).is_ok()
     }
 
-    pub fn close_workspace(&self, context: &WorkspaceRequestContext) -> CoreResult<()> {
+    pub fn reorder_workspaces(
+        &self,
+        workspace_ids: Vec<WorkspaceId>,
+    ) -> CoreResult<Vec<WorkspaceId>> {
+        let state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        let queued = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            if self.inner.database.ordered_open_workspace_ids()? == workspace_ids {
+                return Ok(workspace_ids);
+            }
+            let ids = self.inner.database.reorder_workspaces(&workspace_ids)?;
+            let event = self.inner.events.enqueue(
+                "workspace/orderChanged",
+                None,
+                json!({ "workspaceIds": ids }),
+            );
+            (ids, event)
+        };
+        drop(state);
+        let (ids, event) = queued;
+        self.inner.events.deliver(event);
+        Ok(ids)
+    }
+
+    pub fn save_workspace_ui_state(
+        &self,
+        request: SaveWorkspaceUiStateRequest,
+    ) -> CoreResult<WorkspaceUiStateMutationResult> {
+        request.validate()?;
+        if !request.state.is_object() {
+            return Err(CoreError::InvalidParams(
+                "workspace UI state must be an object".to_owned(),
+            ));
+        }
+        let runtime = self
+            .inner
+            .registry
+            .get(request.workspace_id, request.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        let (result, event) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            let result = self.inner.database.save_workspace_ui_state(
+                request.workspace_id,
+                request.expected_revision,
+                request.state,
+            )?;
+            let event = (result.outcome == MutationOutcome::Applied).then(|| {
+                self.inner.events.enqueue(
+                    "workspace/uiStateChanged",
+                    Some((request.workspace_id, request.workspace_generation)),
+                    json!({ "workspaceId": request.workspace_id, "record": result.record }),
+                )
+            });
+            (result, event)
+        };
+        drop(state);
+        drop(_permit);
+        if let Some(event) = event {
+            self.inner.events.deliver(event);
+        }
+        Ok(result)
+    }
+
+    pub fn create_attention(
+        &self,
+        request: CreateAttentionRequest,
+    ) -> CoreResult<AttentionMutationResult> {
+        request.validate()?;
+        let runtime = self
+            .inner
+            .registry
+            .get(request.workspace_id, request.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let (result, events) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            let result = self.inner.database.create_or_revise_attention(&request)?;
+            let events = self.enqueue_attention_result(
+                request.workspace_id,
+                request.workspace_generation,
+                &result,
+            );
+            (result, events)
+        };
+        drop(_permit);
+        self.deliver_events(events);
+        Ok(result)
+    }
+
+    pub fn acknowledge_attention(
+        &self,
+        request: AttentionCasRequest,
+    ) -> CoreResult<AttentionMutationResult> {
+        self.mutate_attention(request, false)
+    }
+
+    pub fn claim_attention_notification(
+        &self,
+        request: AttentionCasRequest,
+    ) -> CoreResult<AttentionMutationResult> {
+        self.mutate_attention(request, true)
+    }
+
+    fn mutate_attention(
+        &self,
+        request: AttentionCasRequest,
+        notification_claim: bool,
+    ) -> CoreResult<AttentionMutationResult> {
+        request.validate()?;
+        let runtime = self
+            .inner
+            .registry
+            .get(request.workspace_id, request.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let (result, events) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            let result = self.inner.database.mutate_attention_revision(
+                request.workspace_id,
+                &request.attention_id,
+                request.expected_revision,
+                notification_claim,
+            )?;
+            let events = if notification_claim {
+                Vec::new()
+            } else {
+                self.enqueue_attention_result(
+                    request.workspace_id,
+                    request.workspace_generation,
+                    &result,
+                )
+            };
+            (result, events)
+        };
+        drop(_permit);
+        self.deliver_events(events);
+        Ok(result)
+    }
+
+    pub fn create_input_request(
+        &self,
+        request: CreateInputRequest,
+    ) -> CoreResult<InputMutationResult> {
+        request.validate()?;
+        let runtime = self
+            .inner
+            .registry
+            .get(request.workspace_id, request.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let workspace = (request.workspace_id, request.workspace_generation);
+        let (result, events) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            let result = self.inner.database.create_input(&request)?;
+            let mut events = Vec::new();
+            if result.outcome == MutationOutcome::Applied {
+                events.push(self.inner.events.enqueue(
+                    "input/requested",
+                    Some(workspace),
+                    serde_json::to_value(&result.input).expect("input request is serializable"),
+                ));
+                events.extend(self.enqueue_input_attention(workspace, &result));
+            }
+            (result, events)
+        };
+        drop(_permit);
+        self.deliver_events(events);
+        Ok(result)
+    }
+
+    pub fn answer_input_request(
+        &self,
+        request: AnswerInputRequest,
+    ) -> CoreResult<InputMutationResult> {
+        request.validate()?;
+        let runtime = self
+            .inner
+            .registry
+            .get(request.workspace_id, request.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let workspace = (request.workspace_id, request.workspace_generation);
+        let (result, event) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            let result = self.inner.database.answer_input(
+                request.workspace_id,
+                &request.input_id,
+                request.expected_revision,
+                request.response,
+                request.redact_response,
+            )?;
+            let event = (result.outcome == MutationOutcome::Applied).then(|| {
+                self.inner.events.enqueue(
+                    "input/responseSubmitted",
+                    Some(workspace),
+                    serde_json::to_value(&result.input).expect("input request is serializable"),
+                )
+            });
+            (result, event)
+        };
+        drop(_permit);
+        if let Some(event) = event {
+            self.inner.events.deliver(event);
+        }
+        Ok(result)
+    }
+
+    pub fn accept_input_request(
+        &self,
+        request: InputCasRequest,
+    ) -> CoreResult<InputMutationResult> {
+        self.finish_input_request(request, InputRequestStatus::Accepted)
+    }
+
+    pub fn reject_input_request(
+        &self,
+        request: InputCasRequest,
+    ) -> CoreResult<InputMutationResult> {
+        self.finish_input_request(request, InputRequestStatus::Rejected)
+    }
+
+    pub fn cancel_input_request(
+        &self,
+        request: InputCasRequest,
+    ) -> CoreResult<InputMutationResult> {
+        self.finish_input_request(request, InputRequestStatus::Cancelled)
+    }
+
+    pub fn expire_input_request(
+        &self,
+        request: InputCasRequest,
+    ) -> CoreResult<InputMutationResult> {
+        self.finish_input_request(request, InputRequestStatus::Expired)
+    }
+
+    pub fn supersede_input_request(
+        &self,
+        request: InputCasRequest,
+    ) -> CoreResult<InputMutationResult> {
+        self.finish_input_request(request, InputRequestStatus::Superseded)
+    }
+
+    fn finish_input_request(
+        &self,
+        request: InputCasRequest,
+        desired: InputRequestStatus,
+    ) -> CoreResult<InputMutationResult> {
+        request.validate()?;
+        let runtime = self
+            .inner
+            .registry
+            .get(request.workspace_id, request.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let workspace = (request.workspace_id, request.workspace_generation);
+        let (result, events) = {
+            let _phase5 = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 coordination lock poisoned");
+            let result = self.inner.database.finish_input(
+                request.workspace_id,
+                &request.input_id,
+                request.expected_revision,
+                desired,
+            )?;
+            let mut events = Vec::new();
+            if result.outcome == MutationOutcome::Applied {
+                events.push(self.inner.events.enqueue(
+                    "input/resolved",
+                    Some(workspace),
+                    serde_json::to_value(&result.input).expect("input request is serializable"),
+                ));
+                events.extend(self.enqueue_input_attention(workspace, &result));
+            }
+            (result, events)
+        };
+        drop(_permit);
+        self.deliver_events(events);
+        Ok(result)
+    }
+
+    fn enqueue_attention_result(
+        &self,
+        workspace_id: WorkspaceId,
+        generation: WorkspaceGeneration,
+        result: &AttentionMutationResult,
+    ) -> Vec<crate::event::QueuedWorkbenchEvent> {
+        if result.outcome != MutationOutcome::Applied {
+            return Vec::new();
+        }
+        let mut events = Vec::new();
+        if let Some(summary) =
+            self.workspace_summary(workspace_id, generation, result.summary.clone())
+        {
+            events.push(self.inner.events.enqueue(
+                "workspace/attentionChanged",
+                Some((workspace_id, generation)),
+                json!({ "item": result.item, "summary": summary }),
+            ));
+            events.push(self.inner.events.enqueue(
+                "workspace/summaryChanged",
+                Some((workspace_id, generation)),
+                serde_json::to_value(summary).expect("workspace summary is serializable"),
+            ));
+        }
+        events
+    }
+
+    fn enqueue_input_attention(
+        &self,
+        workspace: (WorkspaceId, WorkspaceGeneration),
+        result: &InputMutationResult,
+    ) -> Vec<crate::event::QueuedWorkbenchEvent> {
+        let mut events = Vec::new();
+        if let Some(summary) =
+            self.workspace_summary(workspace.0, workspace.1, result.summary.clone())
+        {
+            if let Some(item) = &result.attention {
+                events.push(self.inner.events.enqueue(
+                    "workspace/attentionChanged",
+                    Some(workspace),
+                    json!({ "item": item, "summary": summary }),
+                ));
+            }
+            events.push(self.inner.events.enqueue(
+                "workspace/summaryChanged",
+                Some(workspace),
+                serde_json::to_value(summary).expect("workspace summary is serializable"),
+            ));
+        }
+        events
+    }
+
+    fn deliver_events(&self, events: Vec<crate::event::QueuedWorkbenchEvent>) {
+        for event in events {
+            self.inner.events.deliver(event);
+        }
+    }
+
+    fn workspace_summary(
+        &self,
+        workspace_id: WorkspaceId,
+        generation: WorkspaceGeneration,
+        attention: WorkspaceAttentionSummary,
+    ) -> Option<WorkspaceSummary> {
+        if let Some(runtime) = self.inner.registry.by_id(workspace_id) {
+            if runtime.generation == generation {
+                let mut summary = runtime.summary();
+                summary.attention = attention;
+                return Some(summary);
+            }
+        }
+        None
+    }
+
+    pub async fn restore_workbench(&self) -> CoreResult<Vec<RestoreDiagnostic>> {
+        let mut records = self.inner.database.restorable_workspaces()?;
+        let active = records
+            .iter()
+            .find(|record| record.active)
+            .map(|record| record.id);
+        let mut diagnostics = Vec::new();
+        if let Some(position) = records.iter().position(|record| record.active) {
+            let record = records.remove(position);
+            if let Some(diagnostic) = self.restore_workspace_record(record).await? {
+                diagnostics.push(diagnostic);
+            }
+        }
+
+        let mut pending = records.into_iter();
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..4 {
+            let Some(record) = pending.next() else { break };
+            let core = self.clone();
+            tasks.spawn(async move { core.restore_workspace_record(record).await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            if let Some(diagnostic) =
+                result.map_err(|error| CoreError::TaskFailed(error.to_string()))??
+            {
+                diagnostics.push(diagnostic);
+            }
+            if let Some(record) = pending.next() {
+                let core = self.clone();
+                tasks.spawn(async move { core.restore_workspace_record(record).await });
+            }
+        }
+        diagnostics.sort_by(|left, right| {
+            left.root.cmp(&right.root).then_with(|| {
+                left.workspace_id
+                    .to_string()
+                    .cmp(&right.workspace_id.to_string())
+            })
+        });
+        let active_runtime = active.and_then(|id| self.inner.registry.by_id(id));
+        let permit = active_runtime
+            .as_ref()
+            .map(|runtime| runtime.acquire_operation())
+            .transpose()?;
+        let _lifecycle_event = self
+            .inner
+            .lifecycle_events
+            .lock()
+            .expect("app core lifecycle event lock poisoned");
+        let state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        let phase5 = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 coordination lock poisoned");
+        let event = if let Some(runtime) = active_runtime {
+            self.inner.database.activate_workspace(runtime.id)?;
+            *self
+                .inner
+                .active_workspace_id
+                .write()
+                .expect("active workspace lock poisoned") = Some(runtime.id);
+            let snapshot = self.runtime_snapshot(&runtime)?;
+            Some(self.inner.events.enqueue(
+                "workspace/activated",
+                Some((runtime.id, runtime.generation)),
+                serde_json::to_value(snapshot).expect("workspace snapshot is serializable"),
+            ))
+        } else {
+            match active {
+                Some(active_id) => self.inner.database.activate_workspace(active_id)?,
+                None => self.inner.database.deactivate_workspace()?,
+            }
+            *self
+                .inner
+                .active_workspace_id
+                .write()
+                .expect("active workspace lock poisoned") = None;
+            None
+        };
+        *self
+            .inner
+            .restore_diagnostics
+            .write()
+            .expect("restore diagnostics lock poisoned") = diagnostics.clone();
+        drop(phase5);
+        drop(state);
+        drop(permit);
+        if let Some(event) = event {
+            self.inner.events.deliver(event);
+        }
+        Ok(diagnostics)
+    }
+
+    async fn restore_workspace_record(
+        &self,
+        record: crate::database::RestorableWorkspace,
+    ) -> CoreResult<Option<RestoreDiagnostic>> {
+        let message = match self.open_workspace(&record.root).await {
+            Ok(snapshot) if snapshot.summary.workspace_id == record.id => return Ok(None),
+            Ok(_) => "restored with a different workspace identity".to_owned(),
+            Err(error) => error.to_string(),
+        };
+        self.inner.database.mark_restore_failed(record.id)?;
+        Ok(Some(RestoreDiagnostic {
+            workspace_id: record.id,
+            root: record.root,
+            display_name: record.display_name,
+            message,
+        }))
+    }
+
+    pub fn dismiss_restore_failure(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> CoreResult<DismissRestoreFailureResult> {
+        let _state = self
+            .inner
+            .state_gate
+            .lock()
+            .expect("app core state lock poisoned");
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        if self.inner.registry.by_id(workspace_id).is_some() {
+            return Err(CoreError::CannotDismissLiveWorkspace);
+        }
+        let _phase5 = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 coordination lock poisoned");
+        let persisted = self.inner.database.dismiss_restore_failure(workspace_id)?;
+        let mut diagnostics = self
+            .inner
+            .restore_diagnostics
+            .write()
+            .expect("restore diagnostics lock poisoned");
+        let previous_len = diagnostics.len();
+        diagnostics.retain(|diagnostic| diagnostic.workspace_id != workspace_id);
+        Ok(DismissRestoreFailureResult {
+            workspace_id,
+            dismissed: persisted || diagnostics.len() != previous_len,
+        })
+    }
+
+    pub fn close_workspace(&self, request: &CloseWorkspaceRequest) -> CoreResult<()> {
+        let context = request.context();
         let state = self
             .inner
             .state_gate
@@ -976,7 +1655,7 @@ impl AppCore {
         runtime.begin_close()?;
         drop(state);
 
-        self.finish_workspace_close(runtime, context, true)
+        self.finish_workspace_close(runtime, &context, true, true, request.force)
     }
 
     fn finish_workspace_close(
@@ -984,6 +1663,8 @@ impl AppCore {
         runtime: Arc<WorkspaceRuntime>,
         context: &WorkspaceRequestContext,
         restore_on_failure: bool,
+        persist_close: bool,
+        force: bool,
     ) -> CoreResult<()> {
         let _close = runtime.acquire_close_gate();
         if self
@@ -999,15 +1680,28 @@ impl AppCore {
         runtime.wait_until_idle();
         runtime.search.wait_for_all();
 
+        if persist_close && !force {
+            match self
+                .inner
+                .database
+                .workspace_has_pending_input(context.workspace_id)
+            {
+                Ok(true) => {
+                    self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
+                    return Err(CoreError::WorkspaceHasPendingInput);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
+                    return Err(error);
+                }
+            }
+        }
+
         if let Err(error) = runtime.lsp.shutdown_repository(runtime.repository.root()) {
             self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
             return Err(CoreError::Lsp(error.to_string()));
         }
-        if let Err(error) = self.inner.database.close_workspace(context.workspace_id) {
-            self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
-            return Err(error);
-        }
-
         let _lifecycle_event = self
             .inner
             .lifecycle_events
@@ -1018,6 +1712,37 @@ impl AppCore {
             .state_gate
             .lock()
             .expect("app core state lock poisoned");
+        let _phase5 = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 coordination lock poisoned");
+        let persistence = if persist_close {
+            self.inner
+                .database
+                .close_workspace_with_input_policy(context.workspace_id, force)
+                .map(Some)
+        } else {
+            self.inner
+                .database
+                .unload_workspace(context.workspace_id)
+                .map(|()| None)
+        };
+        let persistence = persistence.inspect_err(|_error| {
+            self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
+        })?;
+        let workspace = (context.workspace_id, context.workspace_generation);
+        let mut events = Vec::new();
+        if let Some(persistence) = persistence {
+            for result in &persistence.forced_inputs {
+                events.push(self.inner.events.enqueue(
+                    "input/resolved",
+                    Some(workspace),
+                    serde_json::to_value(&result.input).expect("input request is serializable"),
+                ));
+                events.extend(self.enqueue_input_attention(workspace, result));
+            }
+        }
         let runtime = self
             .inner
             .registry
@@ -1027,17 +1752,21 @@ impl AppCore {
             .active_workspace_id
             .write()
             .expect("active workspace lock poisoned");
-        if *active == Some(context.workspace_id) {
+        if persist_close && *active == Some(context.workspace_id) {
             *active = None;
         }
         drop(active);
+        if persist_close {
+            events.push(self.inner.events.enqueue(
+                "workspace/removed",
+                Some((context.workspace_id, context.workspace_generation)),
+                serde_json::to_value(runtime.summary()).expect("workspace summary is serializable"),
+            ));
+        }
+        drop(_phase5);
         drop(state);
         runtime.stop_watcher();
-        self.inner.events.publish(
-            "workspace/removed",
-            Some((context.workspace_id, context.workspace_generation)),
-            serde_json::to_value(runtime.summary()).expect("workspace summary is serializable"),
-        );
+        self.deliver_events(events);
         Ok(())
     }
     fn restore_workspace_after_close_failure(
@@ -1090,7 +1819,8 @@ impl AppCore {
                 workspace_generation: runtime.generation,
                 request_id: "shutdown".to_owned(),
             };
-            if let Err(error) = self.finish_workspace_close(runtime, &context, false) {
+            if let Err(error) = self.finish_workspace_close(runtime, &context, false, false, false)
+            {
                 failures.push(error.to_string());
             }
         }
@@ -1416,6 +2146,14 @@ mod tests {
         }
     }
 
+    fn close_request(context: &WorkspaceRequestContext) -> CloseWorkspaceRequest {
+        CloseWorkspaceRequest {
+            workspace_id: context.workspace_id,
+            workspace_generation: context.workspace_generation,
+            force: false,
+        }
+    }
+
     struct GatedSearchSource {
         entered: mpsc::Sender<()>,
         release: Arc<(Mutex<bool>, Condvar)>,
@@ -1499,10 +2237,10 @@ mod tests {
         let first = core.open_workspace(first_repo.path()).await.unwrap();
         let second = core.open_workspace(second_repo.path()).await.unwrap();
         assert_ne!(first.summary.workspace_id, second.summary.workspace_id);
-        assert_eq!(core.workbench_snapshot().workspaces.len(), 2);
+        assert_eq!(core.workbench_snapshot().unwrap().workspaces.len(), 2);
 
         let stale = context(&first, "close-first");
-        core.close_workspace(&stale).unwrap();
+        core.close_workspace(&close_request(&stale)).unwrap();
         let reopened = core.open_workspace(first_repo.path()).await.unwrap();
         assert_eq!(first.summary.workspace_id, reopened.summary.workspace_id);
         assert_ne!(
@@ -1511,6 +2249,15 @@ mod tests {
         );
         assert!(matches!(
             core.get_workspace_snapshot(&stale),
+            Err(CoreError::StaleWorkspaceGeneration)
+        ));
+        assert!(matches!(
+            core.save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                workspace_id: stale.workspace_id,
+                workspace_generation: stale.workspace_generation,
+                expected_revision: 0,
+                state: json!({}),
+            }),
             Err(CoreError::StaleWorkspaceGeneration)
         ));
     }
@@ -1522,13 +2269,14 @@ mod tests {
         let before = core.events().current_sequence();
         let opened = core.open_workspace(repository.path()).await.unwrap();
 
-        let snapshot = core.workbench_snapshot();
+        let snapshot = core.workbench_snapshot().unwrap();
         assert_eq!(
             snapshot.active_workspace_id,
             Some(opened.summary.workspace_id)
         );
         assert_eq!(snapshot.active_workspace, Some(opened.clone()));
         let value = serde_json::to_value(snapshot).unwrap();
+        assert!(value.get("legacyImportedArtifacts").is_none());
         assert_eq!(
             value["activeWorkspaceId"],
             opened.summary.workspace_id.to_string()
@@ -1549,6 +2297,720 @@ mod tests {
             activated.payload,
             serde_json::to_value(&opened).expect("serialize workspace snapshot")
         );
+    }
+
+    #[tokio::test]
+    async fn ui_state_cas_returns_applied_and_stale_envelopes_for_rebase() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+        let workspace_id = opened.summary.workspace_id;
+        let workspace_generation = opened.summary.workspace_generation;
+
+        let before_create = core.events().current_sequence();
+        let created = core
+            .save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                workspace_id,
+                workspace_generation,
+                expected_revision: 0,
+                state: json!({ "route": "review" }),
+            })
+            .unwrap();
+        assert_eq!(created.outcome, MutationOutcome::Applied);
+        assert_eq!(created.record.revision, 1);
+        assert_eq!(created.record.state, json!({ "route": "review" }));
+        assert_eq!(core.events().current_sequence(), before_create + 1);
+        let serialized = serde_json::to_value(&created).unwrap();
+        assert_eq!(serialized["outcome"], "applied");
+        assert_eq!(serialized["record"]["revision"], 1);
+        assert_eq!(serialized["record"]["state"], json!({ "route": "review" }));
+        assert!(serialized["record"]["updatedAt"].is_string());
+        assert_eq!(serialized.as_object().unwrap().len(), 2);
+        assert_eq!(serialized["record"].as_object().unwrap().len(), 3);
+
+        let updated = core
+            .save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                workspace_id,
+                workspace_generation,
+                expected_revision: created.record.revision,
+                state: json!({ "route": "agent" }),
+            })
+            .unwrap();
+        assert_eq!(updated.outcome, MutationOutcome::Applied);
+        assert_eq!(updated.record.revision, 2);
+        assert_eq!(updated.record.state, json!({ "route": "agent" }));
+
+        let before_stale = core.events().current_sequence();
+        let stale = core
+            .save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                workspace_id,
+                workspace_generation,
+                expected_revision: 1,
+                state: json!({ "route": "ignored" }),
+            })
+            .unwrap();
+        assert_eq!(stale.outcome, MutationOutcome::Stale);
+        assert_eq!(stale.record, updated.record);
+        assert_eq!(core.events().current_sequence(), before_stale);
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut writers = Vec::new();
+        for writer in ["first", "second"] {
+            let writer_core = core.clone();
+            let writer_barrier = barrier.clone();
+            writers.push(thread::spawn(move || {
+                writer_barrier.wait();
+                writer_core.save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                    workspace_id,
+                    workspace_generation,
+                    expected_revision: 2,
+                    state: json!({ "writer": writer }),
+                })
+            }));
+        }
+        let before_writers = core.events().current_sequence();
+        barrier.wait();
+        let results = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let applied = results
+            .iter()
+            .find(|result| result.outcome == MutationOutcome::Applied)
+            .unwrap();
+        let stale = results
+            .iter()
+            .find(|result| result.outcome == MutationOutcome::Stale)
+            .unwrap();
+        assert_eq!(applied.record.revision, 3);
+        assert_eq!(stale.record, applied.record);
+        assert_eq!(core.events().current_sequence(), before_writers + 1);
+
+        let rebased = core
+            .save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                workspace_id,
+                workspace_generation,
+                expected_revision: stale.record.revision,
+                state: json!({ "writer": "rebased" }),
+            })
+            .unwrap();
+        assert_eq!(rebased.outcome, MutationOutcome::Applied);
+        assert_eq!(rebased.record.revision, 4);
+        assert_eq!(rebased.record.state, json!({ "writer": "rebased" }));
+
+        let before_wrong_generation = core.events().current_sequence();
+        assert!(matches!(
+            core.save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+                workspace_id,
+                workspace_generation: WorkspaceGeneration::new(),
+                expected_revision: rebased.record.revision,
+                state: json!({ "route": "invalid-generation" }),
+            }),
+            Err(CoreError::StaleWorkspaceGeneration)
+        ));
+        assert_eq!(core.events().current_sequence(), before_wrong_generation);
+    }
+
+    #[tokio::test]
+    async fn attention_and_input_publish_only_after_applied_database_mutations() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+        let workspace_id = opened.summary.workspace_id;
+        let workspace_generation = opened.summary.workspace_generation;
+        let before = core.events().current_sequence();
+        let created = core
+            .create_attention(CreateAttentionRequest {
+                id: Some("attention-one".to_owned()),
+                workspace_id,
+                workspace_generation,
+                source_id: "job-one".to_owned(),
+                kind: crate::AttentionKind::Completion,
+                revision: 1,
+                status: None,
+                target: crate::WorkspaceNavigationTarget::Workspace,
+            })
+            .unwrap();
+        assert_eq!(created.outcome, MutationOutcome::Applied);
+        assert_eq!(core.events().current_sequence(), before + 2);
+        let before_claim = core.events().current_sequence();
+        let claimed = core
+            .claim_attention_notification(AttentionCasRequest {
+                workspace_id,
+                workspace_generation,
+                attention_id: created.item.id.clone(),
+                expected_revision: 1,
+            })
+            .unwrap();
+        assert_eq!(claimed.outcome, MutationOutcome::Applied);
+        assert_eq!(core.events().current_sequence(), before_claim);
+        let unchanged_claim = core
+            .claim_attention_notification(AttentionCasRequest {
+                workspace_id,
+                workspace_generation,
+                attention_id: created.item.id.clone(),
+                expected_revision: 1,
+            })
+            .unwrap();
+        assert_eq!(unchanged_claim.outcome, MutationOutcome::Unchanged);
+        let stale_claim = core
+            .claim_attention_notification(AttentionCasRequest {
+                workspace_id,
+                workspace_generation,
+                attention_id: created.item.id.clone(),
+                expected_revision: 2,
+            })
+            .unwrap();
+        assert_eq!(stale_claim.outcome, MutationOutcome::Stale);
+        assert_eq!(core.events().current_sequence(), before_claim);
+
+        let sequence = core.events().current_sequence();
+        let replay = core
+            .create_attention(CreateAttentionRequest {
+                id: None,
+                workspace_id,
+                workspace_generation,
+                source_id: "job-one".to_owned(),
+                kind: crate::AttentionKind::Completion,
+                revision: 1,
+                status: None,
+                target: crate::WorkspaceNavigationTarget::Workspace,
+            })
+            .unwrap();
+        assert_eq!(replay.outcome, MutationOutcome::Unchanged);
+        assert_eq!(core.events().current_sequence(), sequence);
+
+        let resolved_request = CreateAttentionRequest {
+            id: None,
+            workspace_id,
+            workspace_generation,
+            source_id: "job-one".to_owned(),
+            kind: crate::AttentionKind::Completion,
+            revision: 1,
+            status: Some(crate::AttentionStatus::Resolved),
+            target: crate::WorkspaceNavigationTarget::Workspace,
+        };
+        let resolved = core.create_attention(resolved_request.clone()).unwrap();
+        assert_eq!(resolved.outcome, MutationOutcome::Applied);
+        let sequence = core.events().current_sequence();
+        let terminal_claim = core
+            .claim_attention_notification(AttentionCasRequest {
+                workspace_id,
+                workspace_generation,
+                attention_id: created.item.id.clone(),
+                expected_revision: 1,
+            })
+            .unwrap();
+        assert_eq!(terminal_claim.outcome, MutationOutcome::Invalid);
+        assert_eq!(core.events().current_sequence(), sequence);
+        let rolled_back = core.create_attention(CreateAttentionRequest {
+            id: Some("attention-one".to_owned()),
+            workspace_id,
+            workspace_generation,
+            source_id: "different-source".to_owned(),
+            kind: crate::AttentionKind::Error,
+            revision: 1,
+            status: None,
+            target: crate::WorkspaceNavigationTarget::Workspace,
+        });
+        assert!(rolled_back.is_err());
+        assert_eq!(core.events().current_sequence(), sequence);
+
+        core.create_input_request(CreateInputRequest {
+            id: Some("input-one".to_owned()),
+            workspace_id,
+            workspace_generation,
+            revision: 1,
+            kind: crate::InputRequestKind::Question,
+            prompt: "Continue?".to_owned(),
+            choices: Vec::new(),
+            cancellation_supported: false,
+            attention_id: None,
+            target: None,
+        })
+        .unwrap();
+        let sequence = core.events().current_sequence();
+        let unsupported = core
+            .cancel_input_request(InputCasRequest {
+                workspace_id,
+                workspace_generation,
+                input_id: "input-one".to_owned(),
+                expected_revision: 1,
+            })
+            .unwrap();
+        assert_eq!(unsupported.outcome, MutationOutcome::Invalid);
+        assert_eq!(core.events().current_sequence(), sequence);
+    }
+
+    #[tokio::test]
+    async fn admitted_phase5_mutation_commits_and_enqueues_before_close_retires_workspace() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+        let context = context(&opened, "close");
+        let runtime = core
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)
+            .unwrap();
+        let phase5 = core.inner.phase5_gate.lock().unwrap();
+        let mutation_core = core.clone();
+        let request = CreateAttentionRequest {
+            id: Some("close-race".to_owned()),
+            workspace_id: context.workspace_id,
+            workspace_generation: context.workspace_generation,
+            source_id: "close-race".to_owned(),
+            kind: crate::AttentionKind::Completion,
+            revision: 1,
+            status: None,
+            target: crate::WorkspaceNavigationTarget::Workspace,
+        };
+        let mutation = thread::spawn(move || mutation_core.create_attention(request));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while runtime.active_operation_count() != 1 {
+            assert!(Instant::now() < deadline, "mutation was not admitted");
+            thread::yield_now();
+        }
+        let close_core = core.clone();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let close = thread::spawn(move || {
+            closed_tx.send(close_core.close_workspace(&close_request(&context)))
+        });
+        assert!(matches!(
+            closed_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        drop(phase5);
+        assert_eq!(
+            mutation.join().unwrap().unwrap().outcome,
+            MutationOutcome::Applied
+        );
+        closed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        close.join().unwrap().unwrap();
+        let events = core.events().replay_after(0).events;
+        let changed = events
+            .iter()
+            .position(|event| event.kind == "workspace/attentionChanged")
+            .unwrap();
+        let removed = events
+            .iter()
+            .position(|event| event.kind == "workspace/removed")
+            .unwrap();
+        assert!(changed < removed);
+    }
+
+    #[tokio::test]
+    async fn close_policy_observes_an_admitted_input_create_race() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+        let context = context(&opened, "input-close-race");
+        let runtime = core
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)
+            .unwrap();
+        let phase5 = core.inner.phase5_gate.lock().unwrap();
+        let mutation_core = core.clone();
+        let request = CreateInputRequest {
+            id: Some("input-close-race".to_owned()),
+            workspace_id: context.workspace_id,
+            workspace_generation: context.workspace_generation,
+            revision: 1,
+            kind: crate::InputRequestKind::Permission,
+            prompt: "Continue?".to_owned(),
+            choices: Vec::new(),
+            cancellation_supported: false,
+            attention_id: None,
+            target: None,
+        };
+        let mutation = thread::spawn(move || mutation_core.create_input_request(request));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while runtime.active_operation_count() != 1 {
+            assert!(Instant::now() < deadline, "input create was not admitted");
+            thread::yield_now();
+        }
+        let close_core = core.clone();
+        let close_context = context.clone();
+        let close =
+            thread::spawn(move || close_core.close_workspace(&close_request(&close_context)));
+        drop(phase5);
+
+        assert_eq!(
+            mutation.join().unwrap().unwrap().outcome,
+            MutationOutcome::Applied
+        );
+        assert!(matches!(
+            close.join().unwrap(),
+            Err(CoreError::WorkspaceHasPendingInput)
+        ));
+        assert_eq!(
+            core.get_workspace_snapshot(&context).unwrap().summary.state,
+            crate::WorkspaceState::Ready
+        );
+        core.close_workspace(&CloseWorkspaceRequest {
+            workspace_id: context.workspace_id,
+            workspace_generation: context.workspace_generation,
+            force: true,
+        })
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_rejects_pending_input_and_force_resolves_it_before_removal() {
+        let first_repository = repository();
+        let second_repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let first = core.open_workspace(first_repository.path()).await.unwrap();
+        let second = core.open_workspace(second_repository.path()).await.unwrap();
+        let first_context = context(&first, "close-first");
+        let second_context = context(&second, "close-second");
+
+        for id in ["pending", "submitted", "accepted"] {
+            core.create_input_request(CreateInputRequest {
+                id: Some(id.to_owned()),
+                workspace_id: first_context.workspace_id,
+                workspace_generation: first_context.workspace_generation,
+                revision: 1,
+                kind: crate::InputRequestKind::Question,
+                prompt: format!("Input {id}"),
+                choices: Vec::new(),
+                cancellation_supported: true,
+                attention_id: None,
+                target: None,
+            })
+            .unwrap();
+        }
+        for id in ["submitted", "accepted"] {
+            core.answer_input_request(AnswerInputRequest {
+                workspace_id: first_context.workspace_id,
+                workspace_generation: first_context.workspace_generation,
+                input_id: id.to_owned(),
+                expected_revision: 1,
+                response: crate::InputResponse {
+                    value: "yes".to_owned(),
+                    secret: None,
+                },
+                redact_response: false,
+            })
+            .unwrap();
+        }
+        core.accept_input_request(InputCasRequest {
+            workspace_id: first_context.workspace_id,
+            workspace_generation: first_context.workspace_generation,
+            input_id: "accepted".to_owned(),
+            expected_revision: 1,
+        })
+        .unwrap();
+
+        let rejected = core.close_workspace(&close_request(&first_context));
+        assert!(matches!(rejected, Err(CoreError::WorkspaceHasPendingInput)));
+        assert_eq!(
+            core.get_workspace_snapshot(&first_context)
+                .unwrap()
+                .summary
+                .state,
+            crate::WorkspaceState::Ready
+        );
+
+        let before_close = core.events().current_sequence();
+        core.close_workspace(&CloseWorkspaceRequest {
+            workspace_id: first_context.workspace_id,
+            workspace_generation: first_context.workspace_generation,
+            force: true,
+        })
+        .unwrap();
+        assert_eq!(
+            core.workbench_snapshot().unwrap().active_workspace_id,
+            Some(second_context.workspace_id)
+        );
+        let close_events = core.events().replay_after(before_close).events;
+        let removed = close_events
+            .iter()
+            .position(|event| event.kind == "workspace/removed")
+            .unwrap();
+        assert_eq!(
+            close_events
+                .iter()
+                .filter(|event| event.kind == "input/resolved")
+                .count(),
+            2
+        );
+        assert_eq!(
+            close_events
+                .iter()
+                .filter(|event| event.kind == "workspace/attentionChanged")
+                .count(),
+            2
+        );
+        assert_eq!(
+            close_events
+                .iter()
+                .filter(|event| event.kind == "workspace/summaryChanged")
+                .count(),
+            2
+        );
+        assert!(
+            close_events[..removed]
+                .iter()
+                .all(|event| event.kind != "workspace/removed")
+        );
+        assert!(
+            close_events[removed + 1..]
+                .iter()
+                .all(|event| event.workspace_id != Some(first_context.workspace_id))
+        );
+
+        let reopened = core.open_workspace(first_repository.path()).await.unwrap();
+        assert_eq!(reopened.summary.workspace_id, first_context.workspace_id);
+        assert_eq!(reopened.summary.attention.input_required, 0);
+        let inputs = core.inner.database.input_requests().unwrap();
+        assert_eq!(
+            inputs
+                .iter()
+                .find(|input| input.id == "pending")
+                .unwrap()
+                .status,
+            InputRequestStatus::Cancelled
+        );
+        assert_eq!(
+            inputs
+                .iter()
+                .find(|input| input.id == "submitted")
+                .unwrap()
+                .status,
+            InputRequestStatus::Cancelled
+        );
+        assert_eq!(
+            inputs
+                .iter()
+                .find(|input| input.id == "accepted")
+                .unwrap()
+                .status,
+            InputRequestStatus::Accepted
+        );
+
+        core.activate_workspace(
+            second_context.workspace_id,
+            second_context.workspace_generation,
+        )
+        .unwrap();
+        core.create_input_request(CreateInputRequest {
+            id: Some("active-pending".to_owned()),
+            workspace_id: second_context.workspace_id,
+            workspace_generation: second_context.workspace_generation,
+            revision: 1,
+            kind: crate::InputRequestKind::Permission,
+            prompt: "Close active?".to_owned(),
+            choices: Vec::new(),
+            cancellation_supported: false,
+            attention_id: None,
+            target: None,
+        })
+        .unwrap();
+        core.close_workspace(&CloseWorkspaceRequest {
+            workspace_id: second_context.workspace_id,
+            workspace_generation: second_context.workspace_generation,
+            force: true,
+        })
+        .unwrap();
+        assert_eq!(core.workbench_snapshot().unwrap().active_workspace_id, None);
+
+        assert!(
+            core.workbench_snapshot()
+                .unwrap()
+                .input_requests
+                .iter()
+                .filter(|input| input.workspace_id == first_context.workspace_id)
+                .all(|input| input.status.is_terminal())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phase5_snapshot_is_post_commit_while_subscriber_delivery_is_blocked() {
+        let repository = repository();
+        let core = AppCore::new(WorkbenchDatabase::open_in_memory().unwrap());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+        let (_, subscription) = core.events().subscribe(1);
+        let before = core.events().current_sequence();
+        let mutation_core = core.clone();
+        let mutation = thread::spawn(move || {
+            mutation_core.create_attention(CreateAttentionRequest {
+                id: Some("snapshot-race".to_owned()),
+                workspace_id: opened.summary.workspace_id,
+                workspace_generation: opened.summary.workspace_generation,
+                source_id: "snapshot-race".to_owned(),
+                kind: crate::AttentionKind::Completion,
+                revision: 1,
+                status: None,
+                target: crate::WorkspaceNavigationTarget::Workspace,
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while core.events().current_sequence() < before + 2 {
+            assert!(
+                Instant::now() < deadline,
+                "phase 5 events were not enqueued"
+            );
+            tokio::task::yield_now().await;
+        }
+        let snapshot_core = core.clone();
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let snapshot_worker =
+            thread::spawn(move || snapshot_tx.send(snapshot_core.workbench_snapshot()));
+        let snapshot = snapshot_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("snapshot waited for subscriber delivery")
+            .unwrap();
+        assert!(
+            snapshot
+                .attention_items
+                .iter()
+                .any(|item| item.id == "snapshot-race")
+        );
+        assert_eq!(snapshot.sequence, before + 2);
+
+        subscription.recv_timeout(Duration::from_secs(1)).unwrap();
+        subscription.recv_timeout(Duration::from_secs(1)).unwrap();
+        mutation.join().unwrap().unwrap();
+        snapshot_worker.join().unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_preserves_restore_intent_active_id_and_stable_workspace_identity() {
+        let repository = repository();
+        let database_directory = TempDir::new().unwrap();
+        let database_path = database_directory.path().join("workbench.sqlite3");
+        let database = WorkbenchDatabase::open(&database_path).unwrap();
+        let core = AppCore::new(database.clone());
+        let opened = core.open_workspace(repository.path()).await.unwrap();
+        core.save_workspace_ui_state(SaveWorkspaceUiStateRequest {
+            workspace_id: opened.summary.workspace_id,
+            workspace_generation: opened.summary.workspace_generation,
+            expected_revision: 0,
+            state: json!({ "route": { "type": "review" } }),
+        })
+        .unwrap();
+
+        core.shutdown().unwrap();
+        assert_eq!(
+            database.active_workspace_id().unwrap(),
+            Some(opened.summary.workspace_id.to_string())
+        );
+        drop((core, database));
+
+        let restored = AppCore::new(WorkbenchDatabase::open(&database_path).unwrap());
+        restored.restore_workbench().await.unwrap();
+        let snapshot = restored.workbench_snapshot().unwrap();
+        assert_eq!(
+            snapshot.active_workspace_id,
+            Some(opened.summary.workspace_id)
+        );
+        assert_eq!(
+            snapshot.workspaces[0].workspace_id,
+            opened.summary.workspace_id
+        );
+        assert_ne!(
+            snapshot.workspaces[0].workspace_generation,
+            opened.summary.workspace_generation
+        );
+        assert_eq!(
+            snapshot.workspace_ui_state[&opened.summary.workspace_id.to_string()].revision,
+            1
+        );
+        restored.shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_isolates_failed_roots_and_keeps_their_retry_intent() {
+        let repository = repository();
+        let failed_parent = TempDir::new().unwrap();
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let root = dunce::canonicalize(repository.path()).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        let valid_id = database
+            .open_workspace(&root, &root, "valid", WorkspaceGeneration::new())
+            .unwrap()
+            .id;
+        let missing_path = failed_parent.path().join("missing-root");
+        let missing = missing_path.to_string_lossy().into_owned();
+        let failed_id = database
+            .open_workspace(&missing, &missing, "missing", WorkspaceGeneration::new())
+            .unwrap()
+            .id;
+        database.activate_workspace(failed_id).unwrap();
+        let core = AppCore::new(database.clone());
+
+        let diagnostics = core.restore_workbench().await.unwrap();
+        let snapshot = core.workbench_snapshot().unwrap();
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(snapshot.workspaces[0].workspace_id, valid_id);
+        assert_eq!(snapshot.active_workspace_id, None);
+        assert_eq!(
+            database.active_workspace_id().unwrap(),
+            Some(failed_id.to_string())
+        );
+        fs::create_dir_all(&missing_path).unwrap();
+        git_ok(&missing_path, &["init", "--initial-branch=main"]);
+        fs::write(missing_path.join("README.md"), "restored\n").unwrap();
+        git_ok(&missing_path, &["add", "."]);
+        git_ok(&missing_path, &["commit", "-m", "initial"]);
+        let retried = core.open_workspace(&missing_path).await.unwrap();
+        assert_eq!(retried.summary.workspace_id, failed_id);
+        assert!(
+            core.workbench_snapshot()
+                .unwrap()
+                .restore_diagnostics
+                .is_empty()
+        );
+        assert!(matches!(
+            core.dismiss_restore_failure(failed_id),
+            Err(CoreError::CannotDismissLiveWorkspace)
+        ));
+        core.shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn dismissed_restore_failure_stays_closed_across_restart() {
+        let database_directory = TempDir::new().unwrap();
+        let database_path = database_directory.path().join("workbench.sqlite3");
+        let missing = database_directory.path().join("missing-root");
+        let missing = missing.to_string_lossy().into_owned();
+        let database = WorkbenchDatabase::open(&database_path).unwrap();
+        let failed_id = database
+            .open_workspace(&missing, &missing, "missing", WorkspaceGeneration::new())
+            .unwrap()
+            .id;
+        let core = AppCore::new(database.clone());
+        assert_eq!(core.restore_workbench().await.unwrap().len(), 1);
+
+        let dismissed = core.dismiss_restore_failure(failed_id).unwrap();
+        assert!(dismissed.dismissed);
+        assert!(
+            core.workbench_snapshot()
+                .unwrap()
+                .restore_diagnostics
+                .is_empty()
+        );
+        assert!(database.restorable_workspaces().unwrap().is_empty());
+        drop((core, database));
+
+        let restarted = AppCore::new(WorkbenchDatabase::open(&database_path).unwrap());
+        assert!(restarted.restore_workbench().await.unwrap().is_empty());
+        assert!(
+            restarted
+                .workbench_snapshot()
+                .unwrap()
+                .restore_diagnostics
+                .is_empty()
+        );
+        restarted.shutdown().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1573,7 +3035,8 @@ mod tests {
         });
         let during_backpressure = snapshot
             .recv_timeout(Duration::from_millis(100))
-            .expect("state gate remained available during event backpressure");
+            .expect("state gate remained available during event backpressure")
+            .unwrap();
         assert_eq!(during_backpressure.workspaces.len(), 1);
 
         let added = subscription.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1604,7 +3067,7 @@ mod tests {
 
         core.deactivate_workspace().unwrap();
 
-        let snapshot = core.workbench_snapshot();
+        let snapshot = core.workbench_snapshot().unwrap();
         assert_eq!(snapshot.active_workspace_id, None);
         assert_eq!(snapshot.active_workspace, None);
         assert_eq!(snapshot.workspaces.len(), 1);
@@ -1640,7 +3103,7 @@ mod tests {
             first.unwrap().summary.workspace_id,
             second.unwrap().summary.workspace_id
         );
-        assert_eq!(core.workbench_snapshot().workspaces.len(), 1);
+        assert_eq!(core.workbench_snapshot().unwrap().workspaces.len(), 1);
     }
 
     #[tokio::test]
@@ -1817,7 +3280,7 @@ mod tests {
                     && event.workspace_id == Some(context.workspace_id))
         );
 
-        core.close_workspace(&context).unwrap();
+        core.close_workspace(&close_request(&context)).unwrap();
         let after_close = core.events().current_sequence();
         fs::write(repository.path().join("README.md"), "after close\n").unwrap();
         std::thread::sleep(Duration::from_millis(900));
@@ -1851,7 +3314,7 @@ mod tests {
         });
 
         let started = Instant::now();
-        core.close_workspace(&context).unwrap();
+        core.close_workspace(&close_request(&context)).unwrap();
         assert!(started.elapsed() >= Duration::from_millis(50));
         worker.join().unwrap();
         assert_eq!(
@@ -1900,7 +3363,7 @@ mod tests {
         let close_context = context.clone();
         let close_worker = thread::spawn(move || {
             closed
-                .send(close_core.close_workspace(&close_context))
+                .send(close_core.close_workspace(&close_request(&close_context)))
                 .unwrap();
         });
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -2014,7 +3477,8 @@ mod tests {
             core: core.clone(),
             context: first_context.clone(),
         };
-        core.close_workspace(&first_context).unwrap();
+        core.close_workspace(&close_request(&first_context))
+            .unwrap();
         let reopened = core.open_workspace(first_repository.path()).await.unwrap();
         assert_eq!(first.summary.workspace_id, reopened.summary.workspace_id);
         assert_ne!(
@@ -2050,7 +3514,7 @@ mod tests {
 
         core.shutdown().unwrap();
 
-        assert!(core.workbench_snapshot().workspaces.is_empty());
+        assert!(core.workbench_snapshot().unwrap().workspaces.is_empty());
         assert!(matches!(
             core.get_workspace_snapshot(&context(&first, "closed-first")),
             Err(CoreError::WorkspaceNotFound)

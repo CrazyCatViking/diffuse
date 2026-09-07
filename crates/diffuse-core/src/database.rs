@@ -4,12 +4,97 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior, params};
+use serde_json::{Value, json};
 
-use crate::{CoreError, CoreResult, WorkspaceGeneration, WorkspaceId};
+use crate::attention::validate_entity_revision;
+use crate::{
+    AttentionItem, AttentionKind, AttentionMutationResult, AttentionStatus, CoreError, CoreResult,
+    CreateAttentionRequest, CreateInputRequest, InputMutationResult, InputRequest,
+    InputRequestKind, InputRequestStatus, InputResponse, MutationOutcome,
+    WorkspaceAttentionSummary, WorkspaceGeneration, WorkspaceId, WorkspaceNavigationTarget,
+    WorkspaceUiStateMutationResult, WorkspaceUiStateRecord,
+};
 
 pub const DEFAULT_DATABASE_FILE_NAME: &str = "workbench.sqlite3";
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RestorableWorkspace {
+    pub id: WorkspaceId,
+    pub root: String,
+    pub display_name: String,
+    pub active: bool,
+}
+
+pub(crate) struct OpenedWorkspace {
+    pub id: WorkspaceId,
+    pub was_open: bool,
+}
+
+pub(crate) struct ClosedWorkspace {
+    pub forced_inputs: Vec<InputMutationResult>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyReviewImportReport {
+    pub workspace_id: WorkspaceId,
+    pub imported: u64,
+    pub already_imported: u64,
+    pub diagnostics: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum LegacyImportedArtifact {
+    Run {
+        workspace_id: WorkspaceId,
+        session_id: String,
+        entity_id: String,
+        source_path: String,
+        content_hash: String,
+        document: Value,
+    },
+    Agent {
+        workspace_id: WorkspaceId,
+        session_id: String,
+        entity_id: String,
+        source_path: String,
+        content_hash: String,
+        document: Value,
+    },
+    Chat {
+        workspace_id: WorkspaceId,
+        session_id: String,
+        entity_id: String,
+        source_path: String,
+        content_hash: String,
+        document: Value,
+    },
+    Prompt {
+        workspace_id: WorkspaceId,
+        session_id: String,
+        entity_id: String,
+        source_path: String,
+        content_hash: String,
+        text: String,
+    },
+}
+
+pub(crate) struct LegacyImportRecord<'a> {
+    pub session_id: &'a str,
+    pub artifact_kind: &'a str,
+    pub relative_path: &'a str,
+    pub entity_id: Option<&'a str>,
+    pub content_hash: Option<&'a str>,
+    pub payload: Option<&'a str>,
+    pub diagnostic: Option<&'a str>,
+}
 
 #[derive(Clone)]
 pub struct WorkbenchDatabase {
@@ -193,6 +278,233 @@ impl WorkbenchDatabase {
             )?;
         }
 
+        if version < 2 {
+            transaction.execute_batch(
+                "ALTER TABLE attention_items ADD COLUMN acknowledged_revision INTEGER;
+                 ALTER TABLE attention_items ADD COLUMN notified_revision INTEGER;
+                 ALTER TABLE attention_items ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active';
+                 UPDATE attention_items SET lifecycle = CASE status
+                    WHEN 'resolved' THEN 'resolved'
+                    WHEN 'expired' THEN 'expired'
+                    WHEN 'superseded' THEN 'superseded'
+                    ELSE 'active'
+                 END;
+                 UPDATE attention_items SET acknowledged_revision = revision
+                    WHERE status = 'acknowledged';
+                  ALTER TABLE workspace_ui_state ADD COLUMN revision INTEGER;
+                  UPDATE workspace_ui_state SET revision = version WHERE revision IS NULL;
+                  ALTER TABLE input_requests ADD COLUMN attention_id TEXT;
+                  CREATE TABLE attention_item_quarantine (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    raw_json TEXT NOT NULL,
+                    diagnostic TEXT NOT NULL,
+                    quarantined_at INTEGER NOT NULL
+                  );
+                  INSERT INTO attention_item_quarantine(id, workspace_id, raw_json, diagnostic, quarantined_at)
+                  SELECT id, workspace_id,
+                    json_object('id', id, 'sourceId', source_id, 'kind', kind,
+                      'revision', revision, 'status', status, 'targetJson', target_json),
+                    'invalid pre-v2 attention row', unixepoch('subsec') * 1000
+                  FROM attention_items
+                  WHERE id = '' OR length(id) > 512 OR source_id = '' OR length(source_id) > 512
+                    OR kind NOT IN ('input', 'error', 'completion')
+                    OR status NOT IN ('unread', 'acknowledged', 'resolved', 'expired', 'superseded')
+                    OR revision <= 0 OR revision > 9007199254740991 OR NOT json_valid(target_json)
+                    OR COALESCE(json_extract(target_json, '$.kind'), json_extract(target_json, '$.type'), '')
+                      NOT IN ('input', 'review', 'agent', 'settings', 'workspace')
+                    OR (COALESCE(json_extract(target_json, '$.kind'), json_extract(target_json, '$.type')) = 'input'
+                      AND (json_type(target_json, '$.inputRequestId') IS NOT 'text' OR json_extract(target_json, '$.inputRequestId') = ''))
+                    OR (COALESCE(json_extract(target_json, '$.kind'), json_extract(target_json, '$.type')) = 'agent'
+                      AND (json_type(target_json, '$.agentSessionId') IS NOT 'text' OR json_extract(target_json, '$.agentSessionId') = ''));
+                  DELETE FROM attention_items WHERE id IN (SELECT id FROM attention_item_quarantine);
+                  CREATE TABLE input_request_quarantine (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    response_json TEXT,
+                    diagnostic TEXT NOT NULL,
+                    quarantined_at INTEGER NOT NULL
+                  );
+                  UPDATE input_requests SET attention_id = json_extract(request_json, '$.attentionId')
+                  WHERE json_valid(request_json)
+                    AND json_type(request_json, '$.attentionId') = 'text';
+                  INSERT INTO input_request_quarantine(
+                    id, workspace_id, request_json, response_json, diagnostic, quarantined_at
+                  )
+                  SELECT i.id, i.workspace_id, i.request_json, i.response_json,
+                    'invalid or unlinked pre-v2 input row', unixepoch('subsec') * 1000
+                  FROM input_requests i
+                  WHERE i.id = '' OR length(i.id) > 512
+                    OR i.revision <= 0 OR i.revision > 9007199254740991
+                    OR i.kind NOT IN ('permission', 'question', 'authentication', 'conflict')
+                    OR i.status NOT IN ('pending', 'response-submitted', 'accepted', 'rejected', 'expired', 'cancelled', 'superseded')
+                    OR NOT json_valid(i.request_json)
+                    OR json_type(i.request_json, '$.prompt') IS NOT 'text'
+                    OR json_extract(i.request_json, '$.prompt') = ''
+                    OR json_type(i.request_json, '$.choices') IS NOT 'array'
+                    OR COALESCE(json_type(i.request_json, '$.cancellationSupported'), '') NOT IN ('true', 'false')
+                    OR (i.response_json IS NOT NULL AND NOT json_valid(i.response_json))
+                    OR i.attention_id IS NULL OR i.attention_id = '' OR length(i.attention_id) > 512
+                    OR NOT EXISTS (
+                      SELECT 1 FROM attention_items a
+                      WHERE a.id = i.attention_id AND a.workspace_id = i.workspace_id
+                    );
+                  DELETE FROM input_requests WHERE id IN (SELECT id FROM input_request_quarantine);
+                  CREATE UNIQUE INDEX input_requests_attention_idx ON input_requests(attention_id);
+                  CREATE TABLE workspace_ui_state_quarantine (
+                    workspace_id TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    state_json TEXT NOT NULL,
+                    diagnostic TEXT NOT NULL,
+                    quarantined_at INTEGER NOT NULL
+                  );
+                  INSERT INTO workspace_ui_state_quarantine(
+                    workspace_id, version, state_json, diagnostic, quarantined_at
+                  )
+                  SELECT workspace_id, version, state_json, 'invalid pre-v2 UI state row',
+                    unixepoch('subsec') * 1000
+                  FROM workspace_ui_state
+                  WHERE revision IS NULL OR revision <= 0 OR revision > 9007199254740991
+                    OR NOT json_valid(state_json);
+                  DELETE FROM workspace_ui_state
+                    WHERE workspace_id IN (SELECT workspace_id FROM workspace_ui_state_quarantine);
+                  CREATE TABLE legacy_review_import_ledger (
+                    stable_key TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    artifact_kind TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    entity_id TEXT,
+                    content_hash TEXT,
+                    status TEXT NOT NULL CHECK(status IN ('imported', 'diagnostic')),
+                    diagnostic TEXT,
+                    imported_at INTEGER NOT NULL,
+                    CHECK(length(stable_key) BETWEEN 1 AND 1024),
+                    CHECK(length(session_id) BETWEEN 1 AND 512),
+                    CHECK(artifact_kind IN ('run', 'agent', 'chat', 'prompt')),
+                    CHECK(length(relative_path) BETWEEN 1 AND 4096),
+                    CHECK(entity_id IS NULL OR length(entity_id) BETWEEN 1 AND 512),
+                    CHECK((status = 'imported' AND entity_id IS NOT NULL AND content_hash IS NOT NULL AND diagnostic IS NULL)
+                       OR (status = 'diagnostic' AND diagnostic IS NOT NULL)),
+                    UNIQUE(workspace_id, session_id, artifact_kind, relative_path)
+                  );
+                  CREATE INDEX legacy_review_import_workspace_idx
+                    ON legacy_review_import_ledger(workspace_id, imported_at);
+                  CREATE TABLE legacy_import_runs (
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 512),
+                    entity_id TEXT NOT NULL CHECK(length(entity_id) BETWEEN 1 AND 512),
+                    source_path TEXT NOT NULL CHECK(length(source_path) BETWEEN 1 AND 4096),
+                    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+                    document_json TEXT NOT NULL CHECK(json_valid(document_json) AND length(document_json) <= 8388608),
+                    imported_at INTEGER NOT NULL,
+                    PRIMARY KEY(workspace_id, session_id, entity_id),
+                    UNIQUE(workspace_id, session_id, source_path)
+                  );
+                  CREATE TABLE legacy_import_agents (
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 512),
+                    entity_id TEXT NOT NULL CHECK(length(entity_id) BETWEEN 1 AND 512),
+                    source_path TEXT NOT NULL CHECK(length(source_path) BETWEEN 1 AND 4096),
+                    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+                    document_json TEXT NOT NULL CHECK(json_valid(document_json) AND length(document_json) <= 8388608),
+                    imported_at INTEGER NOT NULL,
+                    PRIMARY KEY(workspace_id, session_id, entity_id),
+                    UNIQUE(workspace_id, session_id, source_path)
+                  );
+                  CREATE TABLE legacy_import_chats (
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 512),
+                    entity_id TEXT NOT NULL CHECK(length(entity_id) BETWEEN 1 AND 512),
+                    source_path TEXT NOT NULL CHECK(length(source_path) BETWEEN 1 AND 4096),
+                    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+                    document_json TEXT NOT NULL CHECK(json_valid(document_json) AND length(document_json) <= 8388608),
+                    imported_at INTEGER NOT NULL,
+                    PRIMARY KEY(workspace_id, session_id, entity_id),
+                    UNIQUE(workspace_id, session_id, source_path)
+                  );
+                  CREATE TABLE legacy_import_prompts (
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 512),
+                    entity_id TEXT NOT NULL CHECK(length(entity_id) BETWEEN 1 AND 512),
+                    source_path TEXT NOT NULL CHECK(length(source_path) BETWEEN 1 AND 4096),
+                    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+                    prompt_text TEXT NOT NULL CHECK(length(prompt_text) <= 1048576),
+                    imported_at INTEGER NOT NULL,
+                    PRIMARY KEY(workspace_id, session_id, entity_id),
+                    UNIQUE(workspace_id, session_id, source_path)
+                  );
+                  CREATE TRIGGER attention_items_v2_insert BEFORE INSERT ON attention_items BEGIN
+                    SELECT CASE WHEN NEW.id = '' OR length(NEW.id) > 512
+                      OR NEW.source_id = '' OR length(NEW.source_id) > 512
+                      OR NEW.kind NOT IN ('input', 'error', 'completion')
+                      OR NEW.status NOT IN ('unread', 'acknowledged', 'resolved', 'expired', 'superseded')
+                      OR NEW.lifecycle NOT IN ('active', 'resolved', 'expired', 'superseded')
+                      OR NEW.revision <= 0 OR NEW.revision > 9007199254740991
+                      OR (NEW.acknowledged_revision IS NOT NULL AND
+                        (NEW.acknowledged_revision <= 0 OR NEW.acknowledged_revision > 9007199254740991))
+                      OR (NEW.notified_revision IS NOT NULL AND
+                        (NEW.notified_revision <= 0 OR NEW.notified_revision > 9007199254740991))
+                      OR NOT json_valid(NEW.target_json)
+                      THEN RAISE(ABORT, 'invalid attention item') END;
+                  END;
+                  CREATE TRIGGER attention_items_v2_update BEFORE UPDATE ON attention_items BEGIN
+                    SELECT CASE WHEN NEW.id = '' OR length(NEW.id) > 512
+                      OR NEW.source_id = '' OR length(NEW.source_id) > 512
+                      OR NEW.kind NOT IN ('input', 'error', 'completion')
+                      OR NEW.status NOT IN ('unread', 'acknowledged', 'resolved', 'expired', 'superseded')
+                      OR NEW.lifecycle NOT IN ('active', 'resolved', 'expired', 'superseded')
+                      OR NEW.revision <= 0 OR NEW.revision > 9007199254740991
+                      OR (NEW.acknowledged_revision IS NOT NULL AND
+                        (NEW.acknowledged_revision <= 0 OR NEW.acknowledged_revision > 9007199254740991))
+                      OR (NEW.notified_revision IS NOT NULL AND
+                        (NEW.notified_revision <= 0 OR NEW.notified_revision > 9007199254740991))
+                      OR NOT json_valid(NEW.target_json)
+                      THEN RAISE(ABORT, 'invalid attention item') END;
+                  END;
+                  CREATE TRIGGER input_requests_v2_insert BEFORE INSERT ON input_requests BEGIN
+                    SELECT CASE WHEN NEW.id = '' OR length(NEW.id) > 512
+                      OR NEW.revision <= 0 OR NEW.revision > 9007199254740991
+                      OR NEW.kind NOT IN ('permission', 'question', 'authentication', 'conflict')
+                      OR NEW.status NOT IN ('pending', 'response-submitted', 'accepted', 'rejected', 'expired', 'cancelled', 'superseded')
+                      OR NOT json_valid(NEW.request_json)
+                      OR (NEW.response_json IS NOT NULL AND NOT json_valid(NEW.response_json))
+                      OR NEW.attention_id IS NULL OR NEW.attention_id = '' OR length(NEW.attention_id) > 512
+                      OR NOT EXISTS (SELECT 1 FROM attention_items a WHERE a.id = NEW.attention_id AND a.workspace_id = NEW.workspace_id)
+                      THEN RAISE(ABORT, 'invalid input request') END;
+                  END;
+                  CREATE TRIGGER input_requests_v2_update BEFORE UPDATE ON input_requests BEGIN
+                    SELECT CASE WHEN NEW.id = '' OR length(NEW.id) > 512
+                      OR NEW.revision <= 0 OR NEW.revision > 9007199254740991
+                      OR NEW.kind NOT IN ('permission', 'question', 'authentication', 'conflict')
+                      OR NEW.status NOT IN ('pending', 'response-submitted', 'accepted', 'rejected', 'expired', 'cancelled', 'superseded')
+                      OR NOT json_valid(NEW.request_json)
+                      OR (NEW.response_json IS NOT NULL AND NOT json_valid(NEW.response_json))
+                      OR NEW.attention_id IS NULL OR NEW.attention_id = '' OR length(NEW.attention_id) > 512
+                      OR NOT EXISTS (SELECT 1 FROM attention_items a WHERE a.id = NEW.attention_id AND a.workspace_id = NEW.workspace_id)
+                      THEN RAISE(ABORT, 'invalid input request') END;
+                  END;
+                  CREATE TRIGGER workspace_ui_state_v2_insert BEFORE INSERT ON workspace_ui_state BEGIN
+                    SELECT CASE WHEN NEW.revision <= 0 OR NEW.revision > 9007199254740991 OR NOT json_valid(NEW.state_json)
+                      THEN RAISE(ABORT, 'invalid workspace ui state') END;
+                  END;
+                  CREATE TRIGGER workspace_ui_state_v2_update BEFORE UPDATE ON workspace_ui_state BEGIN
+                    SELECT CASE WHEN NEW.revision <= 0 OR NEW.revision > 9007199254740991 OR NOT json_valid(NEW.state_json)
+                      THEN RAISE(ABORT, 'invalid workspace ui state') END;
+                  END;
+                  WITH ordered AS (
+                    SELECT id, row_number() OVER (ORDER BY rail_order, id) - 1 AS new_order
+                    FROM workspaces WHERE is_open = 1
+                  )
+                  UPDATE workspaces SET rail_order = (SELECT new_order FROM ordered WHERE ordered.id = workspaces.id)
+                  WHERE is_open = 1;
+                  CREATE UNIQUE INDEX workspaces_open_rail_order_idx
+                    ON workspaces(rail_order) WHERE is_open = 1;
+                  INSERT INTO schema_migrations(version, applied_at) VALUES (2, unixepoch('subsec') * 1000);",
+            )?;
+        }
+
         transaction.commit()?;
         Ok(())
     }
@@ -216,26 +528,30 @@ impl WorkbenchDatabase {
         root: &str,
         display_name: &str,
         generation: WorkspaceGeneration,
-    ) -> CoreResult<WorkspaceId> {
+    ) -> CoreResult<OpenedWorkspace> {
         let mut connection = self.connection.lock().expect("database lock poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing = transaction
             .query_row(
-                "SELECT id FROM workspaces WHERE canonical_root = ?1",
+                "SELECT id, is_open FROM workspaces WHERE canonical_root = ?1",
                 [canonical_root],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
             )
             .optional()?;
         let id = match &existing {
-            Some(id) => WorkspaceId::parse(id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            Some((id, _)) => WorkspaceId::parse(id).map_err(|_| rusqlite::Error::InvalidQuery)?,
             None => WorkspaceId::new(),
         };
 
         if existing.is_some() {
             transaction.execute(
                 "UPDATE workspaces
-                 SET root = ?2, display_name = ?3, last_opened_at = ?4, is_open = 1,
-                     generation = ?5, load_state = 'ready'
+                 SET rail_order = CASE WHEN is_open = 0 THEN (
+                       SELECT COALESCE(MAX(other.rail_order) + 1, 0)
+                       FROM workspaces other WHERE other.is_open = 1 AND other.id != workspaces.id
+                     ) ELSE rail_order END,
+                     root = ?2, display_name = ?3, last_opened_at = ?4, is_open = 1,
+                      generation = ?5, load_state = 'ready'
                  WHERE canonical_root = ?1",
                 params![
                     canonical_root,
@@ -247,7 +563,7 @@ impl WorkbenchDatabase {
             )?;
         } else {
             let rail_order = transaction.query_row(
-                "SELECT COALESCE(MAX(rail_order) + 1, 0) FROM workspaces",
+                "SELECT COALESCE(MAX(rail_order) + 1, 0) FROM workspaces WHERE is_open = 1",
                 [],
                 |row| row.get::<_, i64>(0),
             )?;
@@ -268,7 +584,10 @@ impl WorkbenchDatabase {
             )?;
         }
         transaction.commit()?;
-        Ok(id)
+        Ok(OpenedWorkspace {
+            id,
+            was_open: existing.is_some_and(|(_, was_open)| was_open),
+        })
     }
 
     pub(crate) fn activate_workspace(&self, id: WorkspaceId) -> CoreResult<()> {
@@ -308,6 +627,1081 @@ impl WorkbenchDatabase {
         Ok(())
     }
 
+    pub(crate) fn workspace_has_pending_input(&self, id: WorkspaceId) -> CoreResult<bool> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        ensure_workspace(&connection, id)?;
+        let pending = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM input_requests
+               WHERE workspace_id = ?1 AND status IN ('pending', 'response-submitted')
+             )",
+            params![id.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(pending)
+    }
+
+    pub(crate) fn close_workspace_with_input_policy(
+        &self,
+        id: WorkspaceId,
+        force: bool,
+    ) -> CoreResult<ClosedWorkspace> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_workspace(&transaction, id)?;
+
+        let mut statement = transaction.prepare(
+            "SELECT id FROM input_requests
+             WHERE workspace_id = ?1 AND status IN ('pending', 'response-submitted')
+             ORDER BY created_at, id",
+        )?;
+        let input_ids = statement
+            .query_map(params![id.to_string()], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        if !input_ids.is_empty() && !force {
+            return Err(CoreError::WorkspaceHasPendingInput);
+        }
+
+        if !input_ids.is_empty() {
+            let now = now_millis();
+            transaction.execute(
+                "UPDATE attention_items
+                 SET status = 'resolved', lifecycle = 'resolved', updated_at = ?2
+                 WHERE workspace_id = ?1 AND id IN (
+                   SELECT attention_id FROM input_requests
+                   WHERE workspace_id = ?1 AND status IN ('pending', 'response-submitted')
+                 )",
+                params![id.to_string(), now],
+            )?;
+            transaction.execute(
+                "UPDATE input_requests
+                 SET status = 'cancelled', updated_at = ?2
+                 WHERE workspace_id = ?1 AND status IN ('pending', 'response-submitted')",
+                params![id.to_string(), now],
+            )?;
+        }
+
+        let summary = attention_summary_tx(&transaction, id)?;
+        let mut forced_inputs = Vec::with_capacity(input_ids.len());
+        for input_id in input_ids {
+            let input = select_input(&transaction, id, &input_id)?.ok_or_else(|| {
+                CoreError::DatabaseCorrupt(format!(
+                    "forced-close input disappeared before commit: {input_id}"
+                ))
+            })?;
+            let attention_id = &input.attention_id;
+            let attention = Some(
+                select_attention(&transaction, id, attention_id)?.ok_or_else(|| {
+                    CoreError::DatabaseCorrupt(format!(
+                        "forced-close attention disappeared before commit: {attention_id}"
+                    ))
+                })?,
+            );
+            forced_inputs.push(InputMutationResult {
+                outcome: MutationOutcome::Applied,
+                input,
+                attention,
+                summary: summary.clone(),
+            });
+        }
+
+        transaction.execute(
+            "UPDATE workspaces
+             SET is_open = 0, generation = NULL, load_state = 'closed'
+             WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        transaction.execute(
+            "UPDATE app_state SET active_workspace_id = NULL
+             WHERE singleton = 1 AND active_workspace_id = ?1",
+            params![id.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(ClosedWorkspace { forced_inputs })
+    }
+
+    pub(crate) fn restorable_workspaces(&self) -> CoreResult<Vec<RestorableWorkspace>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut statement = connection.prepare(
+            "SELECT w.id, w.root, w.display_name,
+                    CASE WHEN a.active_workspace_id IS NOT NULL AND a.active_workspace_id = w.id THEN 1 ELSE 0 END
+             FROM workspaces w CROSS JOIN app_state a
+             WHERE w.is_open = 1
+             ORDER BY CASE WHEN a.active_workspace_id IS NOT NULL AND a.active_workspace_id = w.id THEN 1 ELSE 0 END DESC,
+                      w.rail_order ASC",
+        )?;
+        statement
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                Ok(RestorableWorkspace {
+                    id: parse_workspace_id(&id)?,
+                    root: row.get(1)?,
+                    display_name: row.get(2)?,
+                    active: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn mark_restore_failed(&self, id: WorkspaceId) -> CoreResult<()> {
+        self.connection
+            .lock()
+            .expect("database lock poisoned")
+            .execute(
+                "UPDATE workspaces SET is_open = 1, load_state = 'degraded', generation = NULL WHERE id = ?1",
+                [id.to_string()],
+            )?;
+        Ok(())
+    }
+
+    pub(crate) fn dismiss_restore_failure(&self, id: WorkspaceId) -> CoreResult<bool> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = transaction
+            .query_row(
+                "SELECT is_open, load_state, generation FROM workspaces WHERE id = ?1",
+                [id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((is_open, load_state, generation)) = state else {
+            return Err(CoreError::WorkspaceNotFound);
+        };
+        if is_open && generation.is_some() {
+            return Err(CoreError::CannotDismissLiveWorkspace);
+        }
+        let dismissed = is_open && load_state == "degraded";
+        if dismissed {
+            transaction.execute(
+                "UPDATE workspaces
+                 SET is_open = 0, load_state = 'closed', generation = NULL
+                 WHERE id = ?1",
+                params![id.to_string()],
+            )?;
+            transaction.execute(
+                "UPDATE app_state SET active_workspace_id = NULL
+                 WHERE singleton = 1 AND active_workspace_id = ?1",
+                params![id.to_string()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(dismissed)
+    }
+
+    pub(crate) fn unload_workspace(&self, id: WorkspaceId) -> CoreResult<()> {
+        self.connection
+            .lock()
+            .expect("database lock poisoned")
+            .execute(
+                "UPDATE workspaces SET generation = NULL, load_state = 'closed'
+                 WHERE id = ?1 AND is_open = 1",
+                [id.to_string()],
+            )?;
+        Ok(())
+    }
+
+    pub(crate) fn reorder_workspaces(&self, ids: &[WorkspaceId]) -> CoreResult<Vec<WorkspaceId>> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = {
+            let mut statement = transaction
+                .prepare("SELECT id FROM workspaces WHERE is_open = 1 ORDER BY rail_order, id")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let supplied = ids.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut current_set = current.clone();
+        let mut supplied_set = supplied.clone();
+        current_set.sort();
+        supplied_set.sort();
+        supplied_set.dedup();
+        if supplied_set != current_set {
+            return Err(CoreError::InvalidParams(
+                "workspaceIds must contain every open workspace exactly once".to_owned(),
+            ));
+        }
+        for (position, id) in ids.iter().enumerate() {
+            transaction.execute(
+                "UPDATE workspaces SET rail_order = ?2 WHERE id = ?1",
+                params![
+                    id.to_string(),
+                    -i64::try_from(position).unwrap_or(i64::MAX) - 1
+                ],
+            )?;
+        }
+        for (position, id) in ids.iter().enumerate() {
+            transaction.execute(
+                "UPDATE workspaces SET rail_order = ?2 WHERE id = ?1",
+                params![id.to_string(), i64::try_from(position).unwrap_or(i64::MAX)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(ids.to_vec())
+    }
+
+    pub(crate) fn ordered_open_workspace_ids(&self) -> CoreResult<Vec<WorkspaceId>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut statement = connection
+            .prepare("SELECT id FROM workspaces WHERE is_open = 1 ORDER BY rail_order, id")?;
+        statement
+            .query_map([], |row| {
+                let value: String = row.get(0)?;
+                parse_workspace_id(&value)
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn save_workspace_ui_state(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        state: Value,
+    ) -> CoreResult<WorkspaceUiStateMutationResult> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_workspace(&transaction, workspace_id)?;
+        let current = select_ui_state(&transaction, workspace_id)?;
+        let outcome = match &current {
+            None if expected_revision == 0 => MutationOutcome::Applied,
+            Some(current) if current.revision == expected_revision => MutationOutcome::Applied,
+            _ => MutationOutcome::Stale,
+        };
+        if outcome != MutationOutcome::Applied {
+            return Ok(WorkspaceUiStateMutationResult {
+                outcome,
+                record: current.unwrap_or(WorkspaceUiStateRecord {
+                    revision: 0,
+                    state: Value::Null,
+                    updated_at: timestamp_millis(0),
+                }),
+            });
+        }
+        let revision = match current {
+            Some(record) => record.revision.checked_add(1).ok_or_else(|| {
+                CoreError::InvalidParams("workspace UI state revision is exhausted".to_owned())
+            })?,
+            None => 1,
+        };
+        let updated_at = now_millis();
+        let state_json = serde_json::to_string(&state)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        transaction.execute(
+            "INSERT INTO workspace_ui_state(workspace_id, version, revision, state_json, updated_at)
+             VALUES (?1, ?2, ?2, ?3, ?4)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+                version = excluded.version, revision = excluded.revision,
+                state_json = excluded.state_json, updated_at = excluded.updated_at",
+            params![workspace_id.to_string(), revision, state_json, updated_at],
+        )?;
+        transaction.commit()?;
+        Ok(WorkspaceUiStateMutationResult {
+            outcome,
+            record: WorkspaceUiStateRecord {
+                revision,
+                state,
+                updated_at: timestamp_millis(updated_at),
+            },
+        })
+    }
+
+    pub(crate) fn workspace_ui_states(
+        &self,
+    ) -> CoreResult<std::collections::BTreeMap<String, WorkspaceUiStateRecord>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut statement = connection.prepare(
+            "SELECT u.workspace_id, u.revision, u.state_json, u.updated_at
+             FROM workspace_ui_state u JOIN workspaces w ON w.id = u.workspace_id
+             WHERE w.is_open = 1 ORDER BY w.rail_order",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let workspace_id: String = row.get(0)?;
+            let state_json: String = row.get(2)?;
+            Ok((
+                workspace_id,
+                WorkspaceUiStateRecord {
+                    revision: to_u64(row.get(1)?)?,
+                    state: parse_json(&state_json)?,
+                    updated_at: timestamp_millis(row.get(3)?),
+                },
+            ))
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    pub(crate) fn create_or_revise_attention(
+        &self,
+        request: &CreateAttentionRequest,
+    ) -> CoreResult<AttentionMutationResult> {
+        request.validate()?;
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_workspace(&transaction, request.workspace_id)?;
+        let existing = select_attention_by_source(
+            &transaction,
+            request.workspace_id,
+            &request.source_id,
+            request.kind,
+        )?;
+        let desired_status = request.status.unwrap_or(AttentionStatus::Unread);
+        let (outcome, item) = if let Some(item) = existing {
+            if request.id.as_ref().is_some_and(|id| id != &item.id) {
+                (MutationOutcome::Invalid, item)
+            } else if request.revision < item.revision {
+                (MutationOutcome::Stale, item)
+            } else if request.revision == item.revision {
+                if item.target != request.target
+                    || (item.status.is_terminal() && item.status != desired_status)
+                {
+                    (MutationOutcome::Invalid, item)
+                } else if desired_status.is_terminal() && !item.status.is_terminal() {
+                    let updated_at = now_millis();
+                    transaction.execute(
+                        "UPDATE attention_items SET status = ?2, lifecycle = ?2,
+                            updated_at = ?3 WHERE id = ?1",
+                        params![item.id, desired_status.as_str(), updated_at],
+                    )?;
+                    (
+                        MutationOutcome::Applied,
+                        AttentionItem {
+                            status: desired_status,
+                            updated_at: timestamp_millis(updated_at),
+                            ..item
+                        },
+                    )
+                } else {
+                    (MutationOutcome::Unchanged, item)
+                }
+            } else if item.revision.checked_add(1) != Some(request.revision) {
+                (MutationOutcome::Invalid, item)
+            } else {
+                let updated_at = now_millis();
+                transaction.execute(
+                    "UPDATE attention_items SET revision = ?2, status = ?3, lifecycle = ?4,
+                        target_json = ?5, updated_at = ?6 WHERE id = ?1",
+                    params![
+                        item.id,
+                        request.revision,
+                        desired_status.as_str(),
+                        attention_lifecycle(desired_status),
+                        json_string(&request.target)?,
+                        updated_at
+                    ],
+                )?;
+                (
+                    MutationOutcome::Applied,
+                    AttentionItem {
+                        revision: request.revision,
+                        status: desired_status,
+                        target: request.target.clone(),
+                        updated_at: timestamp_millis(updated_at),
+                        ..item
+                    },
+                )
+            }
+        } else {
+            if desired_status != AttentionStatus::Unread {
+                return Err(CoreError::InvalidParams(
+                    "new attention must start unread".to_owned(),
+                ));
+            }
+            let id = request
+                .id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let now = now_millis();
+            transaction.execute(
+                "INSERT INTO attention_items(
+                    id, workspace_id, source_id, kind, revision, status, target_json,
+                    created_at, updated_at, acknowledged_revision, notified_revision, lifecycle
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, NULL, NULL, ?9)",
+                params![
+                    id,
+                    request.workspace_id.to_string(),
+                    request.source_id,
+                    request.kind.as_str(),
+                    request.revision,
+                    desired_status.as_str(),
+                    json_string(&request.target)?,
+                    now,
+                    attention_lifecycle(desired_status)
+                ],
+            )?;
+            (
+                MutationOutcome::Applied,
+                AttentionItem {
+                    id,
+                    workspace_id: request.workspace_id,
+                    source_id: request.source_id.clone(),
+                    kind: request.kind,
+                    revision: request.revision,
+                    status: desired_status,
+                    target: request.target.clone(),
+                    created_at: timestamp_millis(now),
+                    updated_at: timestamp_millis(now),
+                },
+            )
+        };
+        let summary = attention_summary_tx(&transaction, request.workspace_id)?;
+        if outcome == MutationOutcome::Applied {
+            transaction.commit()?;
+        }
+        Ok(AttentionMutationResult {
+            outcome,
+            item,
+            summary,
+        })
+    }
+
+    pub(crate) fn mutate_attention_revision(
+        &self,
+        workspace_id: WorkspaceId,
+        attention_id: &str,
+        expected_revision: u64,
+        notification_claim: bool,
+    ) -> CoreResult<AttentionMutationResult> {
+        validate_entity_revision(expected_revision, "expectedRevision")?;
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut item = select_attention(&transaction, workspace_id, attention_id)?
+            .ok_or(CoreError::WorkspaceNotFound)?;
+        let acknowledged: Option<i64> = transaction.query_row(
+            "SELECT acknowledged_revision FROM attention_items WHERE id = ?1",
+            [attention_id],
+            |row| row.get(0),
+        )?;
+        let notified: Option<i64> = transaction.query_row(
+            "SELECT notified_revision FROM attention_items WHERE id = ?1",
+            [attention_id],
+            |row| row.get(0),
+        )?;
+        let outcome = if expected_revision != item.revision {
+            MutationOutcome::Stale
+        } else if item.status.is_terminal() {
+            MutationOutcome::Invalid
+        } else if notification_claim {
+            if notified.and_then(|value| u64::try_from(value).ok()) == Some(expected_revision) {
+                MutationOutcome::Unchanged
+            } else {
+                transaction.execute(
+                    "UPDATE attention_items SET notified_revision = ?2 WHERE id = ?1 AND revision = ?2",
+                    params![attention_id, expected_revision],
+                )?;
+                MutationOutcome::Applied
+            }
+        } else if acknowledged.and_then(|value| u64::try_from(value).ok())
+            == Some(expected_revision)
+        {
+            MutationOutcome::Unchanged
+        } else {
+            let updated_at = now_millis();
+            transaction.execute(
+                "UPDATE attention_items SET acknowledged_revision = ?2,
+                    status = 'acknowledged', updated_at = ?3 WHERE id = ?1 AND revision = ?2",
+                params![attention_id, expected_revision, updated_at],
+            )?;
+            item.status = AttentionStatus::Acknowledged;
+            item.updated_at = timestamp_millis(updated_at);
+            MutationOutcome::Applied
+        };
+        let summary = attention_summary_tx(&transaction, workspace_id)?;
+        if outcome == MutationOutcome::Applied {
+            transaction.commit()?;
+        }
+        Ok(AttentionMutationResult {
+            outcome,
+            item,
+            summary,
+        })
+    }
+
+    pub(crate) fn create_input(
+        &self,
+        request: &CreateInputRequest,
+    ) -> CoreResult<InputMutationResult> {
+        request.validate()?;
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_workspace(&transaction, request.workspace_id)?;
+        let id = request
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if let Some(existing) = select_input(&transaction, request.workspace_id, &id)? {
+            let target =
+                request
+                    .target
+                    .clone()
+                    .unwrap_or_else(|| WorkspaceNavigationTarget::Input {
+                        input_request_id: id.clone(),
+                    });
+            let existing_attention =
+                select_attention(&transaction, request.workspace_id, &existing.attention_id)?
+                    .ok_or(CoreError::WorkspaceNotFound)?;
+            let same_payload = request.kind == existing.kind
+                && request.prompt == existing.prompt
+                && request.choices == existing.choices
+                && request.cancellation_supported == existing.cancellation_supported
+                && request
+                    .attention_id
+                    .as_ref()
+                    .is_none_or(|id| id == &existing.attention_id)
+                && target == existing_attention.target;
+            let (outcome, input) = if request.revision < existing.revision {
+                (MutationOutcome::Stale, existing)
+            } else if request.revision == existing.revision {
+                if same_payload {
+                    (MutationOutcome::Unchanged, existing)
+                } else {
+                    (MutationOutcome::Invalid, existing)
+                }
+            } else if existing.revision.checked_add(1) != Some(request.revision) {
+                (MutationOutcome::Invalid, existing)
+            } else {
+                let updated_at = now_millis();
+                let request_json = json_string(&json!({
+                    "prompt": request.prompt,
+                    "choices": request.choices,
+                    "cancellationSupported": request.cancellation_supported,
+                }))?;
+                transaction.execute(
+                    "UPDATE input_requests SET revision = ?2, kind = ?3, status = 'pending',
+                        request_json = ?4, response_json = NULL, updated_at = ?5 WHERE id = ?1",
+                    params![
+                        id,
+                        request.revision,
+                        request.kind.as_str(),
+                        request_json,
+                        updated_at
+                    ],
+                )?;
+                transaction.execute(
+                    "UPDATE attention_items SET revision = ?2, status = 'unread',
+                        lifecycle = 'active', target_json = ?3, updated_at = ?4 WHERE id = ?1",
+                    params![
+                        existing.attention_id,
+                        request.revision,
+                        json_string(&target)?,
+                        updated_at
+                    ],
+                )?;
+                (
+                    MutationOutcome::Applied,
+                    InputRequest {
+                        revision: request.revision,
+                        kind: request.kind,
+                        status: InputRequestStatus::Pending,
+                        prompt: request.prompt.clone(),
+                        choices: request.choices.clone(),
+                        cancellation_supported: request.cancellation_supported,
+                        response: None,
+                        updated_at: timestamp_millis(updated_at),
+                        ..existing
+                    },
+                )
+            };
+            let attention =
+                select_attention(&transaction, request.workspace_id, &input.attention_id)?;
+            let summary = attention_summary_tx(&transaction, request.workspace_id)?;
+            if outcome == MutationOutcome::Applied {
+                transaction.commit()?;
+            }
+            return Ok(InputMutationResult {
+                outcome,
+                input,
+                attention,
+                summary,
+            });
+        }
+        let attention_id = request
+            .attention_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let target = request
+            .target
+            .clone()
+            .unwrap_or_else(|| WorkspaceNavigationTarget::Input {
+                input_request_id: id.clone(),
+            });
+        let now = now_millis();
+        let request_json = json_string(&json!({
+            "prompt": request.prompt,
+            "choices": request.choices,
+            "cancellationSupported": request.cancellation_supported,
+        }))?;
+        transaction.execute(
+            "INSERT INTO attention_items(
+                id, workspace_id, source_id, kind, revision, status, target_json,
+                created_at, updated_at, acknowledged_revision, notified_revision, lifecycle
+             ) VALUES (?1, ?2, ?3, 'input', ?4, 'unread', ?5, ?6, ?6, NULL, NULL, 'active')",
+            params![
+                attention_id,
+                request.workspace_id.to_string(),
+                id,
+                request.revision,
+                json_string(&target)?,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO input_requests(
+                id, workspace_id, agent_session_id, revision, kind, status,
+                request_json, response_json, created_at, updated_at, attention_id
+             ) VALUES (?1, ?2, NULL, ?3, ?4, 'pending', ?5, NULL, ?6, ?6, ?7)",
+            params![
+                id,
+                request.workspace_id.to_string(),
+                request.revision,
+                request.kind.as_str(),
+                request_json,
+                now,
+                attention_id,
+            ],
+        )?;
+        let input = InputRequest {
+            id,
+            workspace_id: request.workspace_id,
+            revision: request.revision,
+            kind: request.kind,
+            status: InputRequestStatus::Pending,
+            prompt: request.prompt.clone(),
+            choices: request.choices.clone(),
+            cancellation_supported: request.cancellation_supported,
+            response: None,
+            attention_id: attention_id.clone(),
+            created_at: timestamp_millis(now),
+            updated_at: timestamp_millis(now),
+        };
+        let attention = select_attention(&transaction, request.workspace_id, &attention_id)?;
+        let summary = attention_summary_tx(&transaction, request.workspace_id)?;
+        transaction.commit()?;
+        Ok(InputMutationResult {
+            outcome: MutationOutcome::Applied,
+            input,
+            attention,
+            summary,
+        })
+    }
+
+    pub(crate) fn answer_input(
+        &self,
+        workspace_id: WorkspaceId,
+        input_id: &str,
+        expected_revision: u64,
+        response: InputResponse,
+        redact_response: bool,
+    ) -> CoreResult<InputMutationResult> {
+        validate_entity_revision(expected_revision, "expectedRevision")?;
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut input = select_input(&transaction, workspace_id, input_id)?
+            .ok_or(CoreError::WorkspaceNotFound)?;
+        let persisted = if redact_response
+            || input.kind == InputRequestKind::Authentication
+            || response.secret == Some(true)
+        {
+            InputResponse {
+                value: String::new(),
+                secret: Some(true),
+            }
+        } else {
+            response
+        };
+        let outcome = if expected_revision != input.revision {
+            MutationOutcome::Stale
+        } else if input.status == InputRequestStatus::ResponseSubmitted {
+            if input.response.as_ref() == Some(&persisted) {
+                MutationOutcome::Unchanged
+            } else {
+                MutationOutcome::Invalid
+            }
+        } else if input.status != InputRequestStatus::Pending {
+            MutationOutcome::Invalid
+        } else {
+            let updated_at = now_millis();
+            transaction.execute(
+                "UPDATE input_requests SET status = 'response-submitted',
+                    response_json = ?2, updated_at = ?3 WHERE id = ?1 AND revision = ?4",
+                params![
+                    input_id,
+                    json_string(&persisted)?,
+                    updated_at,
+                    expected_revision
+                ],
+            )?;
+            input.status = InputRequestStatus::ResponseSubmitted;
+            input.response = Some(persisted);
+            input.updated_at = timestamp_millis(updated_at);
+            MutationOutcome::Applied
+        };
+        let attention = select_attention(&transaction, workspace_id, &input.attention_id)?;
+        let summary = attention_summary_tx(&transaction, workspace_id)?;
+        if outcome == MutationOutcome::Applied {
+            transaction.commit()?;
+        }
+        Ok(InputMutationResult {
+            outcome,
+            input,
+            attention,
+            summary,
+        })
+    }
+
+    pub(crate) fn finish_input(
+        &self,
+        workspace_id: WorkspaceId,
+        input_id: &str,
+        expected_revision: u64,
+        desired: InputRequestStatus,
+    ) -> CoreResult<InputMutationResult> {
+        validate_entity_revision(expected_revision, "expectedRevision")?;
+        debug_assert!(desired.is_terminal());
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut input = select_input(&transaction, workspace_id, input_id)?
+            .ok_or(CoreError::WorkspaceNotFound)?;
+        let allowed = match desired {
+            InputRequestStatus::Accepted | InputRequestStatus::Rejected => {
+                input.status == InputRequestStatus::ResponseSubmitted
+            }
+            InputRequestStatus::Cancelled => {
+                input.cancellation_supported
+                    && matches!(
+                        input.status,
+                        InputRequestStatus::Pending | InputRequestStatus::ResponseSubmitted
+                    )
+            }
+            InputRequestStatus::Expired | InputRequestStatus::Superseded => matches!(
+                input.status,
+                InputRequestStatus::Pending | InputRequestStatus::ResponseSubmitted
+            ),
+            _ => false,
+        };
+        let outcome = if expected_revision != input.revision {
+            MutationOutcome::Stale
+        } else if input.status == desired {
+            MutationOutcome::Unchanged
+        } else if !allowed {
+            MutationOutcome::Invalid
+        } else {
+            let updated_at = now_millis();
+            let attention_status = match desired {
+                InputRequestStatus::Expired => AttentionStatus::Expired,
+                InputRequestStatus::Superseded => AttentionStatus::Superseded,
+                _ => AttentionStatus::Resolved,
+            };
+            transaction.execute(
+                "UPDATE input_requests SET status = ?2, updated_at = ?3
+                 WHERE id = ?1 AND revision = ?4",
+                params![input_id, desired.as_str(), updated_at, expected_revision],
+            )?;
+            transaction.execute(
+                "UPDATE attention_items SET status = ?2, lifecycle = ?2, updated_at = ?3
+                 WHERE id = ?1",
+                params![input.attention_id, attention_status.as_str(), updated_at],
+            )?;
+            input.status = desired;
+            input.updated_at = timestamp_millis(updated_at);
+            MutationOutcome::Applied
+        };
+        let attention = select_attention(&transaction, workspace_id, &input.attention_id)?;
+        let summary = attention_summary_tx(&transaction, workspace_id)?;
+        if outcome == MutationOutcome::Applied {
+            transaction.commit()?;
+        }
+        Ok(InputMutationResult {
+            outcome,
+            input,
+            attention,
+            summary,
+        })
+    }
+
+    pub(crate) fn attention_items(&self) -> CoreResult<Vec<AttentionItem>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut statement = connection.prepare(
+            "SELECT a.id, a.workspace_id, a.source_id, a.kind, a.revision, a.status,
+                    a.target_json, a.created_at, a.updated_at, a.acknowledged_revision, a.lifecycle
+             FROM attention_items a JOIN workspaces w ON w.id = a.workspace_id
+             WHERE w.is_open = 1 ORDER BY w.rail_order, a.updated_at DESC, a.id",
+        )?;
+        statement
+            .query_map([], attention_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn input_requests(&self) -> CoreResult<Vec<InputRequest>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut statement = connection.prepare(
+            "SELECT i.id, i.workspace_id, i.revision, i.kind, i.status, i.request_json,
+                    i.response_json, i.created_at, i.updated_at, i.attention_id
+             FROM input_requests i JOIN workspaces w ON w.id = i.workspace_id
+             WHERE w.is_open = 1 ORDER BY w.rail_order, i.updated_at DESC, i.id",
+        )?;
+        statement
+            .query_map([], input_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn attention_summary(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> CoreResult<WorkspaceAttentionSummary> {
+        attention_summary_tx(
+            &self.connection.lock().expect("database lock poisoned"),
+            workspace_id,
+        )
+    }
+
+    pub(crate) fn record_legacy_import(
+        &self,
+        workspace_id: WorkspaceId,
+        record: LegacyImportRecord<'_>,
+    ) -> CoreResult<bool> {
+        let stable_key = format!(
+            "{}/{}/{}/{}",
+            workspace_id, record.session_id, record.artifact_kind, record.relative_path
+        );
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous = transaction
+            .query_row(
+                "SELECT status, entity_id, content_hash, diagnostic
+                 FROM legacy_review_import_ledger WHERE stable_key = ?1",
+                [&stable_key],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let status = if record.diagnostic.is_some() {
+            "diagnostic"
+        } else {
+            "imported"
+        };
+        let unchanged = previous.as_ref().is_some_and(|previous| {
+            previous.0 == status
+                && previous.1.as_deref() == record.entity_id
+                && previous.2.as_deref() == record.content_hash
+                && previous.3.as_deref() == record.diagnostic
+        });
+        if unchanged {
+            return Ok(false);
+        }
+
+        transaction.execute(
+            "INSERT INTO legacy_review_import_ledger(
+                stable_key, workspace_id, session_id, artifact_kind, relative_path,
+                entity_id, content_hash, status, diagnostic, imported_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(stable_key) DO UPDATE SET
+                entity_id = excluded.entity_id, content_hash = excluded.content_hash,
+                status = excluded.status, diagnostic = excluded.diagnostic,
+                imported_at = excluded.imported_at",
+            params![
+                stable_key,
+                workspace_id.to_string(),
+                record.session_id,
+                record.artifact_kind,
+                record.relative_path,
+                record.entity_id,
+                record.content_hash,
+                status,
+                record.diagnostic,
+                now_millis()
+            ],
+        )?;
+
+        let table = match record.artifact_kind {
+            "run" => "legacy_import_runs",
+            "agent" => "legacy_import_agents",
+            "chat" => "legacy_import_chats",
+            "prompt" => "legacy_import_prompts",
+            _ => {
+                return Err(CoreError::InvalidParams(
+                    "unknown legacy artifact kind".to_owned(),
+                ));
+            }
+        };
+        transaction.execute(
+            &format!(
+                "DELETE FROM {table} WHERE workspace_id = ?1 AND session_id = ?2
+                 AND source_path = ?3"
+            ),
+            params![
+                workspace_id.to_string(),
+                record.session_id,
+                record.relative_path
+            ],
+        )?;
+        if let (Some(entity_id), Some(content_hash), Some(payload)) =
+            (record.entity_id, record.content_hash, record.payload)
+        {
+            let payload_column = if record.artifact_kind == "prompt" {
+                "prompt_text"
+            } else {
+                "document_json"
+            };
+            transaction.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE workspace_id = ?1 AND session_id = ?2
+                     AND entity_id = ?3"
+                ),
+                params![workspace_id.to_string(), record.session_id, entity_id],
+            )?;
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {table}(
+                       workspace_id, session_id, entity_id, source_path,
+                       content_hash, {payload_column}, imported_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ),
+                params![
+                    workspace_id.to_string(),
+                    record.session_id,
+                    entity_id,
+                    record.relative_path,
+                    content_hash,
+                    payload,
+                    now_millis()
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    pub(crate) fn clear_legacy_import_diagnostic(
+        &self,
+        workspace_id: WorkspaceId,
+        session_id: &str,
+        artifact_kind: &str,
+        relative_path: &str,
+    ) -> CoreResult<()> {
+        self.connection
+            .lock()
+            .expect("database lock poisoned")
+            .execute(
+                "DELETE FROM legacy_review_import_ledger
+                 WHERE workspace_id = ?1 AND session_id = ?2 AND artifact_kind = ?3
+                   AND relative_path = ?4 AND status = 'diagnostic'",
+                params![
+                    workspace_id.to_string(),
+                    session_id,
+                    artifact_kind,
+                    relative_path
+                ],
+            )?;
+        Ok(())
+    }
+
+    pub fn legacy_review_import_report(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> CoreResult<LegacyReviewImportReport> {
+        let (imported, diagnostics): (i64, i64) = self
+            .connection
+            .lock()
+            .expect("database lock poisoned")
+            .query_row(
+                "SELECT
+                    COALESCE(SUM(status = 'imported'), 0),
+                    COALESCE(SUM(status = 'diagnostic'), 0)
+                 FROM legacy_review_import_ledger WHERE workspace_id = ?1",
+                [workspace_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        Ok(LegacyReviewImportReport {
+            workspace_id,
+            imported: u64::try_from(imported).unwrap_or_default(),
+            already_imported: 0,
+            diagnostics: u64::try_from(diagnostics).unwrap_or_default(),
+        })
+    }
+
+    pub fn legacy_imported_artifacts(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> CoreResult<Vec<LegacyImportedArtifact>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut statement = connection.prepare(
+            "SELECT 'run', session_id, entity_id, source_path, content_hash, document_json
+               FROM legacy_import_runs WHERE workspace_id = ?1
+             UNION ALL
+             SELECT 'agent', session_id, entity_id, source_path, content_hash, document_json
+               FROM legacy_import_agents WHERE workspace_id = ?1
+             UNION ALL
+             SELECT 'chat', session_id, entity_id, source_path, content_hash, document_json
+               FROM legacy_import_chats WHERE workspace_id = ?1
+             UNION ALL
+             SELECT 'prompt', session_id, entity_id, source_path, content_hash, prompt_text
+               FROM legacy_import_prompts WHERE workspace_id = ?1
+             ORDER BY 1, 2, 4",
+        )?;
+        let rows = statement.query_map([workspace_id.to_string()], |row| {
+            let kind: String = row.get(0)?;
+            let session_id = row.get(1)?;
+            let entity_id = row.get(2)?;
+            let source_path = row.get(3)?;
+            let content_hash = row.get(4)?;
+            let payload: String = row.get(5)?;
+            let artifact = match kind.as_str() {
+                "run" => LegacyImportedArtifact::Run {
+                    workspace_id,
+                    session_id,
+                    entity_id,
+                    source_path,
+                    content_hash,
+                    document: parse_json(&payload)?,
+                },
+                "agent" => LegacyImportedArtifact::Agent {
+                    workspace_id,
+                    session_id,
+                    entity_id,
+                    source_path,
+                    content_hash,
+                    document: parse_json(&payload)?,
+                },
+                "chat" => LegacyImportedArtifact::Chat {
+                    workspace_id,
+                    session_id,
+                    entity_id,
+                    source_path,
+                    content_hash,
+                    document: parse_json(&payload)?,
+                },
+                "prompt" => LegacyImportedArtifact::Prompt {
+                    workspace_id,
+                    session_id,
+                    entity_id,
+                    source_path,
+                    content_hash,
+                    text: payload,
+                },
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(artifact)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     #[cfg(test)]
     fn schema_version(&self) -> CoreResult<i64> {
         Ok(self
@@ -331,6 +1725,267 @@ impl WorkbenchDatabase {
                 |row| row.get(0),
             )?)
     }
+}
+
+fn ensure_workspace(connection: &Connection, workspace_id: WorkspaceId) -> CoreResult<()> {
+    let exists = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
+        [workspace_id.to_string()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(CoreError::WorkspaceNotFound)
+    }
+}
+
+fn select_attention(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    attention_id: &str,
+) -> CoreResult<Option<AttentionItem>> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, source_id, kind, revision, status, target_json,
+                    created_at, updated_at, acknowledged_revision, lifecycle
+             FROM attention_items WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), attention_id],
+            attention_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn select_attention_by_source(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    source_id: &str,
+    kind: AttentionKind,
+) -> CoreResult<Option<AttentionItem>> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, source_id, kind, revision, status, target_json,
+                    created_at, updated_at, acknowledged_revision, lifecycle
+             FROM attention_items WHERE workspace_id = ?1 AND source_id = ?2 AND kind = ?3",
+            params![workspace_id.to_string(), source_id, kind.as_str()],
+            attention_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn attention_from_row(row: &Row<'_>) -> rusqlite::Result<AttentionItem> {
+    let workspace_id: String = row.get(1)?;
+    let kind: String = row.get(3)?;
+    let target: String = row.get(6)?;
+    let revision = to_u64(row.get(4)?)?;
+    let acknowledged_revision: Option<i64> = row.get(9)?;
+    let lifecycle: String = row.get(10)?;
+    let status = match lifecycle.as_str() {
+        "resolved" => AttentionStatus::Resolved,
+        "expired" => AttentionStatus::Expired,
+        "superseded" => AttentionStatus::Superseded,
+        "active"
+            if acknowledged_revision.and_then(|value| u64::try_from(value).ok())
+                == Some(revision) =>
+        {
+            AttentionStatus::Acknowledged
+        }
+        "active" => AttentionStatus::Unread,
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(AttentionItem {
+        id: row.get(0)?,
+        workspace_id: parse_workspace_id(&workspace_id)?,
+        source_id: row.get(2)?,
+        kind: AttentionKind::parse(&kind).ok_or(rusqlite::Error::InvalidQuery)?,
+        revision,
+        status,
+        target: parse_navigation_target(&target)?,
+        created_at: timestamp_millis(row.get(7)?),
+        updated_at: timestamp_millis(row.get(8)?),
+    })
+}
+
+fn select_input(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+    input_id: &str,
+) -> CoreResult<Option<InputRequest>> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, revision, kind, status, request_json,
+                    response_json, created_at, updated_at, attention_id
+             FROM input_requests WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace_id.to_string(), input_id],
+            input_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn input_from_row(row: &Row<'_>) -> rusqlite::Result<InputRequest> {
+    let workspace_id: String = row.get(1)?;
+    let kind: String = row.get(3)?;
+    let status: String = row.get(4)?;
+    let request_json: String = row.get(5)?;
+    let request: Value = parse_json(&request_json)?;
+    let response_json: Option<String> = row.get(6)?;
+    Ok(InputRequest {
+        id: row.get(0)?,
+        workspace_id: parse_workspace_id(&workspace_id)?,
+        revision: to_u64(row.get(2)?)?,
+        kind: InputRequestKind::parse(&kind).ok_or(rusqlite::Error::InvalidQuery)?,
+        status: InputRequestStatus::parse(&status).ok_or(rusqlite::Error::InvalidQuery)?,
+        prompt: request
+            .get("prompt")
+            .and_then(Value::as_str)
+            .ok_or(rusqlite::Error::InvalidQuery)?
+            .to_owned(),
+        choices: request
+            .get("choices")
+            .and_then(Value::as_array)
+            .ok_or(rusqlite::Error::InvalidQuery)?
+            .iter()
+            .map(|choice| {
+                choice
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(rusqlite::Error::InvalidQuery)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        cancellation_supported: request
+            .get("cancellationSupported")
+            .and_then(Value::as_bool)
+            .ok_or(rusqlite::Error::InvalidQuery)?,
+        response: response_json.as_deref().map(parse_json).transpose()?,
+        attention_id: row.get(9)?,
+        created_at: timestamp_millis(row.get(7)?),
+        updated_at: timestamp_millis(row.get(8)?),
+    })
+}
+
+fn attention_summary_tx(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> CoreResult<WorkspaceAttentionSummary> {
+    let (input_required, errors, unread): (i64, i64, i64) = connection.query_row(
+        "SELECT
+            COALESCE(SUM(kind = 'input' AND lifecycle = 'active'), 0),
+            COALESCE(SUM(kind = 'error' AND lifecycle = 'active'), 0),
+            COALESCE(SUM(kind = 'completion' AND lifecycle = 'active'
+                AND (acknowledged_revision IS NULL OR acknowledged_revision != revision)), 0)
+         FROM attention_items WHERE workspace_id = ?1",
+        [workspace_id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let running: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM agent_sessions
+         WHERE workspace_id = ?1 AND state IN ('running', 'starting', 'reconnecting')",
+        [workspace_id.to_string()],
+        |row| row.get(0),
+    )?;
+    let input_required = u64::try_from(input_required).unwrap_or_default();
+    let errors = u64::try_from(errors).unwrap_or_default();
+    let unread = u64::try_from(unread).unwrap_or_default();
+    let running = u64::try_from(running).unwrap_or_default();
+    let mut summary = WorkspaceAttentionSummary {
+        state: Default::default(),
+        input_required,
+        errors,
+        unread,
+        running,
+        total: input_required
+            .saturating_add(errors)
+            .saturating_add(unread)
+            .saturating_add(running),
+    };
+    summary.state = summary.highest_state();
+    Ok(summary)
+}
+
+fn attention_lifecycle(status: AttentionStatus) -> &'static str {
+    match status {
+        AttentionStatus::Unread | AttentionStatus::Acknowledged => "active",
+        AttentionStatus::Resolved => "resolved",
+        AttentionStatus::Expired => "expired",
+        AttentionStatus::Superseded => "superseded",
+    }
+}
+
+fn select_ui_state(
+    connection: &Connection,
+    workspace_id: WorkspaceId,
+) -> CoreResult<Option<WorkspaceUiStateRecord>> {
+    connection
+        .query_row(
+            "SELECT revision, state_json, updated_at FROM workspace_ui_state WHERE workspace_id = ?1",
+            [workspace_id.to_string()],
+            |row| {
+                let state_json: String = row.get(1)?;
+                Ok(WorkspaceUiStateRecord {
+                    revision: to_u64(row.get(0)?)?,
+                    state: parse_json(&state_json)?,
+                    updated_at: timestamp_millis(row.get(2)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn parse_workspace_id(value: &str) -> rusqlite::Result<WorkspaceId> {
+    WorkspaceId::parse(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn to_u64(value: i64) -> rusqlite::Result<u64> {
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
+fn parse_json<T: serde::de::DeserializeOwned>(value: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn parse_navigation_target(value: &str) -> rusqlite::Result<WorkspaceNavigationTarget> {
+    if let Ok(target) = serde_json::from_str(value) {
+        return Ok(target);
+    }
+    let mut value: Value = parse_json(value)?;
+    if let Value::Object(object) = &mut value {
+        if let Some(kind) = object.remove("type") {
+            object.insert("kind".to_owned(), kind);
+        }
+        if let Some(input_id) = object.remove("inputId") {
+            object.insert("inputRequestId".to_owned(), input_id);
+        }
+        if let Some(session_id) = object.remove("sessionId") {
+            object.insert("reviewSessionId".to_owned(), session_id);
+        }
+    }
+    serde_json::from_value(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn json_string(value: &impl serde::Serialize) -> CoreResult<String> {
+    serde_json::to_string(value).map_err(|error| CoreError::Serialization(error.to_string()))
+}
+
+fn timestamp_millis(value: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(value)
+        .unwrap_or(chrono::DateTime::UNIX_EPOCH)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 pub fn default_database_path() -> PathBuf {
@@ -453,18 +2108,129 @@ mod tests {
     const LOCK_CHILD_TEST: &str = "database::tests::database_lock_child_process";
     const LOCK_CHILD_SUCCESS_MARKER: &str = "diffuse-database-lock-child-complete";
 
+    fn workspace(database: &WorkbenchDatabase, root: &str) -> (WorkspaceId, WorkspaceGeneration) {
+        let generation = WorkspaceGeneration::new();
+        let id = database
+            .open_workspace(root, root, root.trim_start_matches('/'), generation)
+            .unwrap()
+            .id;
+        (id, generation)
+    }
+
+    fn attention_request(
+        workspace_id: WorkspaceId,
+        generation: WorkspaceGeneration,
+        source_id: &str,
+        kind: AttentionKind,
+        revision: u64,
+    ) -> CreateAttentionRequest {
+        CreateAttentionRequest {
+            id: None,
+            workspace_id,
+            workspace_generation: generation,
+            source_id: source_id.to_owned(),
+            kind,
+            revision,
+            status: None,
+            target: WorkspaceNavigationTarget::Workspace,
+        }
+    }
+
+    fn input_request(
+        workspace_id: WorkspaceId,
+        generation: WorkspaceGeneration,
+        id: &str,
+        kind: InputRequestKind,
+        cancellation_supported: bool,
+    ) -> CreateInputRequest {
+        CreateInputRequest {
+            id: Some(id.to_owned()),
+            workspace_id,
+            workspace_generation: generation,
+            revision: 1,
+            kind,
+            prompt: "Choose".to_owned(),
+            choices: vec!["Yes".to_owned()],
+            cancellation_supported,
+            attention_id: None,
+            target: None,
+        }
+    }
+
+    fn attention_at_status(
+        database: &WorkbenchDatabase,
+        workspace_id: WorkspaceId,
+        generation: WorkspaceGeneration,
+        source_id: &str,
+        kind: AttentionKind,
+        status: AttentionStatus,
+    ) -> AttentionItem {
+        let request = attention_request(workspace_id, generation, source_id, kind, 2);
+        let created = database.create_or_revise_attention(&request).unwrap();
+        match status {
+            AttentionStatus::Unread => created.item,
+            AttentionStatus::Acknowledged => {
+                database
+                    .mutate_attention_revision(workspace_id, &created.item.id, 2, false)
+                    .unwrap()
+                    .item
+            }
+            terminal => {
+                let mut terminal_request = request;
+                terminal_request.status = Some(terminal);
+                database
+                    .create_or_revise_attention(&terminal_request)
+                    .unwrap()
+                    .item
+            }
+        }
+    }
+
     #[test]
     fn migrations_are_idempotent_and_enable_foreign_keys() {
         let database = WorkbenchDatabase::open_in_memory().expect("open database");
         database.migrate().expect("rerun migrations");
         assert_eq!(database.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-        let enabled: i64 = database
-            .connection
-            .lock()
-            .unwrap()
+        let connection = database.connection.lock().unwrap();
+        let enabled: i64 = connection
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .unwrap();
         assert_eq!(enabled, 1);
+        for table in [
+            "legacy_import_runs",
+            "legacy_import_agents",
+            "legacy_import_chats",
+            "legacy_import_prompts",
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        [table],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1,
+                "missing typed import table {table}"
+            );
+        }
+        for table in [
+            "legacy_import_reviews",
+            "legacy_import_comments",
+            "legacy_import_threads",
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        [table],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0,
+                "portable-authority import table must not exist: {table}"
+            );
+        }
     }
 
     #[test]
@@ -472,11 +2238,13 @@ mod tests {
         let database = WorkbenchDatabase::open_in_memory().expect("open database");
         let first = database
             .open_workspace("/repo", "/repo", "repo", WorkspaceGeneration::new())
-            .unwrap();
+            .unwrap()
+            .id;
         database.close_workspace(first).unwrap();
         let second = database
             .open_workspace("/repo", "/repo", "repo", WorkspaceGeneration::new())
-            .unwrap();
+            .unwrap()
+            .id;
         assert_eq!(first, second);
     }
 
@@ -485,7 +2253,8 @@ mod tests {
         let database = WorkbenchDatabase::open_in_memory().expect("open database");
         let workspace = database
             .open_workspace("/repo", "/repo", "repo", WorkspaceGeneration::new())
-            .unwrap();
+            .unwrap()
+            .id;
         database.activate_workspace(workspace).unwrap();
         let workspace_id = workspace.to_string();
         assert_eq!(
@@ -496,6 +2265,639 @@ mod tests {
         database.deactivate_workspace().unwrap();
 
         assert_eq!(database.active_workspace_id().unwrap(), None);
+    }
+
+    #[test]
+    fn restorable_workspace_maps_a_null_active_id_to_false() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, _) = workspace(&database, "/restorable");
+
+        let records = database.restorable_workspaces().unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, workspace_id);
+        assert!(!records[0].active);
+    }
+
+    #[test]
+    fn v1_rows_migrate_to_v2_without_losing_attention_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
+        let workspace_id = WorkspaceId::new();
+        let zero_workspace_id = WorkspaceId::new();
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(&format!(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES (1, 0);
+             CREATE TABLE workspaces (id TEXT PRIMARY KEY, canonical_root TEXT NOT NULL UNIQUE,
+                root TEXT NOT NULL, display_name TEXT NOT NULL, rail_order INTEGER NOT NULL,
+                last_opened_at INTEGER NOT NULL, is_open INTEGER NOT NULL DEFAULT 0,
+                generation TEXT, load_state TEXT NOT NULL DEFAULT 'closed');
+             CREATE TABLE app_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                active_workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL);
+             INSERT INTO app_state VALUES (1, NULL);
+             CREATE TABLE workspace_ui_state (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+                version INTEGER NOT NULL, state_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                review_session_id TEXT, adapter TEXT NOT NULL, authentication_profile TEXT,
+                remote_session_id TEXT, capabilities_json TEXT NOT NULL DEFAULT '{{}}', state TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE input_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                agent_session_id TEXT REFERENCES agent_sessions(id), revision INTEGER NOT NULL, kind TEXT NOT NULL,
+                status TEXT NOT NULL, request_json TEXT NOT NULL, response_json TEXT,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE attention_items (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                source_id TEXT NOT NULL, kind TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL,
+                target_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                UNIQUE(workspace_id, source_id, kind));
+             INSERT INTO workspaces VALUES ('{workspace_id}', '/repo', '/repo', 'repo', 0, 0, 1, NULL, 'ready');
+             INSERT INTO workspaces VALUES ('{zero_workspace_id}', '/zero', '/zero', 'zero', 1, 0, 1, NULL, 'ready');
+              INSERT INTO attention_items VALUES
+                ('old', '{workspace_id}', 'source', 'error', 4, 'acknowledged', '{{\"type\":\"workspace\"}}', 1, 2),
+                ('input-attention', '{workspace_id}', 'input-one', 'input', 1, 'unread',
+                 '{{\"type\":\"input\",\"inputRequestId\":\"input-one\"}}', 1, 2),
+                 ('bad-attention', '{workspace_id}', 'bad', 'error', 1, 'unread', 'not-json', 1, 2),
+                 ('zero-attention', '{zero_workspace_id}', 'zero-input', 'input', 0, 'unread',
+                  '{{\"type\":\"input\",\"inputRequestId\":\"zero-input\"}}', 1, 2);
+              INSERT INTO input_requests VALUES
+                ('input-one', '{workspace_id}', NULL, 1, 'question', 'pending',
+                 '{{\"prompt\":\"Continue?\",\"choices\":[],\"cancellationSupported\":false,\"attentionId\":\"input-attention\"}}',
+                 NULL, 1, 2),
+                 ('bad-input', '{workspace_id}', NULL, 1, 'question', 'pending', '{{}}', NULL, 1, 2),
+                 ('zero-input', '{zero_workspace_id}', NULL, 0, 'question', 'pending',
+                   '{{\"prompt\":\"Invalid\",\"choices\":[],\"cancellationSupported\":false,\"attentionId\":\"zero-attention\"}}',
+                  NULL, 1, 2);
+               INSERT INTO workspace_ui_state VALUES
+                 ('{workspace_id}', 7, '{{\"route\":\"review\"}}', 3),
+                 ('{zero_workspace_id}', 0, '{{\"route\":\"invalid\"}}', 3);"
+        )).unwrap();
+        drop(connection);
+
+        let database = WorkbenchDatabase::open(&path).unwrap();
+
+        assert_eq!(database.schema_version().unwrap(), 2);
+        let items = database.attention_items().unwrap();
+        let item = items.iter().find(|item| item.id == "old").unwrap();
+        assert_eq!(item.status, AttentionStatus::Acknowledged);
+        assert!(!items.iter().any(|item| item.id == "bad-attention"));
+        assert_eq!(
+            database.input_requests().unwrap()[0].attention_id,
+            "input-attention"
+        );
+        let connection = database.connection.lock().unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM attention_item_quarantine",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM input_request_quarantine", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM workspace_ui_state_quarantine",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        assert_eq!(
+            database.workspace_ui_states().unwrap()[&workspace_id.to_string()].revision,
+            7
+        );
+    }
+
+    #[test]
+    fn attention_acknowledgement_and_notification_are_exact_revision_cas() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, generation) = workspace(&database, "/attention");
+        let first = database
+            .create_or_revise_attention(&attention_request(
+                workspace_id,
+                generation,
+                "job",
+                AttentionKind::Completion,
+                1,
+            ))
+            .unwrap();
+        assert_eq!(first.outcome, MutationOutcome::Applied);
+        assert_eq!(first.summary.unread, 1);
+
+        assert!(matches!(
+            database.mutate_attention_revision(workspace_id, &first.item.id, 0, false),
+            Err(CoreError::InvalidParams(_))
+        ));
+        let acknowledged = database
+            .mutate_attention_revision(workspace_id, &first.item.id, 1, false)
+            .unwrap();
+        assert_eq!(acknowledged.item.status, AttentionStatus::Acknowledged);
+        assert_eq!(acknowledged.summary.unread, 0);
+        assert_eq!(
+            database
+                .mutate_attention_revision(workspace_id, &first.item.id, 1, false)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Unchanged
+        );
+        assert_eq!(
+            database
+                .mutate_attention_revision(workspace_id, &first.item.id, 1, true)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Applied
+        );
+        assert_eq!(
+            database
+                .mutate_attention_revision(workspace_id, &first.item.id, 1, true)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Unchanged
+        );
+
+        let revised = database
+            .create_or_revise_attention(&attention_request(
+                workspace_id,
+                generation,
+                "job",
+                AttentionKind::Completion,
+                2,
+            ))
+            .unwrap();
+        assert_eq!(revised.item.status, AttentionStatus::Unread);
+        assert_eq!(revised.summary.unread, 1);
+        assert_eq!(
+            database
+                .mutate_attention_revision(workspace_id, &first.item.id, 1, false)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Stale
+        );
+
+        let mut resolved_request = attention_request(
+            workspace_id,
+            generation,
+            "job",
+            AttentionKind::Completion,
+            2,
+        );
+        resolved_request.status = Some(AttentionStatus::Resolved);
+        let resolved = database
+            .create_or_revise_attention(&resolved_request)
+            .unwrap();
+        assert_eq!(resolved.outcome, MutationOutcome::Applied);
+        assert_eq!(resolved.item.status, AttentionStatus::Resolved);
+        assert_eq!(resolved.summary.unread, 0);
+        assert_eq!(
+            database
+                .create_or_revise_attention(&resolved_request)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Unchanged
+        );
+        assert_eq!(
+            database
+                .mutate_attention_revision(workspace_id, &first.item.id, 2, false)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Invalid
+        );
+    }
+
+    #[test]
+    fn acknowledgement_and_notification_truth_tables_cover_every_kind_and_status() {
+        let kinds = [
+            AttentionKind::Input,
+            AttentionKind::Error,
+            AttentionKind::Completion,
+        ];
+        let statuses = [
+            AttentionStatus::Unread,
+            AttentionStatus::Acknowledged,
+            AttentionStatus::Resolved,
+            AttentionStatus::Expired,
+            AttentionStatus::Superseded,
+        ];
+
+        for (kind_index, kind) in kinds.into_iter().enumerate() {
+            for (status_index, status) in statuses.into_iter().enumerate() {
+                let database = WorkbenchDatabase::open_in_memory().unwrap();
+                let (workspace_id, generation) =
+                    workspace(&database, &format!("/ack-{kind_index}-{status_index}"));
+                let item = attention_at_status(
+                    &database,
+                    workspace_id,
+                    generation,
+                    "ack-source",
+                    kind,
+                    status,
+                );
+                for expected_revision in [1, 3] {
+                    assert_eq!(
+                        database
+                            .mutate_attention_revision(
+                                workspace_id,
+                                &item.id,
+                                expected_revision,
+                                false,
+                            )
+                            .unwrap()
+                            .outcome,
+                        MutationOutcome::Stale
+                    );
+                }
+                let acknowledged = database
+                    .mutate_attention_revision(workspace_id, &item.id, 2, false)
+                    .unwrap();
+                let expected = match status {
+                    AttentionStatus::Unread => MutationOutcome::Applied,
+                    AttentionStatus::Acknowledged => MutationOutcome::Unchanged,
+                    AttentionStatus::Resolved
+                    | AttentionStatus::Expired
+                    | AttentionStatus::Superseded => MutationOutcome::Invalid,
+                };
+                assert_eq!(acknowledged.outcome, expected);
+                if !status.is_terminal() {
+                    assert_eq!(acknowledged.item.status, AttentionStatus::Acknowledged);
+                    assert_eq!(
+                        acknowledged.summary.input_required,
+                        u64::from(kind == AttentionKind::Input)
+                    );
+                    assert_eq!(
+                        acknowledged.summary.errors,
+                        u64::from(kind == AttentionKind::Error)
+                    );
+                    assert_eq!(
+                        acknowledged.summary.state,
+                        match kind {
+                            AttentionKind::Input => crate::WorkspaceAttentionState::InputRequired,
+                            AttentionKind::Error => crate::WorkspaceAttentionState::Error,
+                            AttentionKind::Completion => crate::WorkspaceAttentionState::Idle,
+                        }
+                    );
+                }
+
+                let notification_database = WorkbenchDatabase::open_in_memory().unwrap();
+                let (notification_workspace_id, notification_generation) = workspace(
+                    &notification_database,
+                    &format!("/notification-{kind_index}-{status_index}"),
+                );
+                let notification_item = attention_at_status(
+                    &notification_database,
+                    notification_workspace_id,
+                    notification_generation,
+                    "notification-source",
+                    kind,
+                    status,
+                );
+                for expected_revision in [1, 3] {
+                    assert_eq!(
+                        notification_database
+                            .mutate_attention_revision(
+                                notification_workspace_id,
+                                &notification_item.id,
+                                expected_revision,
+                                true,
+                            )
+                            .unwrap()
+                            .outcome,
+                        MutationOutcome::Stale
+                    );
+                }
+                let first_claim = notification_database
+                    .mutate_attention_revision(
+                        notification_workspace_id,
+                        &notification_item.id,
+                        2,
+                        true,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    first_claim.outcome,
+                    if status.is_terminal() {
+                        MutationOutcome::Invalid
+                    } else {
+                        MutationOutcome::Applied
+                    }
+                );
+                if !status.is_terminal() {
+                    assert_eq!(first_claim.item.status, status);
+                    assert_eq!(
+                        notification_database
+                            .mutate_attention_revision(
+                                notification_workspace_id,
+                                &notification_item.id,
+                                2,
+                                true,
+                            )
+                            .unwrap()
+                            .outcome,
+                        MutationOutcome::Unchanged
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn separate_database_connections_cannot_acknowledge_a_newer_revision() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(DEFAULT_DATABASE_FILE_NAME);
+        let first = WorkbenchDatabase::open(&path).unwrap();
+        let (workspace_id, generation) = workspace(&first, "/race");
+        let created = first
+            .create_or_revise_attention(&attention_request(
+                workspace_id,
+                generation,
+                "race",
+                AttentionKind::Completion,
+                1,
+            ))
+            .unwrap();
+        let second = WorkbenchDatabase::open(&path).unwrap();
+        second
+            .create_or_revise_attention(&attention_request(
+                workspace_id,
+                generation,
+                "race",
+                AttentionKind::Completion,
+                2,
+            ))
+            .unwrap();
+
+        let stale = first
+            .mutate_attention_revision(workspace_id, &created.item.id, 1, false)
+            .unwrap();
+
+        assert_eq!(stale.outcome, MutationOutcome::Stale);
+        assert_eq!(stale.item.revision, 2);
+        assert_eq!(stale.item.status, AttentionStatus::Unread);
+    }
+
+    #[test]
+    fn input_transitions_are_distinct_and_terminal_updates_are_atomic() {
+        for (name, terminal, needs_answer, attention_status) in [
+            (
+                "accept",
+                InputRequestStatus::Accepted,
+                true,
+                AttentionStatus::Resolved,
+            ),
+            (
+                "reject",
+                InputRequestStatus::Rejected,
+                true,
+                AttentionStatus::Resolved,
+            ),
+            (
+                "cancel",
+                InputRequestStatus::Cancelled,
+                false,
+                AttentionStatus::Resolved,
+            ),
+            (
+                "expire",
+                InputRequestStatus::Expired,
+                false,
+                AttentionStatus::Expired,
+            ),
+            (
+                "supersede",
+                InputRequestStatus::Superseded,
+                false,
+                AttentionStatus::Superseded,
+            ),
+        ] {
+            let database = WorkbenchDatabase::open_in_memory().unwrap();
+            let (workspace_id, generation) = workspace(&database, &format!("/{name}"));
+            let created = database
+                .create_input(&input_request(
+                    workspace_id,
+                    generation,
+                    name,
+                    InputRequestKind::Permission,
+                    true,
+                ))
+                .unwrap();
+            assert_eq!(created.summary.input_required, 1);
+            let acknowledged = database
+                .mutate_attention_revision(
+                    workspace_id,
+                    &created.attention.as_ref().unwrap().id,
+                    1,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(acknowledged.item.status, AttentionStatus::Acknowledged);
+            assert_eq!(acknowledged.summary.input_required, 1);
+            let revision = if needs_answer {
+                let answered = database
+                    .answer_input(
+                        workspace_id,
+                        name,
+                        1,
+                        InputResponse {
+                            value: "yes".to_owned(),
+                            secret: None,
+                        },
+                        false,
+                    )
+                    .unwrap();
+                assert_eq!(answered.input.status, InputRequestStatus::ResponseSubmitted);
+                assert_eq!(answered.input.revision, 1);
+                assert_eq!(answered.summary.input_required, 1);
+                answered.input.revision
+            } else {
+                1
+            };
+            let result = database
+                .finish_input(workspace_id, name, revision, terminal)
+                .unwrap();
+            assert_eq!(result.outcome, MutationOutcome::Applied);
+            assert_eq!(result.input.status, terminal);
+            assert_eq!(result.input.revision, 1);
+            assert_eq!(result.attention.unwrap().status, attention_status);
+            assert_eq!(result.summary.input_required, 0);
+        }
+    }
+
+    #[test]
+    fn unsupported_cancel_is_invalid_and_authentication_responses_are_redacted() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, generation) = workspace(&database, "/redaction");
+        database
+            .create_input(&input_request(
+                workspace_id,
+                generation,
+                "auth",
+                InputRequestKind::Authentication,
+                false,
+            ))
+            .unwrap();
+        let cancelled = database
+            .finish_input(workspace_id, "auth", 1, InputRequestStatus::Cancelled)
+            .unwrap();
+        assert_eq!(cancelled.outcome, MutationOutcome::Invalid);
+        let answered = database
+            .answer_input(
+                workspace_id,
+                "auth",
+                1,
+                InputResponse {
+                    value: "secret".to_owned(),
+                    secret: Some(true),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            answered.input.response,
+            Some(InputResponse {
+                value: String::new(),
+                secret: Some(true),
+            })
+        );
+        assert_eq!(
+            database.input_requests().unwrap()[0].response,
+            Some(InputResponse {
+                value: String::new(),
+                secret: Some(true),
+            })
+        );
+    }
+
+    #[test]
+    fn provider_input_revisions_require_exact_replays_or_the_next_revision() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, generation) = workspace(&database, "/input-revisions");
+        let request = input_request(
+            workspace_id,
+            generation,
+            "input",
+            InputRequestKind::Question,
+            false,
+        );
+        database.create_input(&request).unwrap();
+
+        let replay = database.create_input(&request).unwrap();
+        assert_eq!(replay.outcome, MutationOutcome::Unchanged);
+        let mut changed = request.clone();
+        changed.prompt = "Different".to_owned();
+        assert_eq!(
+            database.create_input(&changed).unwrap().outcome,
+            MutationOutcome::Invalid
+        );
+        changed.revision = 3;
+        assert_eq!(
+            database.create_input(&changed).unwrap().outcome,
+            MutationOutcome::Invalid
+        );
+        changed.revision = 2;
+        let revised = database.create_input(&changed).unwrap();
+        assert_eq!(revised.outcome, MutationOutcome::Applied);
+        assert_eq!(revised.input.revision, 2);
+    }
+
+    #[test]
+    fn attention_summary_uses_absolute_counts_and_priority() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, generation) = workspace(&database, "/summary");
+        for (source, kind) in [
+            ("completion", AttentionKind::Completion),
+            ("error", AttentionKind::Error),
+            ("input", AttentionKind::Input),
+        ] {
+            database
+                .create_or_revise_attention(&attention_request(
+                    workspace_id,
+                    generation,
+                    source,
+                    kind,
+                    1,
+                ))
+                .unwrap();
+        }
+        let summary = database.attention_summary(workspace_id).unwrap();
+        assert_eq!(summary.state, crate::WorkspaceAttentionState::InputRequired);
+        assert_eq!(
+            (summary.input_required, summary.errors, summary.unread),
+            (1, 1, 1)
+        );
+        assert_eq!(summary.total, 3);
+
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO agent_sessions(
+                    id, workspace_id, adapter, capabilities_json, state, created_at, updated_at
+                 ) VALUES ('running', ?1, 'test', '{}', 'running', 0, 0)",
+                [workspace_id.to_string()],
+            )
+            .unwrap();
+        let items = database.attention_items().unwrap();
+        for item in items {
+            database
+                .mutate_attention_revision(workspace_id, &item.id, item.revision, false)
+                .unwrap();
+        }
+        let acknowledged = database.attention_summary(workspace_id).unwrap();
+        assert_eq!(acknowledged.input_required, 1);
+        assert_eq!(acknowledged.errors, 1);
+        assert_eq!(acknowledged.unread, 0);
+        assert_eq!(acknowledged.running, 1);
+        assert_eq!(acknowledged.total, 3);
+        assert_eq!(
+            acknowledged.state,
+            crate::WorkspaceAttentionState::InputRequired
+        );
+    }
+
+    #[test]
+    fn rail_order_and_ui_state_cas_persist() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (first, _) = workspace(&database, "/first");
+        let (second, _) = workspace(&database, "/second");
+        database.reorder_workspaces(&[second, first]).unwrap();
+        assert_eq!(
+            database.ordered_open_workspace_ids().unwrap(),
+            [second, first]
+        );
+        database.close_workspace(second).unwrap();
+        let reopened = database
+            .open_workspace("/second", "/second", "second", WorkspaceGeneration::new())
+            .unwrap();
+        assert_eq!(reopened.id, second);
+        assert_eq!(
+            database.ordered_open_workspace_ids().unwrap(),
+            [first, second]
+        );
+
+        let created = database
+            .save_workspace_ui_state(first, 0, json!({ "route": "review" }))
+            .unwrap();
+        assert_eq!(created.outcome, MutationOutcome::Applied);
+        let stale = database
+            .save_workspace_ui_state(first, 0, json!({ "route": "agent" }))
+            .unwrap();
+        assert_eq!(stale.outcome, MutationOutcome::Stale);
+        let updated = database
+            .save_workspace_ui_state(first, 1, json!({ "route": "agent" }))
+            .unwrap();
+        assert_eq!(updated.record.revision, 2);
     }
 
     #[test]
@@ -546,7 +2948,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
-                 INSERT INTO schema_migrations(version, applied_at) VALUES (2, 0);
+                 INSERT INTO schema_migrations(version, applied_at) VALUES (3, 0);
                  CREATE TABLE future_data (value TEXT NOT NULL);
                  INSERT INTO future_data(value) VALUES ('preserve me');",
             )
@@ -555,7 +2957,7 @@ mod tests {
 
         assert!(matches!(
             WorkbenchDatabase::open(&path),
-            Err(CoreError::UnsupportedDatabaseVersion(2))
+            Err(CoreError::UnsupportedDatabaseVersion(3))
         ));
         assert_no_corrupt_backup(temp.path());
         let connection = Connection::open(&path).unwrap();

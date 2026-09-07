@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,14 @@ pub struct EventHub {
 
 struct EventHubInner {
     publish: Mutex<()>,
+    delivery: Mutex<u64>,
+    delivery_ready: Condvar,
     state: Mutex<EventState>,
+}
+
+pub(crate) struct QueuedWorkbenchEvent {
+    event: WorkbenchEvent,
+    subscribers: Vec<(u64, mpsc::SyncSender<WorkbenchEvent>)>,
 }
 
 struct EventState {
@@ -114,6 +121,8 @@ impl EventHub {
             capacity,
             inner: Arc::new(EventHubInner {
                 publish: Mutex::new(()),
+                delivery: Mutex::new(1),
+                delivery_ready: Condvar::new(),
                 state: Mutex::new(EventState {
                     next_sequence: 1,
                     events: VecDeque::with_capacity(capacity),
@@ -161,24 +170,16 @@ impl EventHub {
         workspace: Option<(WorkspaceId, WorkspaceGeneration)>,
         payload: Value,
     ) -> WorkbenchEvent {
-        let kind = kind.into();
-        if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
-            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
-        }) {
-            tokio::task::block_in_place(|| self.publish_blocking(kind, workspace, payload))
-        } else {
-            self.publish_blocking(kind, workspace, payload)
-        }
+        let queued = self.enqueue(kind, workspace, payload);
+        self.deliver(queued)
     }
 
-    fn publish_blocking(
+    pub(crate) fn enqueue(
         &self,
-        kind: String,
+        kind: impl Into<String>,
         workspace: Option<(WorkspaceId, WorkspaceGeneration)>,
         payload: Value,
-    ) -> WorkbenchEvent {
-        // Serializing publication lets the state lock go before subscriber delivery without
-        // allowing concurrent publishers to enqueue events out of sequence.
+    ) -> QueuedWorkbenchEvent {
         let _publish = self
             .inner
             .publish
@@ -189,7 +190,7 @@ impl EventHub {
             let event = WorkbenchEvent {
                 sequence: state.next_sequence,
                 event_id: Uuid::new_v4().to_string(),
-                kind,
+                kind: kind.into(),
                 workspace_id: workspace.map(|value| value.0),
                 workspace_generation: workspace.map(|value| value.1),
                 payload,
@@ -207,9 +208,35 @@ impl EventHub {
             (event, subscribers)
         };
 
+        QueuedWorkbenchEvent { event, subscribers }
+    }
+
+    pub(crate) fn deliver(&self, queued: QueuedWorkbenchEvent) -> WorkbenchEvent {
+        if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(|| self.deliver_blocking(queued))
+        } else {
+            self.deliver_blocking(queued)
+        }
+    }
+
+    fn deliver_blocking(&self, queued: QueuedWorkbenchEvent) -> WorkbenchEvent {
+        let mut next = self
+            .inner
+            .delivery
+            .lock()
+            .expect("event delivery lock poisoned");
+        while *next != queued.event.sequence {
+            next = self
+                .inner
+                .delivery_ready
+                .wait(next)
+                .expect("event delivery lock poisoned");
+        }
         let mut closed = Vec::new();
-        for (id, subscriber) in subscribers {
-            if subscriber.send(event.clone()).is_err() {
+        for (id, subscriber) in queued.subscribers {
+            if subscriber.send(queued.event.clone()).is_err() {
                 closed.push(id);
             }
         }
@@ -219,7 +246,9 @@ impl EventHub {
                 state.subscribers.remove(&id);
             }
         }
-        event
+        *next = next.saturating_add(1);
+        self.inner.delivery_ready.notify_all();
+        queued.event
     }
 
     pub fn replay_after(&self, sequence: u64) -> EventReplay {

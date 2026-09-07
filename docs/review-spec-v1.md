@@ -4,6 +4,12 @@ Diffuse stores review state in the opened repository under `.diffuse/reviews`.
 
 This directory is intentionally plain JSON and Markdown so external agent harnesses can read and update reviews without linking against Diffuse. Built-in agents should prefer Diffuse RPC/tool calls; those calls persist the same files described here.
 
+## Migration Status
+
+Phase 5 introduced the hybrid transitional boundary documented in [`review-spec-v2.md`](review-spec-v2.md). `config.json`, `active-session`, `review.json`, `progress.json`, `reviewed-files.json`, and `threads/*.json` remain authoritative portable files. The four legacy device-local families under `runs/`, `agents/`, `chat/messages/`, and `prompts/` are imported read-only into typed device-local SQLite archive tables when a workspace opens, but the source files are left untouched.
+
+The retained Electron/Node opencode runner still reads and writes those four legacy families during the transition. Their SQLite import is an idempotent compatibility archive; existing legacy review APIs do not read the archive in place of these files.
+
 ## Layout
 
 ```text
@@ -29,6 +35,8 @@ This directory is intentionally plain JSON and Markdown so external agent harnes
           <run-id>.md
           file-review.md
 ```
+
+The first six portable entities and `threads/` remain authoritative under the v2 boundary. `runs/`, `agents/`, `chat/messages/`, and `prompts/` retain their v1 shapes for the current legacy runner and are imported as described in [`review-spec-v2.md`](review-spec-v2.md).
 
 ## Writing Files
 
@@ -176,7 +184,7 @@ Threads can be `open` or `resolved`. Replies append to `messages`; resolving or 
 
 ## Agent State
 
-Files in `runs/` are the canonical source of truth for managed review run lifecycle. Electron provider adapters may own external process handles, but they must report lifecycle state back to core by updating these run records.
+For the retained legacy runner, files in `runs/` are the source of truth consumed by the existing review APIs for managed review run lifecycle. Electron provider adapters may own external process handles, but they report lifecycle state back to core by updating these run records. Under the hybrid v2 boundary they are also imported read-only into the device-local compatibility archive; that archive is not used as the current runner's live store.
 
 ```json
 {

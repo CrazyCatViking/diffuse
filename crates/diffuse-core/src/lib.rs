@@ -1,8 +1,10 @@
 mod app_core;
+pub mod attention;
 mod database;
 pub mod diff;
 mod error;
 mod event;
+mod legacy_import;
 pub mod lsp;
 mod repository;
 pub mod review;
@@ -11,8 +13,22 @@ pub mod syntax;
 pub mod watcher;
 mod workspace;
 
-pub use app_core::{AppCore, AppCoreLifecycleState, AppCoreOptions, WorkbenchSnapshot};
-pub use database::{DEFAULT_DATABASE_FILE_NAME, WorkbenchDatabase, default_database_path};
+pub use app_core::{
+    AppCore, AppCoreLifecycleState, AppCoreOptions, DismissRestoreFailureResult, RestoreDiagnostic,
+    WorkbenchSnapshot,
+};
+pub use attention::{
+    AnswerInputRequest, AttentionCasRequest, AttentionItem, AttentionKind, AttentionMutationResult,
+    AttentionStatus, CreateAttentionRequest, CreateInputRequest, InputCasRequest,
+    InputMutationResult, InputRequest, InputRequestKind, InputRequestStatus, InputResponse,
+    MutationOutcome, SaveWorkspaceUiStateRequest, WorkspaceAttentionState,
+    WorkspaceAttentionSummary, WorkspaceNavigationTarget, WorkspaceUiStateMutationResult,
+    WorkspaceUiStateRecord,
+};
+pub use database::{
+    DEFAULT_DATABASE_FILE_NAME, LegacyImportedArtifact, LegacyReviewImportReport,
+    WorkbenchDatabase, default_database_path,
+};
 pub use diff::{
     DiffContextMode, DiffIntelligence, DiffRenderModel, DiffRenderOptions, DiffRow, DiffRowKind,
     DiffViewMode, SyntaxSpan, SyntaxStatus,
@@ -24,8 +40,9 @@ pub use repository::{
     VersionInfo,
 };
 pub use workspace::{
-    WorkspaceGeneration, WorkspaceId, WorkspaceRequestContext, WorkspaceServiceHealth,
-    WorkspaceServiceStatus, WorkspaceSnapshot, WorkspaceState, WorkspaceSummary,
+    CloseWorkspaceRequest, WorkspaceGeneration, WorkspaceId, WorkspaceRequestContext,
+    WorkspaceServiceHealth, WorkspaceServiceStatus, WorkspaceSnapshot, WorkspaceState,
+    WorkspaceSummary,
 };
 
 pub const APP_NAME: &str = "diffuse";

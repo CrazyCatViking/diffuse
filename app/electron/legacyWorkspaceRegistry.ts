@@ -9,9 +9,13 @@ import type {
   WorkspaceReference,
   WorkspaceRequestContext,
   WorkspaceResponse,
+  SaveWorkspaceUiStateRequest,
   WorkspaceSnapshot,
   WorkspaceSummary,
+  WorkspaceUiStateRecord,
+  CloseWorkspaceRequest,
 } from '../src/lib/workbenchContract';
+import { aggregateAttention, isSaveWorkspaceUiStateRequest } from '../src/lib/workbenchContract';
 import type { OpenRepositoryResult } from '../src/lib/protocol';
 import type { VersionInfo } from '../src/lib/protocol';
 import { CoreRequestTimeoutError } from './coreRpcClient';
@@ -60,6 +64,8 @@ export class LegacyWorkspaceRegistry {
   private readonly entries = new Map<string, WorkspaceEntry>();
   private readonly roots = new Map<string, WorkspaceEntry>();
   private readonly eventListeners = new Set<(event: WorkbenchEvent) => void>();
+  private readonly workspaceUiState = new Map<string, WorkspaceUiStateRecord>();
+  private workspaceOrder: string[] = [];
   private activeWorkspaceId: string | null = null;
   private sequence = 0;
   private openQueue: Promise<unknown> = Promise.resolve();
@@ -134,23 +140,72 @@ export class LegacyWorkspaceRegistry {
   }
 
   getWorkbenchSnapshot(): WorkbenchSnapshot {
-    const workspaces = [...this.entries.values()].filter((entry) => entry.state === 'ready').map((entry) => this.summary(entry));
+    const workspaces = this.workspaceOrder
+      .map((workspaceId) => this.entries.get(workspaceId))
+      .filter((entry): entry is WorkspaceEntry => entry?.state === 'ready')
+      .map((entry) => this.summary(entry));
     const active = this.activeWorkspaceId ? this.entries.get(this.activeWorkspaceId) : undefined;
     return {
       workspaces,
       activeWorkspaceId: active?.state === 'ready' ? active.workspaceId : null,
       activeWorkspace: active?.state === 'ready' ? this.snapshot(active) : null,
+      aggregateAttention: aggregateAttention(workspaces),
+      attentionItems: [],
+      inputRequests: [],
+      workspaceUiState: Object.fromEntries(
+        workspaces.flatMap((workspace) => {
+          const record = this.workspaceUiState.get(workspace.workspaceId);
+          return record ? [[workspace.workspaceId, record]] : [];
+        }),
+      ),
+      legacyReviewImports: [],
       sequence: this.sequence,
     };
   }
 
-  closeWorkspace(reference: WorkspaceReference): WorkspaceSummary {
-    const entry = this.requireEntry(reference);
+  reorderWorkspaces(workspaceIds: string[]): { workspaceIds: string[] } {
+    const current = this.workspaceOrder.filter((workspaceId) => this.entries.get(workspaceId)?.state === 'ready');
+    if (
+      workspaceIds.length !== current.length ||
+      new Set(workspaceIds).size !== workspaceIds.length ||
+      workspaceIds.some((workspaceId) => !current.includes(workspaceId))
+    ) {
+      throw new Error('Workspace order must contain every open workspace exactly once');
+    }
+    if (workspaceIds.every((workspaceId, index) => workspaceId === current[index])) return { workspaceIds: [...workspaceIds] };
+    this.workspaceOrder = [...workspaceIds];
+    this.publishGlobal('workspace/orderChanged', { workspaceIds: [...workspaceIds] });
+    return { workspaceIds: [...workspaceIds] };
+  }
+
+  saveWorkspaceUiState(request: SaveWorkspaceUiStateRequest) {
+    if (!isSaveWorkspaceUiStateRequest(request)) throw new Error('Invalid workspace UI state request');
+    const entry = this.requireEntry(request);
+    const current = this.workspaceUiState.get(request.workspaceId);
+    if ((current?.revision ?? 0) !== request.expectedRevision) {
+      return {
+        outcome: 'stale' as const,
+        record: current ?? { revision: 0, state: {}, updatedAt: new Date(0).toISOString() },
+      };
+    }
+    const record = {
+      revision: (current?.revision ?? 0) + 1,
+      state: request.state,
+      updatedAt: new Date().toISOString(),
+    };
+    this.workspaceUiState.set(request.workspaceId, record);
+    this.publish('workspace/uiStateChanged', { workspaceId: request.workspaceId, record }, entry);
+    return { outcome: 'applied' as const, record };
+  }
+
+  closeWorkspace(request: CloseWorkspaceRequest): WorkspaceSummary {
+    const entry = this.requireEntry(request);
     entry.state = 'closing';
     const client = entry.client;
     entry.client = null;
     client?.dispose(new StaleWorkspaceError(entry.workspaceId));
     entry.state = 'closed';
+    this.workspaceOrder = this.workspaceOrder.filter((workspaceId) => workspaceId !== entry.workspaceId);
     if (this.activeWorkspaceId === entry.workspaceId) this.activeWorkspaceId = null;
     const summary = this.summary(entry);
     this.publish('workspace/removed', summary, entry);
@@ -210,6 +265,7 @@ export class LegacyWorkspaceRegistry {
     entry.restart = null;
     this.entries.set(entry.workspaceId, entry);
     this.roots.set(canonicalRoot, entry);
+    this.workspaceOrder = [...this.workspaceOrder.filter((workspaceId) => workspaceId !== entry.workspaceId), entry.workspaceId];
     this.bindClient(entry, candidate, entry.workspaceGeneration);
     const snapshot = this.snapshot(entry);
     this.publish('workspace/added', snapshot.summary, entry);
@@ -300,6 +356,7 @@ export class LegacyWorkspaceRegistry {
       root: entry.root,
       displayName: basename(entry.root) || entry.root,
       state: entry.state,
+      attention: { state: 'idle', inputRequired: 0, errors: 0, unread: 0, running: 0, total: 0 },
     };
   }
 
@@ -317,6 +374,18 @@ export class LegacyWorkspaceRegistry {
       workspaceGeneration: entry.workspaceGeneration,
       payload,
     } as WorkbenchEvent;
+    this.options.onEvent?.(event);
+    for (const listener of this.eventListeners) listener(event);
+  }
+
+  private publishGlobal(kind: 'workspace/orderChanged', payload: { workspaceIds: string[] }): void {
+    this.sequence += 1;
+    const event: WorkbenchEvent = {
+      sequence: this.sequence,
+      eventId: this.createId(),
+      kind,
+      payload,
+    };
     this.options.onEvent?.(event);
     for (const listener of this.eventListeners) listener(event);
   }
