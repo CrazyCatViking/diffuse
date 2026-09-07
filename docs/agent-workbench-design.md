@@ -4,14 +4,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented through Phase 5; Phase 6 and later proposed |
-| Last updated | 2026-09-03 |
+| Status | Implemented through Phase 5; Phase 6 Rust-only first slice implemented, remainder proposed |
+| Last updated | 2026-09-07 |
 | Target shell | Electron and Vue |
 | Target core | One application-wide Rust core loaded through N-API |
 | Window model | One primary workbench window with multiple workspaces |
 | Agent protocol | Agent Client Protocol (ACP) with Diffuse tools exposed through MCP |
 
-This document defines the target architecture and user experience and records implementation status by phase. The current implementation through Phase 5 is documented in [`architecture.md`](architecture.md), with hybrid persistence ownership in [`review-spec-v2.md`](review-spec-v2.md). ACP supervision, hardening, and fallback-removal phases remain proposals here.
+This document defines the target architecture and user experience and records implementation status by phase. The current implementation through Phase 5 and the first Rust-only Phase 6 ACP slice is documented in [`architecture.md`](architecture.md), with hybrid persistence ownership and schema 3 ACP history in [`review-spec-v2.md`](review-spec-v2.md). The target ACP pooling, resume, discovery, MCP, durable permission delivery, and desktop UI below remain proposals, as do hardening and fallback removal. Phase 6 is not complete.
 
 ## Executive Summary
 
@@ -28,7 +28,7 @@ The architecture must satisfy these central rules:
 - Inactive workspaces may continue watching files, running agents, and waiting for input.
 - Every workspace-bound command, result, and event carries explicit workspace identity.
 - Selecting a workspace never accidentally acknowledges or resolves its pending attention.
-- SQLite owns local workbench state and future ACP state; `.diffuse/reviews` owns portable review artifacts under the hybrid v2 boundary.
+- SQLite owns local workbench state and first-slice ACP session/activity history; `.diffuse/reviews` owns portable review artifacts under the hybrid v2 boundary.
 - The Vue renderer depends on a shell-neutral typed bridge, not directly on Electron or N-API.
 
 ## Terminology
@@ -474,7 +474,7 @@ SQLite is currently authoritative for:
 - Typed archives of imported legacy v1 run, agent, chat-message, and prompt records.
 - Rebuildable indexes over local workbench history.
 
-Phase 6 extends that same device-local authority to ACP host metadata and capabilities, agent sessions, turns, messages, resumable remote session IDs, queued prompts, terminal outcomes, tool-call summaries, and user-visible activity. The current `agent_sessions` table establishes part of that schema boundary but does not imply that ACP supervision exists.
+The Phase 6 first slice extends that same device-local authority with schema 3 `acp_sessions` snapshots and `acp_activity` records, alongside metadata/state in `agent_sessions`. It persists host/session/turn identity, capabilities, remote IDs, prompt text, raw peer updates, and terminal outcomes. Remote IDs are historical metadata, not resumable sessions. Normalized messages/tool summaries, durable queued prompts, resume, and workbench history presentation remain target work; see [the implemented persistence contract](review-spec-v2.md#acp-session-and-activity-history).
 
 Secrets, provider tokens, and authentication credentials do not belong in SQLite or `.diffuse`. Authentication remains owned by the ACP harness or the platform credential store.
 
@@ -508,7 +508,9 @@ Input responses persist only the data needed for delivery and recovery. Secret v
 
 ### ACP Hosts And Sessions
 
-ACP supports multiple independent sessions on one agent connection. Diffuse therefore does not default to one process per session.
+**Target design, not first-slice behavior:** the current Rust `WorkspaceRuntime` owns an `AgentManager` with one process per session, explicit executable configuration, and no pooling, discovery, load/resume, or reconnect. Its public API and separate Rust-only activity stream have no N-API, RPC, or UI exposure. All permissions are denied without durable permission input/UI, and no MCP servers are attached. Trusted executables retain their OS privileges; ACP denial is not an OS sandbox. The input and MCP flows below are still proposed.
+
+ACP supports multiple independent sessions on one agent connection. The target Diffuse resource policy therefore avoids defaulting to one process per session once pooling parity is established.
 
 `AgentManager` owns a host pool keyed by adapter, authentication profile, executable configuration, and compatibility constraints. A capable host multiplexes sessions. The pool expands when an adapter serializes turns, becomes saturated, or requires workspace isolation. An adapter that cannot safely multiplex may opt into one process per session.
 
@@ -794,7 +796,7 @@ Exit criteria:
 
 Purpose: implement the exact needs-input and unread behavior defined by this specification.
 
-Implementation status: Complete. SQLite schema v2 owns stable workspace order/active state, revisioned UI restoration, input requests and non-secret responses, attention lifecycle, acknowledgement and notification claims, restore diagnostics, and typed provenance-preserving archives for legacy v1 runs, agents, chat messages, and prompts. Input and attention compare-and-swap invariants, transaction-before-event sequencing, generation fencing, stale UI-state rebasing, active-first bounded startup restoration, exact review-session restoration, close confirmation and forced input/review/chat cancellation, priority summaries, grouped overview, the `/w/:workspaceId/input/:inputRequestId` surface, focus-gated exact acknowledgement, live announcements, tray aggregation, renderer-ready notification navigation, notification claim deduplication, and review completion/error attention production are implemented. The hybrid ownership contract is [`review-spec-v2.md`](review-spec-v2.md). ACP supervision is not implemented: the legacy Electron/Node opencode runner remains process-local, continues writing v1 files, and is not projected into SQLite `running` counts. `DIFFUSE_DESKTOP_CORE=rpc` remains a degraded rollback path and does not support durable Phase 5 attention, input, or restore-failure operations.
+Implementation status: Complete. Phase 5 introduced SQLite schema v2 for stable workspace order/active state, revisioned UI restoration, input requests and non-secret responses, attention lifecycle, acknowledgement and notification claims, restore diagnostics, and typed provenance-preserving archives for legacy v1 runs, agents, chat messages, and prompts; schema 3 retains these guarantees. Input and attention compare-and-swap invariants, transaction-before-event sequencing, generation fencing, stale UI-state rebasing, active-first bounded startup restoration, exact review-session restoration, close confirmation and forced input/review/chat cancellation, priority summaries, grouped overview, the `/w/:workspaceId/input/:inputRequestId` surface, focus-gated exact acknowledgement, live announcements, tray aggregation, renderer-ready notification navigation, notification claim deduplication, and review completion/error attention production are implemented. The hybrid ownership contract is [`review-spec-v2.md`](review-spec-v2.md). The legacy Electron/Node opencode runner remains process-local, continues writing v1 files, and is not projected into SQLite `running` counts; the separate Rust-only ACP slice is described under Phase 6. `DIFFUSE_DESKTOP_CORE=rpc` remains a degraded rollback path and does not support durable Phase 5 attention, input, or restore-failure operations.
 
 Work:
 
@@ -819,7 +821,11 @@ Exit criteria:
 
 Purpose: replace the provider-specific Electron runner with reusable Rust ACP supervision.
 
-Implementation status: Not implemented.
+Implementation status: First Rust-only slice implemented; Phase 6 is not complete and the provider-specific Electron runner remains in place. `AppCore` exposes start, text prompt, cancel, stop, session snapshots, durable activity pagination, and a separate bounded ACP event stream. Each session has one explicitly configured process; ACP v1 initialization, capability storage, session creation, streamed updates, bounded framing/deadlines, generation fencing, close/shutdown cleanup, and schema 3 failed-on-restart recovery are implemented. Prompt admission is not a durable acknowledgement, and slow ACP subscribers disconnect and recover from durable history/snapshots without changing Phase 5 event delivery.
+
+ACP start is supported only on Unix in this slice; non-Unix starts explicitly fail as unsupported. Each host has a dedicated Unix process group whose ordinary descendants are terminated on stop, timeout, accepted close, and shutdown. Descendants that escape the group are not contained; this is lifecycle cleanup, not an OS sandbox. ACP commits, absolute running-count summaries, and event enqueue share the Phase 5 mutation/snapshot gate, with delivery after releasing it and a separate ACP event sequence. Foreground mutations drain before the close policy check, while ACP uses background lifetime permits: a non-forced close refused for pending input preserves the live host; an accepted close stops and drains it. Fake-peer regression tests cover these cleanup, refusal, and concurrent-summary paths on Linux only.
+
+There is no N-API/RPC/UI exposure, host pooling, adapter discovery, load/resume/reconnect, durable prompt queue, MCP integration, or durable permission delivery/UI. Permission requests always receive a cancelled outcome; this is not an OS sandbox, and adapter executables must be trusted. ACP does not yet produce completion/error attention or replace the legacy review/chat/finding/progress workflow. Verification is limited to a deterministic fake peer on Linux and database recovery tests, not real-provider compatibility, cross-platform ACP parity, or satisfaction of the exit criteria below. See [the current API and limits](architecture.md#rust-acp-first-slice).
 
 Work:
 

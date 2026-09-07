@@ -10,6 +10,8 @@ Phase 5 introduced the hybrid transitional boundary documented in [`review-spec-
 
 The retained Electron/Node opencode runner still reads and writes those four legacy families during the transition. Their SQLite import is an idempotent compatibility archive; existing legacy review APIs do not read the archive in place of these files.
 
+The first Rust-only Phase 6 ACP slice adds device-local session snapshots and activity in SQLite schema 3, as described in [the v2 persistence boundary](review-spec-v2.md#acp-session-and-activity-history). It does not change any v1 file format, replace the retained runner, or expose ACP through RPC/tools or the desktop UI. ACP history is not written into this layout.
+
 ## Layout
 
 ```text

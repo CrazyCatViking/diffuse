@@ -29,6 +29,7 @@ pub struct EventReplay {
 
 pub struct EventHub {
     capacity: usize,
+    disconnect_slow_subscribers: bool,
     inner: Arc<EventHubInner>,
 }
 
@@ -119,6 +120,7 @@ impl EventHub {
         assert!(capacity > 0, "event replay capacity must be positive");
         Self {
             capacity,
+            disconnect_slow_subscribers: false,
             inner: Arc::new(EventHubInner {
                 publish: Mutex::new(()),
                 delivery: Mutex::new(1),
@@ -130,6 +132,15 @@ impl EventHub {
                     subscribers: HashMap::new(),
                 }),
             }),
+        }
+    }
+
+    /// A bounded stream whose producers must not wait for consumers. Overflow
+    /// disconnects the subscriber; recover through replay or a durable snapshot.
+    pub(crate) fn nonblocking(capacity: usize) -> Self {
+        Self {
+            disconnect_slow_subscribers: true,
+            ..Self::new(capacity)
         }
     }
 
@@ -236,7 +247,12 @@ impl EventHub {
         }
         let mut closed = Vec::new();
         for (id, subscriber) in queued.subscribers {
-            if subscriber.send(queued.event.clone()).is_err() {
+            let failed = if self.disconnect_slow_subscribers {
+                subscriber.try_send(queued.event.clone()).is_err()
+            } else {
+                subscriber.send(queued.event.clone()).is_err()
+            };
+            if failed {
                 closed.push(id);
             }
         }

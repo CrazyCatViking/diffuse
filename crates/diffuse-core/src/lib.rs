@@ -1,3 +1,4 @@
+pub mod acp;
 mod app_core;
 pub mod attention;
 mod database;

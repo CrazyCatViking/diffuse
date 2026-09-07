@@ -91,11 +91,12 @@ struct AppCoreInner {
     registry: WorkspaceRegistry,
     database: WorkbenchDatabase,
     events: Arc<EventHub>,
+    acp_events: Arc<EventHub>,
     syntax: Arc<SyntaxManager>,
     active_workspace_id: RwLock<Option<WorkspaceId>>,
     lifecycle_state: RwLock<AppCoreLifecycleState>,
     state_gate: StdMutex<()>,
-    phase5_gate: StdMutex<()>,
+    phase5_gate: Arc<StdMutex<()>>,
     lifecycle_events: StdMutex<()>,
     open_commit: AsyncMutex<()>,
     shutdown_gate: StdMutex<()>,
@@ -226,16 +227,18 @@ impl AppCore {
     pub fn with_options(database: WorkbenchDatabase, options: AppCoreOptions) -> CoreResult<Self> {
         let syntax = SyntaxManager::new(options.syntax)
             .map_err(|error| CoreError::Syntax(error.to_string()))?;
+        database.recover_acp_sessions()?;
         Ok(Self {
             inner: Arc::new(AppCoreInner {
                 registry: WorkspaceRegistry::default(),
                 database,
                 events: Arc::new(EventHub::default()),
+                acp_events: Arc::new(EventHub::nonblocking(128)),
                 syntax: Arc::new(syntax),
                 active_workspace_id: RwLock::new(None),
                 lifecycle_state: RwLock::new(AppCoreLifecycleState::Running),
                 state_gate: StdMutex::new(()),
-                phase5_gate: StdMutex::new(()),
+                phase5_gate: Arc::new(StdMutex::new(())),
                 lifecycle_events: StdMutex::new(()),
                 open_commit: AsyncMutex::new(()),
                 shutdown_gate: StdMutex::new(()),
@@ -246,6 +249,106 @@ impl AppCore {
 
     pub fn events(&self) -> &EventHub {
         &self.inner.events
+    }
+
+    /// ACP activity and workspace count changes. Slow subscribers disconnect
+    /// instead of blocking host supervision; recover with `acp_activity` and snapshots.
+    /// This Rust-only stream is not forwarded through the desktop event bridge yet.
+    pub fn acp_events(&self) -> &EventHub {
+        &self.inner.acp_events
+    }
+
+    /// Start an isolated ACP host and create a session asynchronously. Observe
+    /// `acp/activity` or query `acp_sessions` for initialization and turn outcomes.
+    pub fn start_acp_session(
+        &self,
+        context: &WorkspaceRequestContext,
+        adapter: crate::acp::AdapterConfig,
+    ) -> CoreResult<String> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        runtime.acp.start(
+            &runtime,
+            adapter,
+            self.inner.database.clone(),
+            self.inner.acp_events.clone(),
+            self.inner.phase5_gate.clone(),
+        )
+    }
+
+    /// Admit one text prompt to a ready session; rejects overlapping turns.
+    /// Admission is not a durable acknowledgement: observe `turn-started` and
+    /// `turn-ended`/`session-ended` on `acp_events` for committed activity.
+    pub fn prompt_acp_session(
+        &self,
+        context: &WorkspaceRequestContext,
+        session_id: &str,
+        text: String,
+    ) -> CoreResult<()> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        runtime.acp.prompt(session_id, text)
+    }
+
+    pub fn cancel_acp_session(
+        &self,
+        context: &WorkspaceRequestContext,
+        session_id: &str,
+    ) -> CoreResult<()> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        runtime.acp.cancel(session_id)
+    }
+
+    /// Stop the isolated host. Closing a workspace or shutting down also does this.
+    pub fn stop_acp_session(
+        &self,
+        context: &WorkspaceRequestContext,
+        session_id: &str,
+    ) -> CoreResult<()> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        runtime.acp.stop(session_id)
+    }
+
+    pub fn acp_sessions(
+        &self,
+        context: &WorkspaceRequestContext,
+    ) -> CoreResult<Vec<crate::acp::SessionSnapshot>> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        self.inner.database.acp_sessions(context.workspace_id)
+    }
+
+    /// Activity is paginated by its durable sequence, independently of EventHub replay.
+    pub fn acp_activity(
+        &self,
+        context: &WorkspaceRequestContext,
+        session_id: &str,
+        after: u64,
+    ) -> CoreResult<Vec<crate::acp::SessionActivity>> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        self.inner
+            .database
+            .acp_activity(context.workspace_id, session_id, after)
     }
 
     pub fn workbench_snapshot(&self) -> CoreResult<WorkbenchSnapshot> {
@@ -1677,7 +1780,7 @@ impl AppCore {
         }
 
         runtime.search.cancel_all();
-        runtime.wait_until_idle();
+        runtime.wait_until_foreground_idle();
         runtime.search.wait_for_all();
 
         if persist_close && !force {
@@ -1697,6 +1800,9 @@ impl AppCore {
                 }
             }
         }
+
+        runtime.acp.stop_all();
+        runtime.wait_until_idle();
 
         if let Err(error) = runtime.lsp.shutdown_repository(runtime.repository.root()) {
             self.restore_workspace_after_close_failure(&runtime, restore_on_failure);
@@ -1798,6 +1904,7 @@ impl AppCore {
         for runtime in &runtimes {
             let _ = runtime.begin_close();
             runtime.search.cancel_all();
+            runtime.acp.stop_all();
         }
         if runtimes.is_empty() {
             *lifecycle = AppCoreLifecycleState::Stopped;
@@ -2614,6 +2721,9 @@ mod tests {
             .registry
             .get(context.workspace_id, context.workspace_generation)
             .unwrap();
+        // An ACP-style lifetime permit must not block the policy check, while
+        // the admitted foreground input mutation below must still be drained.
+        let background = runtime.acquire_background_operation().unwrap();
         let phase5 = core.inner.phase5_gate.lock().unwrap();
         let mutation_core = core.clone();
         let request = CreateInputRequest {
@@ -2652,6 +2762,7 @@ mod tests {
             core.get_workspace_snapshot(&context).unwrap().summary.state,
             crate::WorkspaceState::Ready
         );
+        drop(background);
         core.close_workspace(&CloseWorkspaceRequest {
             workspace_id: context.workspace_id,
             workspace_generation: context.workspace_generation,

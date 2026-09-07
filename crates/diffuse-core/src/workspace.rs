@@ -130,6 +130,7 @@ pub(crate) struct WorkspaceRuntime {
     pub(crate) reviews: ReviewStore,
     pub(crate) lsp: Arc<LspManager>,
     pub(crate) search: Arc<SearchCoordinator>,
+    pub(crate) acp: crate::acp::AgentManager,
     lifecycle: Arc<WorkspaceLifecycle>,
     close_gate: Mutex<()>,
     watcher: Mutex<Option<WorkspaceWatcher>>,
@@ -144,10 +145,12 @@ struct LifecycleState {
     workspace_state: WorkspaceState,
     accepting_operations: bool,
     active_operations: usize,
+    background_operations: usize,
 }
 
 pub(crate) struct WorkspaceOperationPermit {
     lifecycle: Arc<WorkspaceLifecycle>,
+    background: bool,
 }
 
 impl Drop for WorkspaceOperationPermit {
@@ -157,13 +160,15 @@ impl Drop for WorkspaceOperationPermit {
             .state
             .lock()
             .expect("workspace lifecycle lock poisoned");
-        state.active_operations = state
-            .active_operations
+        let count = if self.background {
+            &mut state.background_operations
+        } else {
+            &mut state.active_operations
+        };
+        *count = count
             .checked_sub(1)
             .expect("workspace operation permit count underflow");
-        if state.active_operations == 0 {
-            self.lifecycle.idle.notify_all();
-        }
+        self.lifecycle.idle.notify_all();
     }
 }
 
@@ -174,12 +179,17 @@ impl WorkspaceLifecycle {
                 workspace_state: WorkspaceState::Ready,
                 accepting_operations: true,
                 active_operations: 0,
+                background_operations: 0,
             }),
             idle: Condvar::new(),
         }
     }
 
     fn acquire(self: &Arc<Self>) -> CoreResult<WorkspaceOperationPermit> {
+        self.acquire_kind(false)
+    }
+
+    fn acquire_kind(self: &Arc<Self>, background: bool) -> CoreResult<WorkspaceOperationPermit> {
         let mut state = self
             .state
             .lock()
@@ -187,9 +197,15 @@ impl WorkspaceLifecycle {
         if !state.accepting_operations {
             return Err(CoreError::WorkspaceClosing);
         }
-        state.active_operations = state.active_operations.saturating_add(1);
+        let count = if background {
+            &mut state.background_operations
+        } else {
+            &mut state.active_operations
+        };
+        *count = count.saturating_add(1);
         Ok(WorkspaceOperationPermit {
             lifecycle: self.clone(),
+            background,
         })
     }
 
@@ -226,11 +242,17 @@ impl WorkspaceLifecycle {
     }
 
     fn wait_until_idle(&self) {
+        self.wait_for_operations(true);
+    }
+
+    fn wait_for_operations(&self, include_background: bool) {
         let mut state = self
             .state
             .lock()
             .expect("workspace lifecycle lock poisoned");
-        while state.active_operations != 0 {
+        while state.active_operations != 0
+            || (include_background && state.background_operations != 0)
+        {
             state = self
                 .idle
                 .wait(state)
@@ -286,6 +308,15 @@ impl Drop for WorkspaceWatcher {
 }
 
 impl WorkspaceRuntime {
+    pub(crate) fn acquire_background_operation(&self) -> CoreResult<WorkspaceOperationPermit> {
+        self.lifecycle.acquire_kind(true)
+    }
+
+    // Drain admitted mutations before close policy without stopping long-lived hosts.
+    pub(crate) fn wait_until_foreground_idle(&self) {
+        self.lifecycle.wait_for_operations(false);
+    }
+
     pub(crate) fn new(
         id: WorkspaceId,
         generation: WorkspaceGeneration,
@@ -301,6 +332,7 @@ impl WorkspaceRuntime {
             reviews: ReviewStore::new(repository.root()),
             lsp: Arc::new(LspManager::default()),
             search: Arc::new(SearchCoordinator::default()),
+            acp: crate::acp::AgentManager::default(),
             repository,
             lifecycle: Arc::new(WorkspaceLifecycle::new()),
             close_gate: Mutex::new(()),

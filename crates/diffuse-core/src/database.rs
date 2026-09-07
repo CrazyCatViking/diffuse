@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub const DEFAULT_DATABASE_FILE_NAME: &str = "workbench.sqlite3";
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RestorableWorkspace {
@@ -505,7 +505,121 @@ impl WorkbenchDatabase {
             )?;
         }
 
+        if version < 3 {
+            transaction.execute_batch(
+                "CREATE TABLE acp_sessions (
+                    id TEXT PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                    snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json))
+                );
+                CREATE TABLE acp_activity (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES acp_sessions(id) ON DELETE CASCADE,
+                    turn_id TEXT,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX acp_activity_session_idx ON acp_activity(session_id, sequence);
+                INSERT INTO schema_migrations(version, applied_at) VALUES (3, unixepoch('subsec') * 1000);",
+            )?;
+        }
         transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn record_acp_activity(
+        &self,
+        session: &crate::acp::SessionSnapshot,
+        kind: &str,
+        payload: Value,
+    ) -> CoreResult<crate::acp::SessionActivity> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=?1 AND generation=?2 AND is_open=1)",
+            params![
+                session.workspace_id.to_string(),
+                session.workspace_generation.to_string()
+            ],
+            |row| row.get(0),
+        )?;
+        if !current {
+            return Err(CoreError::StaleWorkspaceGeneration);
+        }
+        tx.execute("INSERT INTO agent_sessions(id,workspace_id,adapter,remote_session_id,capabilities_json,state,created_at,updated_at)
+            VALUES (?1,?2,?3,?4,?5,?6,unixepoch('subsec')*1000,unixepoch('subsec')*1000)
+            ON CONFLICT(id) DO UPDATE SET remote_session_id=excluded.remote_session_id,capabilities_json=excluded.capabilities_json,state=excluded.state,updated_at=excluded.updated_at",
+            params![session.id,session.workspace_id.to_string(),session.adapter_id,session.remote_session_id,session.capabilities.to_string(),session.state.as_str()])?;
+        tx.execute("INSERT INTO acp_sessions(id,snapshot_json) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET snapshot_json=excluded.snapshot_json", params![session.id,serde_json::to_string(session).map_err(|e| CoreError::Serialization(e.to_string()))?])?;
+        tx.execute("INSERT INTO acp_activity(session_id,turn_id,kind,payload_json,created_at) VALUES (?1,?2,?3,?4,unixepoch('subsec')*1000)", params![session.id,session.turn_id,kind,payload.to_string()])?;
+        let sequence = tx.last_insert_rowid() as u64;
+        tx.commit()?;
+        Ok(crate::acp::SessionActivity {
+            sequence,
+            session_id: session.id.clone(),
+            turn_id: session.turn_id.clone(),
+            kind: kind.into(),
+            payload,
+        })
+    }
+
+    pub(crate) fn acp_sessions(
+        &self,
+        workspace: WorkspaceId,
+    ) -> CoreResult<Vec<crate::acp::SessionSnapshot>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut query = connection.prepare("SELECT snapshot_json FROM acp_sessions JOIN agent_sessions USING(id) WHERE workspace_id=?1 ORDER BY created_at,id")?;
+        query
+            .query_map([workspace.to_string()], |row| row.get::<_, String>(0))?
+            .map(|row| {
+                serde_json::from_str(&row?).map_err(|e| CoreError::Serialization(e.to_string()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn acp_activity(
+        &self,
+        workspace: WorkspaceId,
+        session: &str,
+        after: u64,
+    ) -> CoreResult<Vec<crate::acp::SessionActivity>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let after = i64::try_from(after)
+            .map_err(|_| CoreError::InvalidParams("invalid activity cursor".into()))?;
+        let mut query = connection.prepare("SELECT a.sequence,a.turn_id,a.kind,a.payload_json FROM acp_activity a JOIN agent_sessions s ON s.id=a.session_id WHERE s.workspace_id=?1 AND a.session_id=?2 AND a.sequence>?3 ORDER BY a.sequence LIMIT 100")?;
+        query
+            .query_map(params![workspace.to_string(), session, after], |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .map(|row| {
+                let (sequence, turn_id, kind, payload) = row?;
+                Ok(crate::acp::SessionActivity {
+                    sequence,
+                    session_id: session.into(),
+                    turn_id,
+                    kind,
+                    payload: serde_json::from_str(&payload)
+                        .map_err(|e| CoreError::Serialization(e.to_string()))?,
+                })
+            })
+            .collect()
+    }
+
+    /// No implicit resume: interrupted hosts are failed before startup snapshots.
+    pub(crate) fn recover_acp_sessions(&self) -> CoreResult<()> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch("INSERT INTO acp_activity(session_id,turn_id,kind,payload_json,created_at)
+            SELECT a.id,json_extract(a.snapshot_json,'$.turnId'),'session-ended','{\"reason\":\"application-restarted\"}',unixepoch('subsec')*1000
+            FROM acp_sessions a JOIN agent_sessions s USING(id) WHERE s.state IN ('starting','ready','running');
+            UPDATE acp_sessions SET snapshot_json=json_set(snapshot_json,'$.state','failed') WHERE id IN (SELECT id FROM agent_sessions WHERE state IN ('starting','ready','running'));
+            UPDATE agent_sessions SET state='failed',updated_at=unixepoch('subsec')*1000 WHERE id IN (SELECT id FROM acp_sessions) AND state IN ('starting','ready','running');")?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2249,6 +2363,54 @@ mod tests {
     }
 
     #[test]
+    fn acp_recovery_is_durable_idempotent_and_generation_fenced() {
+        use crate::acp::{SessionSnapshot, SessionState};
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, workspace_generation) = workspace(&database, "/acp");
+        let session = SessionSnapshot {
+            id: "session".into(),
+            host_id: "host".into(),
+            workspace_id,
+            workspace_generation,
+            adapter_id: "fake".into(),
+            remote_session_id: Some("remote".into()),
+            capabilities: json!({"loadSession":true}),
+            state: SessionState::Running,
+            turn_id: Some("interrupted-turn".into()),
+            permission_policy: "deny-all".into(),
+        };
+        database
+            .record_acp_activity(&session, "turn-started", json!({"text":"hello"}))
+            .unwrap();
+        assert_eq!(database.attention_summary(workspace_id).unwrap().running, 1);
+        database.recover_acp_sessions().unwrap();
+        database.recover_acp_sessions().unwrap();
+        assert_eq!(database.attention_summary(workspace_id).unwrap().running, 0);
+        let recovered = database.acp_sessions(workspace_id).unwrap();
+        assert_eq!(recovered[0].state, SessionState::Failed);
+        assert_eq!(recovered[0].remote_session_id, session.remote_session_id);
+        let activity = database.acp_activity(workspace_id, &session.id, 0).unwrap();
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity[1].turn_id.as_deref(), Some("interrupted-turn"));
+        assert_eq!(activity[1].payload["reason"], "application-restarted");
+        database.close_workspace(workspace_id).unwrap();
+        database
+            .open_workspace("/acp", "/acp", "acp", WorkspaceGeneration::new())
+            .unwrap();
+        assert!(matches!(
+            database.record_acp_activity(&session, "stale", json!({})),
+            Err(CoreError::StaleWorkspaceGeneration)
+        ));
+        assert_eq!(
+            database
+                .acp_activity(workspace_id, &session.id, 0)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn active_workspace_can_be_cleared_without_closing_it() {
         let database = WorkbenchDatabase::open_in_memory().expect("open database");
         let workspace = database
@@ -2335,7 +2497,7 @@ mod tests {
 
         let database = WorkbenchDatabase::open(&path).unwrap();
 
-        assert_eq!(database.schema_version().unwrap(), 2);
+        assert_eq!(database.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         let items = database.attention_items().unwrap();
         let item = items.iter().find(|item| item.id == "old").unwrap();
         assert_eq!(item.status, AttentionStatus::Acknowledged);
@@ -2948,7 +3110,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
-                 INSERT INTO schema_migrations(version, applied_at) VALUES (3, 0);
+                 INSERT INTO schema_migrations(version, applied_at) VALUES (4, 0);
                  CREATE TABLE future_data (value TEXT NOT NULL);
                  INSERT INTO future_data(value) VALUES ('preserve me');",
             )
@@ -2957,7 +3119,7 @@ mod tests {
 
         assert!(matches!(
             WorkbenchDatabase::open(&path),
-            Err(CoreError::UnsupportedDatabaseVersion(3))
+            Err(CoreError::UnsupportedDatabaseVersion(4))
         ));
         assert_no_corrupt_backup(temp.path());
         let connection = Connection::open(&path).unwrap();
