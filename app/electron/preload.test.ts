@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DesktopBridge } from '../src/lib/desktopBridge';
+import { acpSnapshot, adapter } from '../src/test/acpFixture';
 
 const electron = vi.hoisted(() => ({
   exposeInMainWorld: vi.fn(),
@@ -99,6 +100,63 @@ describe('preload DesktopBridge', () => {
       ['input:answer', { context, inputRequestId: 'input-1', revision: 2, response: { value: 'Allow' } }],
       ['input:cancel', { context, inputRequestId: 'input-1', revision: 2 }],
     ]);
+  });
+
+  it('validates ACP requests, results, and independent batch recovery', async () => {
+    const snapshot = acpSnapshot();
+    electron.invoke.mockResolvedValueOnce([{ adapter, available: true, platformSupported: true }]);
+    expect(await bridge.discoverAcpAdapters()).toHaveLength(1);
+    expect(electron.invoke).toHaveBeenLastCalledWith('acp:discoverAcpAdapters', undefined);
+    electron.invoke.mockResolvedValueOnce(snapshot);
+    await bridge.getAcpSnapshot({
+      workspaceId: snapshot.workspaceId,
+      workspaceGeneration: snapshot.workspaceGeneration,
+      requestId: 'request',
+    });
+    electron.invoke.mockResolvedValueOnce({ ...snapshot, workspaceGeneration: 'old' });
+    await expect(
+      bridge.getAcpSnapshot({ workspaceId: snapshot.workspaceId, workspaceGeneration: snapshot.workspaceGeneration, requestId: 'request' }),
+    ).rejects.toThrow('Invalid ACP response');
+    const listener = vi.fn();
+    const remove = bridge.onAcpEventBatch(listener);
+    const handler = electron.on.mock.calls.find(([channel]) => channel === 'acp:eventBatch')![1];
+    handler({}, { events: [], requiresSnapshot: true, sequence: 10 });
+    expect(listener).toHaveBeenLastCalledWith({ events: [], requiresSnapshot: true, sequence: 10 });
+    handler({}, { invalid: true });
+    expect(listener).toHaveBeenLastCalledWith({ events: [], requiresSnapshot: true });
+    remove();
+    expect(electron.off).toHaveBeenCalledWith('acp:eventBatch', handler);
+  });
+
+  it('forwards enforced scopes and validates main-owned wave commands and reserved state', async () => {
+    const context = { workspaceId: 'workspace-a', workspaceGeneration: 'generation-a', requestId: 'request' };
+    const request = { context, adapterId: 'adapter', reviewSessionId: 'review', reviewFileIds: ['file-a', 'file-b'] };
+    electron.invoke.mockResolvedValueOnce({ sessionId: 'core-session' });
+    await bridge.openAcpSession(request);
+    expect(electron.invoke).toHaveBeenLastCalledWith('acp:openAcpSession', request);
+    await expect(bridge.openAcpSession({ ...request, reviewFileIds: ['file-a', 'file-a'] })).rejects.toThrow('Invalid ACP request');
+    const wave = {
+      id: 'wave',
+      workspaceId: context.workspaceId,
+      workspaceGeneration: context.workspaceGeneration,
+      reviewSessionId: 'review',
+      adapterId: 'adapter',
+      createdAt: '2026-01-01T00:00:00Z',
+      prompt: 'Review scoped files',
+      parallel: 1,
+      status: 'running' as const,
+      shards: [{ fileIds: ['file-a'], requestId: 'shard', state: 'queued' as const }],
+    };
+    electron.invoke.mockResolvedValueOnce(wave);
+    expect(await bridge.startAcpReviewWaves({ context, adapterId: 'adapter', reviewSessionId: 'review' })).toEqual(wave);
+    electron.invoke.mockResolvedValueOnce({
+      outcome: 'applied',
+      record: { revision: 1, state: { logicalFocus: 'entry', acpReviewWaves: [wave] }, updatedAt: '2026-01-01T00:00:00Z' },
+    });
+    expect(
+      (await bridge.saveWorkspaceUiState(context, 0, { logicalFocus: 'entry', acpReviewWaves: [] })).record.state.acpReviewWaves,
+    ).toEqual([wave]);
+    expect('startReviewAgent' in bridge).toBe(false);
   });
 
   it('validates attention navigation events and removes its exact listener', () => {

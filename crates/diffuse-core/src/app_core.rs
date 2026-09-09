@@ -258,6 +258,338 @@ impl AppCore {
         &self.inner.acp_events
     }
 
+    pub fn save_acp_adapter(&self, adapter: crate::acp::AdapterDefinition) -> CoreResult<()> {
+        if self.lifecycle_state() != AppCoreLifecycleState::Running {
+            return Err(CoreError::AppCoreShuttingDown);
+        }
+        self.inner.database.save_acp_adapter(&adapter)
+    }
+
+    pub fn discover_acp_adapters(&self) -> CoreResult<Vec<crate::acp::AdapterDiscovery>> {
+        Ok(self
+            .inner
+            .database
+            .acp_adapters()?
+            .into_iter()
+            .map(|adapter| {
+                let available = adapter.executable.is_file();
+                crate::acp::AdapterDiscovery {
+                    adapter,
+                    available,
+                    platform_supported: cfg!(any(unix, windows)),
+                }
+            })
+            .collect())
+    }
+
+    /// Reconnect is explicit: interrupted turns are never retried. Only queued
+    /// turns continue after a capability-gated resume/load or a marked fallback.
+    pub fn open_acp_session(
+        &self,
+        context: &WorkspaceRequestContext,
+        adapter_id: &str,
+        session_id: Option<&str>,
+    ) -> CoreResult<String> {
+        self.launch_acp_session(crate::acp::OpenSessionRequest {
+            context: context.clone(),
+            adapter_id: adapter_id.into(),
+            session_id: session_id.map(str::to_owned),
+            review_session_id: None,
+            review_file_ids: None,
+            interactive: false,
+        })
+    }
+
+    /// File scope is immutable: omission on reconnect preserves the persisted
+    /// assignment. Recovery is explicit; opening a workspace does not launch
+    /// its saved agent sessions automatically.
+    pub fn launch_acp_session(
+        &self,
+        mut request: crate::acp::OpenSessionRequest,
+    ) -> CoreResult<String> {
+        request.validate()?;
+        if let Some(ids) = &mut request.review_file_ids {
+            ids.sort();
+        }
+        let context = &request.context;
+        let adapter_id = &request.adapter_id;
+        let session_id = request.session_id.as_deref();
+        if request.interactive && request.review_session_id.is_some() {
+            return Err(CoreError::InvalidParams(
+                "review sessions cannot grant interactive permissions".into(),
+            ));
+        }
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let adapter = self
+            .inner
+            .database
+            .acp_adapters()?
+            .into_iter()
+            .find(|a| a.id == *adapter_id)
+            .ok_or_else(|| CoreError::InvalidParams("unknown ACP adapter".into()))?;
+        let mut previous = if let Some(id) = session_id {
+            self.inner
+                .database
+                .ensure_current_acp_file_ids(context.workspace_id, id)?;
+            Some(
+                self.inner
+                    .database
+                    .acp_sessions(context.workspace_id)?
+                    .into_iter()
+                    .find(|s| s.id == id && s.adapter_id == *adapter_id)
+                    .ok_or_else(|| {
+                        CoreError::InvalidParams("unknown session or adapter mismatch".into())
+                    })?,
+            )
+        } else {
+            Some(crate::acp::SessionSnapshot {
+                id: uuid::Uuid::new_v4().to_string(),
+                host_id: String::new(),
+                workspace_id: context.workspace_id,
+                workspace_generation: context.workspace_generation,
+                adapter_id: adapter_id.clone(),
+                remote_session_id: None,
+                capabilities: json!({}),
+                state: crate::acp::SessionState::Starting,
+                turn_id: None,
+                permission_policy: if request.interactive {
+                    "interactive".into()
+                } else {
+                    "deny-all".into()
+                },
+                review_session_id: request.review_session_id.clone(),
+                review_file_ids: request.review_file_ids.clone(),
+                modes: Value::Null,
+                authentication_profile: adapter.authentication_profile.clone(),
+                history_revision: 0,
+                continuity: crate::acp::SessionContinuity::Unknown,
+            })
+        };
+        if let Some(session) = previous.as_mut() {
+            if session_id.is_some()
+                && request
+                    .review_file_ids
+                    .as_ref()
+                    .is_some_and(|ids| Some(ids) != session.review_file_ids.as_ref())
+            {
+                return Err(CoreError::InvalidParams(
+                    "reconnect cannot change reviewFileIds".into(),
+                ));
+            }
+            if session.authentication_profile != adapter.authentication_profile {
+                return Err(CoreError::InvalidParams(
+                    "reconnect authentication profile mismatch".into(),
+                ));
+            }
+            if session_id.is_some()
+                && request
+                    .review_session_id
+                    .as_ref()
+                    .is_some_and(|id| Some(id) != session.review_session_id.as_ref())
+            {
+                return Err(CoreError::InvalidParams(
+                    "reconnect cannot change review scope".into(),
+                ));
+            }
+            if session_id.is_some()
+                && request.interactive != (session.permission_policy == "interactive")
+            {
+                return Err(CoreError::InvalidParams(
+                    "reconnect cannot change permission policy".into(),
+                ));
+            }
+            if let Some(review) = &session.review_session_id {
+                let review = runtime
+                    .reviews
+                    .get_session(review)?
+                    .ok_or_else(|| CoreError::InvalidParams("unknown review session".into()))?;
+                if let Some(ids) = &session.review_file_ids {
+                    crate::acp::validate_review_file_ids(ids)?;
+                    let target: DiffTarget = serde_json::from_value(json!(review.target))
+                        .map_err(|e| CoreError::InvalidParams(e.to_string()))?;
+                    let repository =
+                        runtime
+                            .repository
+                            .with_operation(crate::operation::OperationControl::new(
+                                std::time::Duration::from_secs(10),
+                            ));
+                    let files = repository.list_changed_files(&target)?;
+                    if ids
+                        .iter()
+                        .any(|id| !files.iter().any(|file| &file.id == id))
+                    {
+                        return Err(CoreError::InvalidParams(
+                            "reviewFileIds contains a file outside the review target".into(),
+                        ));
+                    }
+                }
+            } else if session.review_file_ids.is_some() {
+                return Err(CoreError::InvalidParams(
+                    "stored reviewFileIds has no review session".into(),
+                ));
+            }
+        }
+        runtime.acp.start_session(
+            &runtime,
+            adapter.invocation()?,
+            self.inner.database.clone(),
+            self.inner.acp_events.clone(),
+            self.inner.phase5_gate.clone(),
+            crate::acp::SessionLaunch {
+                previous,
+                multiplex: adapter.multiplex,
+                authentication_profile: adapter.authentication_profile,
+            },
+        )
+    }
+
+    pub fn queue_acp_prompt(
+        &self,
+        context: &WorkspaceRequestContext,
+        session: &str,
+        text: &str,
+    ) -> CoreResult<crate::acp::QueuedTurn> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let (turn, event) = {
+            let _gate = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 lock poisoned");
+            runtime.acp.require_live(session)?;
+            let turn = self.inner.database.queue_acp_turn(
+                context.workspace_id,
+                session,
+                &context.request_id,
+                text,
+            )?;
+            let event = self.inner.acp_events.enqueue(
+                "agent/turnChanged",
+                Some((context.workspace_id, context.workspace_generation)),
+                json!(turn),
+            );
+            (turn, event)
+        };
+        runtime.acp.wake(session);
+        self.inner.acp_events.deliver(event);
+        Ok(turn)
+    }
+
+    pub fn cancel_queued_acp_turn(
+        &self,
+        context: &WorkspaceRequestContext,
+        session: &str,
+        turn: &str,
+    ) -> CoreResult<bool> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let (cancelled, event) = {
+            let _gate = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 lock poisoned");
+            let cancelled =
+                self.inner
+                    .database
+                    .cancel_queued_acp_turn(context.workspace_id, session, turn)?;
+            let event = cancelled.then(||self.inner.acp_events.enqueue("agent/turnChanged",Some((context.workspace_id,context.workspace_generation)),json!({"id":turn,"sessionId":session,"state":"cancelled","stopReason":"cancelled"})));
+            (cancelled, event)
+        };
+        if let Some(event) = event {
+            self.inner.acp_events.deliver(event);
+        }
+        Ok(cancelled)
+    }
+
+    pub fn acp_history(
+        &self,
+        context: &WorkspaceRequestContext,
+        session: &str,
+        after: u64,
+    ) -> CoreResult<Vec<crate::acp::HistoryEntry>> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        self.inner
+            .database
+            .acp_history(context.workspace_id, session, after)
+    }
+
+    pub fn set_acp_mode(
+        &self,
+        context: &WorkspaceRequestContext,
+        session: &str,
+        mode: &str,
+    ) -> CoreResult<Value> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let receiver = {
+            let _gate = self
+                .inner
+                .phase5_gate
+                .lock()
+                .expect("phase 5 gate poisoned");
+            runtime.acp.request_mode(session, mode)?
+        };
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(11))
+            .map_err(|_| {
+                CoreError::TaskFailed("ACP mode operation timed out or disconnected".into())
+            })?
+    }
+
+    pub fn acp_workspace_snapshot(&self, context: &WorkspaceRequestContext) -> CoreResult<Value> {
+        let runtime = self
+            .inner
+            .registry
+            .get(context.workspace_id, context.workspace_generation)?;
+        let _permit = runtime.acquire_operation()?;
+        let _gate = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 lock poisoned");
+        let sessions = self.inner.database.acp_sessions(context.workspace_id)?;
+        let inputs = self
+            .inner
+            .database
+            .pending_acp_inputs(context.workspace_id)?;
+        let mut turns = std::collections::BTreeMap::new();
+        for session in &sessions {
+            turns.insert(
+                session.id.clone(),
+                self.inner
+                    .database
+                    .acp_turns(context.workspace_id, &session.id)?,
+            );
+        }
+        let mut summary = runtime.summary();
+        summary.attention = self
+            .inner
+            .database
+            .attention_summary(context.workspace_id)?;
+        Ok(
+            json!({"workspaceId":context.workspace_id,"workspaceGeneration":context.workspace_generation,"sessions":sessions,"turnsBySession":turns,"inputs":inputs,"summary":summary,"sequence":self.inner.acp_events.current_sequence(),"workbenchSequence":self.inner.events.current_sequence()}),
+        )
+    }
+
     /// Start an isolated ACP host and create a session asynchronously. Observe
     /// `acp/activity` or query `acp_sessions` for initialization and turn outcomes.
     pub fn start_acp_session(
@@ -292,6 +624,11 @@ impl AppCore {
             .registry
             .get(context.workspace_id, context.workspace_generation)?;
         let _permit = runtime.acquire_operation()?;
+        let _gate = self
+            .inner
+            .phase5_gate
+            .lock()
+            .expect("phase 5 gate poisoned");
         runtime.acp.prompt(session_id, text)
     }
 
@@ -1413,12 +1750,40 @@ impl AppCore {
             .get(request.workspace_id, request.workspace_generation)?;
         let _permit = runtime.acquire_operation()?;
         let workspace = (request.workspace_id, request.workspace_generation);
-        let (result, event) = {
+        let (result, event, hub) = {
             let _phase5 = self
                 .inner
                 .phase5_gate
                 .lock()
                 .expect("phase 5 coordination lock poisoned");
+            let acp = self
+                .inner
+                .database
+                .is_acp_input(request.workspace_id, &request.input_id)?;
+            if acp {
+                if request.redact_response || request.response.secret == Some(true) {
+                    return Err(CoreError::InvalidParams(
+                        "ACP inputs cannot deliver secrets".into(),
+                    ));
+                }
+                if let Some(metadata) = self
+                    .inner
+                    .database
+                    .pending_acp_inputs(request.workspace_id)?
+                    .into_iter()
+                    .find(|m| m["input"]["id"] == request.input_id)
+                {
+                    let input: crate::InputRequest =
+                        serde_json::from_value(metadata["input"].clone())
+                            .map_err(|e| CoreError::Serialization(e.to_string()))?;
+                    crate::acp::input_response(&input, &metadata["params"], &request.response)?;
+                }
+            }
+            let hub = if acp {
+                &self.inner.acp_events
+            } else {
+                &self.inner.events
+            };
             let result = self.inner.database.answer_input(
                 request.workspace_id,
                 &request.input_id,
@@ -1427,17 +1792,18 @@ impl AppCore {
                 request.redact_response,
             )?;
             let event = (result.outcome == MutationOutcome::Applied).then(|| {
-                self.inner.events.enqueue(
+                hub.enqueue(
                     "input/responseSubmitted",
                     Some(workspace),
                     serde_json::to_value(&result.input).expect("input request is serializable"),
                 )
             });
-            (result, event)
+            (result, event, hub)
         };
+        runtime.acp.wake_inputs();
         drop(_permit);
         if let Some(event) = event {
-            self.inner.events.deliver(event);
+            hub.deliver(event);
         }
         Ok(result)
     }
@@ -1489,12 +1855,21 @@ impl AppCore {
             .get(request.workspace_id, request.workspace_generation)?;
         let _permit = runtime.acquire_operation()?;
         let workspace = (request.workspace_id, request.workspace_generation);
-        let (result, events) = {
+        let (result, events, hub) = {
             let _phase5 = self
                 .inner
                 .phase5_gate
                 .lock()
                 .expect("phase 5 coordination lock poisoned");
+            let acp = self
+                .inner
+                .database
+                .is_acp_input(request.workspace_id, &request.input_id)?;
+            let hub = if acp {
+                &self.inner.acp_events
+            } else {
+                &self.inner.events
+            };
             let result = self.inner.database.finish_input(
                 request.workspace_id,
                 &request.input_id,
@@ -1503,17 +1878,37 @@ impl AppCore {
             )?;
             let mut events = Vec::new();
             if result.outcome == MutationOutcome::Applied {
-                events.push(self.inner.events.enqueue(
+                events.push(hub.enqueue(
                     "input/resolved",
                     Some(workspace),
                     serde_json::to_value(&result.input).expect("input request is serializable"),
                 ));
-                events.extend(self.enqueue_input_attention(workspace, &result));
+                if acp {
+                    let mut summary = runtime.summary();
+                    summary.attention = result.summary.clone();
+                    if let Some(item) = &result.attention {
+                        events.push(hub.enqueue(
+                            "workspace/attentionChanged",
+                            Some(workspace),
+                            json!({"item":item,"summary":summary}),
+                        ));
+                    }
+                    events.push(hub.enqueue(
+                        "workspace/summaryChanged",
+                        Some(workspace),
+                        json!(summary),
+                    ));
+                } else {
+                    events.extend(self.enqueue_input_attention(workspace, &result));
+                }
             }
-            (result, events)
+            (result, events, hub)
         };
+        runtime.acp.wake_inputs();
         drop(_permit);
-        self.deliver_events(events);
+        for event in events {
+            hub.deliver(event);
+        }
         Ok(result)
     }
 

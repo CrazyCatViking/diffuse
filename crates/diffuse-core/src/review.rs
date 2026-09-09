@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -594,6 +594,12 @@ impl ReviewStore {
         Ok(sessions)
     }
 
+    pub fn get_session(&self, session_id: &str) -> ReviewResult<Option<ReviewSession>> {
+        self.read_optional(&self.session_file_path(session_id)?, MAX_SESSION_BYTES)?
+            .map(|bytes| from_json(&bytes))
+            .transpose()
+    }
+
     pub fn create_session(
         &self,
         session: ReviewSession,
@@ -630,6 +636,128 @@ impl ReviewStore {
         )?;
         Ok(ReviewOperation::changed(
             progress,
+            self.change(session_id, "progress.updated"),
+        ))
+    }
+
+    /// Merge only this shard's file states while holding the portable write
+    /// gate. A shard's completion never overwrites another shard's progress.
+    pub(crate) fn save_scoped_progress(
+        &self,
+        session_id: &str,
+        progress: ReviewProgress,
+        assigned: &BTreeSet<String>,
+        review_files: &[String],
+    ) -> ReviewResult<ReviewOperation<ReviewProgress>> {
+        let _guard = self.lock_writes();
+        let path = self.session_child_path(session_id, PROGRESS_FILE)?;
+        let mut current: ReviewProgress = self
+            .read_optional(&path, MAX_PROGRESS_BYTES)?
+            .map(|bytes| from_json(&bytes))
+            .transpose()?
+            .unwrap_or_else(|| ReviewProgress {
+                status: ReviewProgressStatus::Running,
+                total_files: None,
+                reviewed_files: None,
+                active_files: None,
+                pending_files: None,
+                completed_files: None,
+                message: None,
+                last_activity_at: None,
+                extra: BTreeMap::new(),
+            });
+        for id in review_files {
+            if ![
+                &current.active_files,
+                &current.pending_files,
+                &current.completed_files,
+            ]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|known| known == id)
+            {
+                current
+                    .pending_files
+                    .get_or_insert_default()
+                    .push(id.clone());
+            }
+        }
+        let transitioned: BTreeSet<_> = [
+            &progress.active_files,
+            &progress.pending_files,
+            &progress.completed_files,
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .cloned()
+        .collect();
+        let merge = |old: Option<Vec<String>>, new: &Option<Vec<String>>| {
+            let mut ids = old.unwrap_or_default();
+            ids.retain(|id| {
+                !transitioned.contains(id) && (new.is_none() || !assigned.contains(id))
+            });
+            ids.extend(new.iter().flatten().cloned());
+            ids.sort();
+            ids.dedup();
+            Some(ids)
+        };
+        current.active_files = merge(current.active_files, &progress.active_files);
+        current.pending_files = merge(current.pending_files, &progress.pending_files);
+        current.completed_files = merge(current.completed_files, &progress.completed_files);
+        let completed = current
+            .completed_files
+            .as_ref()
+            .expect("merged completed files");
+        let reviewed = review_files
+            .iter()
+            .filter(|id| completed.contains(id))
+            .count();
+        current.total_files = Some(
+            u32::try_from(review_files.len())
+                .map_err(|_| io::Error::other("review file count exceeds progress range"))?,
+        );
+        current.reviewed_files = Some(
+            u32::try_from(reviewed)
+                .map_err(|_| io::Error::other("reviewed file count exceeds progress range"))?,
+        );
+        current.status = if !review_files.is_empty()
+            && reviewed == review_files.len()
+            && current.active_files.as_ref().is_none_or(Vec::is_empty)
+            && current.pending_files.as_ref().is_none_or(Vec::is_empty)
+        {
+            ReviewProgressStatus::Completed
+        } else {
+            ReviewProgressStatus::Running
+        };
+        if progress.message.is_some() {
+            current.message = progress.message.clone();
+        }
+        if progress.last_activity_at.is_some() {
+            current.last_activity_at = progress.last_activity_at.clone();
+        }
+        self.ensure_session_directory(session_id)?;
+        self.write_json_atomic(&path, &current)?;
+
+        // The tool response is scoped too; do not return other shards' file
+        // lists or their last activity message through the merged document.
+        let mut scoped = progress;
+        let own = |ids: Option<Vec<String>>| {
+            Some(
+                ids.unwrap_or_default()
+                    .into_iter()
+                    .filter(|id| assigned.contains(id))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        scoped.active_files = own(current.active_files);
+        scoped.pending_files = own(current.pending_files);
+        scoped.completed_files = own(current.completed_files);
+        scoped.total_files = Some(assigned.len() as u32);
+        scoped.reviewed_files = Some(scoped.completed_files.as_ref().map_or(0, Vec::len) as u32);
+        Ok(ReviewOperation::changed(
+            scoped,
             self.change(session_id, "progress.updated"),
         ))
     }

@@ -1,18 +1,36 @@
 import { vi, type Mocked } from 'vitest';
+import { acpMethodNames, type AcpApi, type AcpEventBatch } from '../lib/acpContract';
 import type { AttentionNavigationRequest, DesktopBridge } from '../lib/desktopBridge';
 import type { WorkbenchEvent, WorkspaceRequest } from '../lib/workbenchContract';
 
 export type MockDesktopBridge = Mocked<DesktopBridge> & {
   emitWorkbenchEvent(event: WorkbenchEvent): void;
   emitAttentionNavigation(request: AttentionNavigationRequest): void;
+  emitAcpEventBatch(batch: AcpEventBatch): void;
 };
 
 export function createMockDesktopBridge(): MockDesktopBridge {
   const listeners = new Set<(event: WorkbenchEvent) => void>();
   const navigationListeners = new Set<(request: AttentionNavigationRequest) => void>();
   const workspaceRequest = vi.fn<WorkspaceRequest>();
+  const acpListeners = new Set<(batch: AcpEventBatch) => void>();
+  const acp = Object.fromEntries(acpMethodNames.map((method) => [method, vi.fn()])) as unknown as Mocked<AcpApi>;
+  acp.getAcpSnapshot.mockRejectedValue(new Error('UNSUPPORTED_METHOD: ACP is not configured in this mock'));
+  acp.discoverAcpAdapters.mockResolvedValue([]);
+  acp.readAcpEvents.mockResolvedValue({ events: [], requiresSnapshot: false });
 
   return {
+    startAcpReviewWaves: vi.fn<DesktopBridge['startAcpReviewWaves']>(),
+    getAcpReviewWaves: vi.fn<DesktopBridge['getAcpReviewWaves']>().mockResolvedValue([]),
+    cancelAcpReviewWaves: vi.fn<DesktopBridge['cancelAcpReviewWaves']>().mockResolvedValue(null),
+    ...acp,
+    onAcpEventBatch: vi.fn((listener) => {
+      acpListeners.add(listener);
+      return () => acpListeners.delete(listener);
+    }),
+    emitAcpEventBatch(batch) {
+      for (const listener of acpListeners) listener(batch);
+    },
     pickRepository: vi.fn<DesktopBridge['pickRepository']>().mockResolvedValue(null),
     openLspConfig: vi.fn<DesktopBridge['openLspConfig']>().mockResolvedValue(''),
     getVersion: vi.fn<DesktopBridge['getVersion']>().mockResolvedValue({ name: 'Diffuse', version: 'test' }),
@@ -52,9 +70,6 @@ export function createMockDesktopBridge(): MockDesktopBridge {
       navigationListeners.add(listener);
       return () => navigationListeners.delete(listener);
     }),
-    startReviewAgent: vi.fn<DesktopBridge['startReviewAgent']>().mockResolvedValue({ running: true }),
-    stopReviewAgent: vi.fn<DesktopBridge['stopReviewAgent']>().mockResolvedValue({ running: false }),
-    chatWithReviewAgent: vi.fn<DesktopBridge['chatWithReviewAgent']>(),
     emitWorkbenchEvent(event) {
       for (const listener of listeners) listener(event);
     },

@@ -1,5 +1,7 @@
-use std::fs::File;
 use std::io::Read;
+use std::path::{Component, Path};
+
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -214,15 +216,73 @@ pub(crate) fn source_for_side(
 }
 
 fn source_from_index(repository: &Repository, path: &str) -> CoreResult<String> {
-    git(repository.root(), &["show", &format!(":{path}")])
+    // Specify stage 0 explicitly: a filename such as `0:private.txt` must not
+    // become an index-stage selector for another file. Revision paths are
+    // literal; cat-file also rejects trees/gitlinks instead of displaying them.
+    git(
+        repository.root(),
+        &["cat-file", "blob", &format!(":0:{path}")],
+    )
 }
 
 fn source_from_ref(repository: &Repository, reference: &str, path: &str) -> CoreResult<String> {
-    git(repository.root(), &["show", &format!("{reference}:{path}")])
+    // Resolve the revision on its own before appending a path. Tree expressions
+    // (e.g. HEAD:directory) and commit searches may themselves contain colons.
+    let object = git(
+        repository.root(),
+        &["rev-parse", "--verify", "--end-of-options", reference],
+    )?;
+    let object = object.trim();
+    if !matches!(object.len(), 40 | 64) || !object.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(CoreError::GitCommandFailed);
+    }
+    git(
+        repository.root(),
+        &["cat-file", "blob", &format!("{object}:{path}")],
+    )
 }
 
 fn source_from_working_tree(repository: &Repository, path: &str) -> CoreResult<String> {
-    let mut file = File::open(repository.root().join(path))?;
+    let mut names = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(name) => {
+                // A colon in a Git filename is not permission to read an NTFS
+                // alternate data stream. Such names remain readable from Git.
+                #[cfg(windows)]
+                if name.to_string_lossy().contains(':') {
+                    return Err(CoreError::WorkspaceFileNotFound);
+                }
+                names.push(name);
+            }
+            _ => return Err(CoreError::WorkspaceFileNotFound),
+        }
+    }
+    let (name, parents) = names.split_last().ok_or(CoreError::WorkspaceFileNotFound)?;
+    let mut directory =
+        cap_std::fs::Dir::open_ambient_dir(repository.root(), cap_std::ambient_authority())?;
+    for parent in parents {
+        directory = directory.open_dir_nofollow(parent)?;
+    }
+    let metadata = directory.symlink_metadata(name)?;
+    if metadata.is_symlink() {
+        // Git stores a symlink's target text as its blob, not the target's data.
+        return directory
+            .read_link_contents(name)?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| CoreError::WorkspaceFileNotFound);
+    }
+    if !metadata.is_file() {
+        return Err(CoreError::WorkspaceFileNotFound);
+    }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let mut file = directory.open_with(name, &options)?;
+    if !file.metadata()?.is_file() {
+        return Err(CoreError::WorkspaceFileNotFound);
+    }
     let mut source = Vec::with_capacity(64 * 1024);
     file.by_ref()
         .take((MAX_SOURCE_BYTES + 1) as u64)
@@ -499,6 +559,147 @@ mod tests {
             )
             .unwrap(),
             ""
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_blob_sources_are_literal_and_index_colons_cannot_select_another_file() {
+        let (temp, repository) = repository("base\n");
+        let names = [
+            "*.txt",
+            "[ab].txt",
+            ":(glob)*.txt",
+            "0:private.txt",
+            "1:private.txt",
+            ":private.txt",
+        ];
+        for (index, name) in names.iter().enumerate() {
+            fs::write(temp.path().join(name), format!("owned-{index}-base\n")).unwrap();
+        }
+        fs::write(temp.path().join("private.txt"), "PRIVATE_BASE\n").unwrap();
+        fs::create_dir(temp.path().join("folder")).unwrap();
+        fs::write(
+            temp.path().join("folder/nested:entry.txt"),
+            "owned subtree source\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("folder:nested:entry.txt"),
+            "PRIVATE_COLON_BAIT\n",
+        )
+        .unwrap();
+        git_ok(temp.path(), &["--literal-pathspecs", "add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "literal-sources"]);
+        for (index, name) in names.iter().enumerate() {
+            fs::write(temp.path().join(name), format!("owned-{index}-index\n")).unwrap();
+        }
+        fs::write(temp.path().join("private.txt"), "PRIVATE_INDEX\n").unwrap();
+        git_ok(temp.path(), &["--literal-pathspecs", "add", "."]);
+        let staged = DiffTarget {
+            include_unstaged: false,
+            ..DiffTarget::default()
+        };
+        for (index, name) in names.iter().enumerate() {
+            assert_eq!(
+                source_for_side(&repository, name, SyntaxSide::Old, &staged).unwrap(),
+                format!("owned-{index}-base\n")
+            );
+            assert_eq!(
+                source_for_side(&repository, name, SyntaxSide::New, &staged).unwrap(),
+                format!("owned-{index}-index\n")
+            );
+        }
+        let subtree = DiffTarget {
+            base: Some("HEAD:folder".into()),
+            compare: Some("HEAD:folder".into()),
+            ..DiffTarget::default()
+        };
+        for side in [SyntaxSide::Old, SyntaxSide::New] {
+            assert_eq!(
+                source_for_side(&repository, "nested:entry.txt", side, &subtree).unwrap(),
+                "owned subtree source\n"
+            );
+        }
+        let search = DiffTarget {
+            base: Some(":/literal-sources".into()),
+            compare: Some(":/literal-sources".into()),
+            ..DiffTarget::default()
+        };
+        assert_eq!(
+            source_for_side(&repository, "0:private.txt", SyntaxSide::Old, &search).unwrap(),
+            "owned-3-base\n"
+        );
+        // Exact source reads must not pretty-print directories or gitlink commits.
+        assert_eq!(
+            source_for_side(&repository, "folder", SyntaxSide::Old, &staged).unwrap(),
+            ""
+        );
+        let head = git(temp.path(), &["rev-parse", "HEAD"]).unwrap();
+        git_ok(
+            temp.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{},gitlink", head.trim()),
+            ],
+        );
+        assert_eq!(
+            source_for_side(&repository, "gitlink", SyntaxSide::New, &staged).unwrap(),
+            ""
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn working_sources_read_link_text_and_do_not_follow_directory_aliases() {
+        use std::os::unix::fs::symlink;
+        let (temp, repository) = repository("base\n");
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "PRIVATE_OUTSIDE\n").unwrap();
+        fs::create_dir(temp.path().join("folder")).unwrap();
+        fs::write(temp.path().join("folder/secret.txt"), "owned source\n").unwrap();
+        git_ok(temp.path(), &["add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "owned directory"]);
+        fs::remove_file(temp.path().join("folder/secret.txt")).unwrap();
+        fs::remove_dir(temp.path().join("folder")).unwrap();
+        symlink(outside.path(), temp.path().join("folder")).unwrap();
+        symlink(
+            outside.path().join("secret.txt"),
+            temp.path().join("link.txt"),
+        )
+        .unwrap();
+        git_ok(temp.path(), &["add", "-A"]);
+        assert_eq!(
+            source_for_side(
+                &repository,
+                "link.txt",
+                SyntaxSide::New,
+                &DiffTarget::default()
+            )
+            .unwrap(),
+            outside.path().join("secret.txt").to_str().unwrap()
+        );
+        assert_eq!(
+            source_for_side(
+                &repository,
+                "folder/secret.txt",
+                SyntaxSide::New,
+                &DiffTarget::default()
+            )
+            .unwrap(),
+            ""
+        );
+        assert_eq!(
+            source_for_side(
+                &repository,
+                "folder/secret.txt",
+                SyntaxSide::Old,
+                &DiffTarget::default()
+            )
+            .unwrap(),
+            "owned source\n"
         );
     }
 

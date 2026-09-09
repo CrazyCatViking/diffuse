@@ -17,20 +17,16 @@
 
       <div class="hero-actions">
         <Button variant="secondary" size="sm" :disabled="loading" @click="review.startNewSession()">New session</Button>
-
-        <Button v-if="activeRun" variant="danger" size="sm" :disabled="loading" @click="review.stopAgentReview()">Stop AI review</Button>
-
-        <Button v-else variant="ai" size="sm" :disabled="loading || changedFiles.length === 0" @click="review.startAgentReview()">
-          Start AI review
-        </Button>
       </div>
     </header>
 
     <div v-if="error" class="error-callout" role="alert">{{ error }}</div>
 
+    <ReviewAgentControls />
+
     <section class="summary-grid" aria-label="Review session summary">
       <Panel class="summary-card progress-card" padding="md">
-        <span class="card-kicker">Human review</span>
+        <span class="card-kicker">Reviewed files</span>
 
         <div class="metric-line">
           <span class="metric-value">{{ reviewedCount }}/{{ totalFiles }}</span>
@@ -75,7 +71,7 @@
         <div class="metric-line">
           <span class="metric-value compact">{{ agentStatus }}</span>
 
-          <Badge :tone="activeRun ? 'ai' : 'neutral'">{{ progressText ?? 'idle' }}</Badge>
+          <Badge :tone="review.acpReview.hasActiveReview ? 'ai' : 'neutral'">{{ progressText ?? 'idle' }}</Badge>
         </div>
 
         <p>{{ activityMessage }}</p>
@@ -211,6 +207,7 @@ import { reviewOverviewSurfaceId, type ReviewOverviewSurface, useCursorStore } f
 import { useRepoStore } from '../../stores/repo';
 import { useReviewStore } from '../../stores/review';
 import Button from '../Button.vue';
+import ReviewAgentControls from './ReviewAgentControls.vue';
 import { supportsLspFile } from '../diff/useLspHover';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
@@ -271,9 +268,6 @@ const changedFiles = computed(() => repo.changedFiles);
 const target = computed(() => repo.diffTarget);
 const reviewedFileIds = computed(() => repo.changedFiles.filter((file) => review.isFileReviewed(file)).map((file) => file.id));
 const session = computed(() => review.session);
-const progress = computed(() => review.progress);
-const activeRun = computed(() => review.activeRun);
-const activeAgentState = computed(() => review.activeAgentState);
 const threads = computed(() => review.threads);
 const loading = computed(() => review.loading);
 const error = computed(() => review.error);
@@ -347,19 +341,22 @@ const diagnosticsDetail = computed(() => {
   if (parts.length === 0) return 'No diagnostics reported for supported changed files.';
   return parts.join(', ');
 });
-const agentStatus = computed(() => activeRun.value?.status ?? progress.value?.status ?? 'idle');
+const agentStatus = computed(
+  () =>
+    review.acpReview.sessions.find((session) => review.acpReview.active(session.id))?.state ??
+    review.acpReview.runGroups.at(-1)?.status ??
+    'idle',
+);
 const progressText = computed(() => {
-  if (!progress.value || progress.value.totalFiles === undefined || progress.value.reviewedFiles === undefined) return undefined;
-  return `${progress.value.reviewedFiles}/${progress.value.totalFiles} files`;
+  const group = review.acpReview.runGroups.at(-1);
+  return group ? `${group.completed}/${group.total} shards` : undefined;
 });
 const activityMessage = computed(() => {
-  if (activeAgentState.value?.currentFile && activeAgentState.value.lastThoughtSummary) {
-    return `${activeAgentState.value.currentFile}: ${activeAgentState.value.lastThoughtSummary}`;
-  }
-  if (activeAgentState.value?.lastThoughtSummary) return activeAgentState.value.lastThoughtSummary;
-  if (activeRun.value?.message) return activeRun.value.message;
-  if (progress.value?.message) return progress.value.message;
-  if (activeRun.value) return 'Review agent is running.';
+  const active = review.acpReview.sessions.filter((session) => review.acpReview.active(session.id));
+  if (active.length)
+    return `${active.length} ACP session${active.length === 1 ? '' : 's'} active. Open agent history for streamed activity.`;
+  const group = review.acpReview.runGroups.at(-1);
+  if (group) return `ACP review ${group.status}: ${group.completed}/${group.total} shards completed for ${group.fileCount} assigned files.`;
   return 'Start an AI review to populate findings and progress here.';
 });
 const overviewSubtitle = computed(() => {

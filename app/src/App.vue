@@ -10,6 +10,7 @@
       @open-search="search.openOverlay()"
       @refresh="repo.refreshChangedFiles()"
       @open-settings="showSettings = true"
+      @open-agents="router.push({ name: 'workspace-agents', params: { workspaceId: workbench.activeWorkspaceId } })"
     >
       <template #repository-controls>
         <DiffTargetMenu
@@ -133,6 +134,7 @@ import { useRepoStore } from './stores/repo';
 import { useReviewStore } from './stores/review';
 import { useSearchStore } from './stores/search';
 import { useWorkbenchStore, type WorkspaceUiState } from './stores/workbench';
+import { useAcpStore } from './stores/acp';
 import { useSettingsStore } from './stores/settings';
 import { isSettingsSectionId } from './components/settings/settingsSections';
 
@@ -142,6 +144,7 @@ const cursor = useCursorStore();
 const review = useReviewStore();
 const search = useSearchStore();
 const workbench = useWorkbenchStore();
+const acp = useAcpStore();
 const settings = useSettingsStore();
 const router = useRouter();
 const route = useRoute();
@@ -303,9 +306,15 @@ const closeWorkspace = async (workspaceId: string) => {
   const closingIndex = workbench.workspaces.findIndex((workspace) => workspace.workspaceId === workspaceId);
   const closingActive = workbench.activeWorkspaceId === workspaceId;
   const savedDraft = workbench.uiState(workspaceId).draft?.body.trim();
-  const hasReviewRisk = Boolean(savedDraft || (closingActive && (review.draftBody.trim() || review.activeRun)));
+  const hasReviewRisk = Boolean(savedDraft || (closingActive && (review.draftBody.trim() || review.acpReview.hasActiveReview)));
   const hasInputRisk = workbench.hasPendingInput(workspaceId) || workbench.hasInputDraft(workspaceId);
-  const force = hasReviewRisk || hasInputRisk;
+  const hasAgentRisk =
+    Object.values(workbench.uiState(workspaceId).agentDrafts ?? {}).some((draft) => draft.trim()) ||
+    (workbench.workspaces.find((w) => w.workspaceId === workspaceId)?.attention.running ?? 0) > 0 ||
+    Object.values(acp.snapshots[workspaceId]?.turnsBySession ?? {}).some((turns) =>
+      turns.some((turn) => ['queued', 'admitted', 'running'].includes(turn.state)),
+    );
+  const force = hasReviewRisk || hasInputRisk || hasAgentRisk;
   let captured = false;
   try {
     const closed = await closeWorkspaceWithPolicy(
@@ -395,7 +404,9 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
     return;
   }
   if (showSettings.value || showWorkspaceSwitcher.value || isTextEntryTarget(event.target)) return;
-  if (cursor.handleKeyDown(event)) return;
+  if ((event.key === 'Enter' || event.key === ' ') && event.target instanceof HTMLElement && event.target.closest('button, summary'))
+    return;
+  if (route.name !== workspaceRouteNames.agents && route.name !== workspaceRouteNames.input && cursor.handleKeyDown(event)) return;
   const commandOrControl = event.metaKey || event.ctrlKey;
   if (commandOrControl && event.key.toLowerCase() === 'p') {
     event.preventDefault();
@@ -449,7 +460,7 @@ onMounted(async () => {
       openSettings: openSettingsTarget,
       selectReviewSession: review.selectSession,
     })
-      .then(() => workbench.acknowledgeAttention(attentionId, revision))
+      .then(() => (target.kind === 'agent' ? undefined : workbench.acknowledgeAttention(attentionId, revision)))
       .catch((error) => {
         repo.error = error instanceof Error ? error.message : String(error);
       });
@@ -457,6 +468,7 @@ onMounted(async () => {
   try {
     await repo.loadVersion();
     await workbench.initialize(activateSnapshot);
+    acp.start();
     if (workbench.restoreStatus !== 'ready') return;
     if (!workbench.activeWorkspaceId) await router.replace(workbenchRoute());
     await window.diffuse.readyForWorkbenchNavigation();
@@ -466,6 +478,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  acp.stop();
   captureActiveWorkspace();
   cursor.setNavigator(undefined);
   unsubscribeAttentionNavigation?.();

@@ -278,6 +278,7 @@ const workbench = {
   sequence: 0,
 };
 
+interface FakeAddon extends Record<import('../src/lib/acpContract').AcpMethod, (request?: unknown) => Promise<unknown>> {}
 class FakeAddon implements NativeCoreAddon {
   openWorkspaceResult: unknown = workspace;
   requestResult: unknown;

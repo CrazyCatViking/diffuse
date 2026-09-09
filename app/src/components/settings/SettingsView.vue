@@ -36,6 +36,7 @@ import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
 import Toolbar from '../ui/Toolbar.vue';
 import AppearanceSettings from './AppearanceSettings.vue';
+import AgentAdaptersSettings from './AgentAdaptersSettings.vue';
 import KeyboardSettings from './KeyboardSettings.vue';
 import LanguageServersSettings from './LanguageServersSettings.vue';
 import SettingsNav from './SettingsNav.vue';
@@ -48,6 +49,7 @@ defineEmits<{
 
 const activeSectionStorageKey = 'diffuse.settings.activeSection';
 const sectionComponents: Record<SettingsSectionId, Component> = {
+  agentAdapters: AgentAdaptersSettings,
   appearance: AppearanceSettings,
   keyboard: KeyboardSettings,
   languageServers: LanguageServersSettings,

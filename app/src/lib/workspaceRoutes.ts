@@ -8,6 +8,7 @@ export const workspaceRouteNames = {
   diff: 'workspace-file',
   folderDiff: 'workspace-folder',
   input: 'workspace-input',
+  agents: 'workspace-agents',
 } as const;
 
 export type WorkspaceRouteName = (typeof workspaceRouteNames)[keyof typeof workspaceRouteNames];
@@ -45,6 +46,11 @@ export const inputRoute = (workspaceId: string, inputRequestId: string) => ({
   params: { workspaceId, inputRequestId },
 });
 
+export const agentRoute = (workspaceId: string, agentSessionId?: string) => ({
+  name: workspaceRouteNames.agents,
+  params: { workspaceId, agentSessionId },
+});
+
 export const threadDiffRoute = (workspaceId: string, thread: ReviewThread) =>
   diffRoute(workspaceId, thread.fileId, {
     threadId: thread.id,
@@ -69,7 +75,8 @@ export const captureWorkspaceRoute = (route: RouteLocationNormalizedLoaded): Wor
     route.name !== workspaceRouteNames.overview &&
     route.name !== workspaceRouteNames.diff &&
     route.name !== workspaceRouteNames.folderDiff &&
-    route.name !== workspaceRouteNames.input
+    route.name !== workspaceRouteNames.input &&
+    route.name !== workspaceRouteNames.agents
   ) {
     return undefined;
   }

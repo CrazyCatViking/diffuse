@@ -15,10 +15,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { startCoreProcess } from './coreProcess';
-import { ReviewAgentRunner } from './reviewAgentRunner';
-import { createReviewAttentionWithRetry } from './reviewAttention';
 import { coreMethodNames, type CoreMethods } from '../src/lib/coreContract';
-import type { ReviewAgentChatRequest, ReviewAgentStartRequest } from '../src/lib/desktopBridge';
 import {
   isWorkspaceReference,
   isWorkspaceRequestContext,
@@ -31,11 +28,6 @@ import {
 } from '../src/lib/workbenchContract';
 import type { CoreBackend } from './coreBackend';
 import { LegacyCoreBackend } from './legacyCoreBackend';
-import {
-  assertLegacyReviewAllowsClose,
-  closeWorkspaceWithLegacyReviewAgent,
-  stopLegacyReviewAgentForShutdown,
-} from './legacyReviewAgentLifecycle';
 import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 import { windowCloseDisposition } from './windowLifecycle';
 import {
@@ -56,15 +48,18 @@ import {
   parseWorkspaceUiStateRequest,
 } from './phase5Ipc';
 import { WorkbenchNavigationQueue } from './workbenchNavigationQueue';
+import { AcpReviewWaves } from './acpReviewWaves';
+import { isStartReviewWaves, isCancelReviewWaves } from '../src/lib/acpReviewWaves';
 
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 7_000;
 const workspaceMethodNames = coreMethodNames.filter(
   (method): method is WorkspaceCoreMethod => method !== 'getVersion' && method !== 'openRepository',
 );
 const allowedWorkspaceMethods = new Set<WorkspaceCoreMethod>(workspaceMethodNames);
+import { acpMethodNames, isAcpRequest } from '../src/lib/acpContract';
+
 let primaryWindow: BrowserWindow | null = null;
 let initialWorkspaceOpen: Promise<unknown> = Promise.resolve();
-let reviewAgentOwner: { context: WorkspaceRequestContext; runner: ReviewAgentRunner } | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let allowQuitAfterShutdown = false;
@@ -74,16 +69,14 @@ let shutdownOperation: Promise<void> | null = null;
 const workspaceSummaries = new Map<string, WorkspaceSummary>();
 const workbenchNavigationQueue = new WorkbenchNavigationQueue();
 let workspaceSummarySequence = 0;
+let acpAttentionTimer: ReturnType<typeof setTimeout> | undefined;
+let reviewWaves: AcpReviewWaves | undefined;
 
 if (!app.requestSingleInstanceLock({ cwd: process.cwd() })) {
   app.exit(0);
 }
 
 function forwardWorkbenchEvent(event: WorkbenchEvent): void {
-  if (event.kind === 'workspace/removed' && reviewAgentOwner && matchesContext(reviewAgentOwner.context, event)) {
-    reviewAgentOwner.runner.dispose();
-    reviewAgentOwner = null;
-  }
   if (primaryWindow && !primaryWindow.isDestroyed()) primaryWindow.webContents.send('workbench:event', event);
   updateWorkspaceSummary(event);
   if (event.kind === 'workspace/attentionChanged') {
@@ -97,8 +90,30 @@ function getCoreBackend(): Promise<CoreBackend> {
   if (shutdownOperation) return Promise.reject(new Error('The core backend is shutting down'));
   if (!coreBackendPromise) {
     coreBackendPromise = createCoreBackend().then((backend) => {
+      reviewWaves = new AcpReviewWaves(backend);
+      reviewWaves.startPolling();
       unsubscribeBackendEvents = backend.onEvents((events) => {
         for (const event of events) forwardWorkbenchEvent(event);
+      });
+      backend.onAcpEventBatch((batch) => {
+        if (primaryWindow && !primaryWindow.isDestroyed()) primaryWindow.webContents.send('acp:eventBatch', batch);
+        if (
+          !acpAttentionTimer &&
+          (batch.requiresSnapshot || batch.events.some((event) => event.kind.startsWith('workspace/') || event.kind.startsWith('input/')))
+        ) {
+          acpAttentionTimer = setTimeout(() => {
+            acpAttentionTimer = undefined;
+            void backend
+              .getWorkbenchSnapshot()
+              .then(async (snapshot) => {
+                applyWorkbenchSnapshot(snapshot);
+                for (const item of snapshot.attentionItems) await showAttentionNotification(item);
+              })
+              .catch(() => {
+                /* Shutdown or a later snapshot will recover presentation. */
+              });
+          }, 80);
+        }
       });
       return backend;
     });
@@ -169,14 +184,6 @@ export function resolveNativeSyntaxRunnerPath(
 
 function isWorkspaceMethod(method: string): method is WorkspaceCoreMethod {
   return allowedWorkspaceMethods.has(method as WorkspaceCoreMethod);
-}
-
-export function createReviewAgentCoreRequest(backend: CoreBackend, context: WorkspaceRequestContext) {
-  return async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
-    if (!isWorkspaceMethod(method)) throw new Error(`Unknown workspace method: ${method}`);
-    const response = await backend.request({ ...context, requestId: randomUUID() }, method, params as CoreMethods[typeof method]['params']);
-    return response.result as T;
-  };
 }
 
 function focusWindow(window: BrowserWindow): void {
@@ -372,19 +379,15 @@ app.on('before-quit', (event) => {
   if (allowQuitAfterShutdown) return;
   event.preventDefault();
   if (shutdownOperation) return;
+  reviewWaves?.dispose();
 
-  const owner = reviewAgentOwner;
-  reviewAgentOwner = null;
   tray?.destroy();
   tray = null;
   const existingBackend = coreBackendPromise;
-  shutdownOperation = stopLegacyReviewAgentForShutdown(owner)
-    .catch((error) => console.error('Failed to stop the legacy review agent during shutdown:', error))
-    .then(() => shutdownBackend(existingBackend))
-    .finally(() => {
-      allowQuitAfterShutdown = true;
-      app.quit();
-    });
+  shutdownOperation = shutdownBackend(existingBackend).finally(() => {
+    allowQuitAfterShutdown = true;
+    app.quit();
+  });
 });
 
 async function shutdownBackend(existingBackend: Promise<CoreBackend> | null): Promise<void> {
@@ -439,6 +442,34 @@ function ensureLspConfigFile(configPath: string): void {
   );
 }
 
+for (const method of acpMethodNames) {
+  ipcMain.handle(`acp:${method}`, async (event, request: unknown) => {
+    getRequestWindow(event);
+    if (!isAcpRequest(method, request)) throw new Error(`Invalid ACP request: ${method}`);
+    const backend = await getCoreBackend();
+    return (backend[method] as (request: unknown) => Promise<unknown>)(request);
+  });
+}
+
+ipcMain.handle('acp-review:startWaves', async (event, request: unknown) => {
+  getRequestWindow(event);
+  if (!isStartReviewWaves(request)) throw new Error('Invalid ACP wave start');
+  await getCoreBackend();
+  return reviewWaves!.start(request);
+});
+ipcMain.handle('acp-review:getWaves', async (event, context: unknown) => {
+  getRequestWindow(event);
+  if (!isAcpRequest('getAcpSnapshot', context)) throw new Error('Invalid ACP wave context');
+  await getCoreBackend();
+  return reviewWaves!.list(context as WorkspaceRequestContext);
+});
+ipcMain.handle('acp-review:cancelWaves', async (event, request: unknown) => {
+  getRequestWindow(event);
+  if (!isCancelReviewWaves(request)) throw new Error('Invalid ACP wave cancellation');
+  await getCoreBackend();
+  return reviewWaves!.cancel(request);
+});
+
 ipcMain.handle('repo:pickDirectory', async (event) => {
   const window = getRequestWindow(event);
   const result = await dialog.showOpenDialog(window, {
@@ -488,20 +519,11 @@ ipcMain.handle('workspace:close', async (event, request: unknown) => {
   getRequestWindow(event);
   const parsed = parseWorkspaceCloseRequest(request);
   const backend = await getCoreBackend();
-  const owner = reviewAgentOwner;
-  const matchingOwner = owner && matchesContext(owner.context, parsed) ? owner : null;
-  assertLegacyReviewAllowsClose(parsed, matchingOwner);
-  const summary = await closeWorkspaceWithLegacyReviewAgent(parsed, parsed.force ? matchingOwner : null, (closeRequest) =>
-    backend.closeWorkspace(closeRequest),
+  await reviewWaves?.closeWorkspace(
+    { workspaceId: parsed.workspaceId, workspaceGeneration: parsed.workspaceGeneration, requestId: randomUUID() },
+    parsed.force ?? false,
   );
-  if (matchingOwner) {
-    if (parsed.force) reviewAgentOwner = null;
-    else if (!matchingOwner.runner.status().running) {
-      matchingOwner.runner.dispose();
-      reviewAgentOwner = null;
-    }
-  }
-  return summary;
+  return backend.closeWorkspace(parsed);
 });
 
 ipcMain.handle('workspace:dismissRestoreFailure', async (event, request: unknown) => {
@@ -527,8 +549,8 @@ ipcMain.handle('workspace:reorder', async (event, request: unknown) => {
 ipcMain.handle('workspace:saveUiState', async (event, request: unknown) => {
   getRequestWindow(event);
   const parsed = parseWorkspaceUiStateRequest(request);
-  const backend = await getCoreBackend();
-  return await backend.saveWorkspaceUiState(parsed);
+  await getCoreBackend();
+  return await reviewWaves!.saveRendererUi(parsed);
 });
 
 ipcMain.handle('attention:acknowledge', async (event, request: unknown) => {
@@ -571,68 +593,6 @@ ipcMain.handle('lsp:openConfig', async (event, request: unknown) => {
   if (error) throw new Error(error);
   return configPath;
 });
-
-ipcMain.handle('review-agent:start', async (event, request: unknown) => {
-  getRequestWindow(event);
-  if (!isReviewAgentStartRequest(request)) throw new Error('Invalid review agent start request');
-  const backend = await getCoreBackend();
-  const snapshot = await backend.getWorkspaceSnapshot(request.context);
-  const runner = await getReviewAgentRunner(request.context, backend);
-  return runner.start({
-    repositoryRoot: snapshot.repository.root,
-    sessionId: request.sessionId,
-    files: request.files,
-  });
-});
-
-ipcMain.handle('review-agent:stop', async (event, context: unknown) => {
-  getRequestWindow(event);
-  if (!isWorkspaceRequestContext(context)) throw new Error('Invalid review agent workspace context');
-  const owner = await requireReviewAgentOwner(context);
-  const result = await owner.runner.stop();
-  owner.runner.dispose();
-  reviewAgentOwner = null;
-  return result;
-});
-
-ipcMain.handle('review-agent:chat', async (event, request: unknown) => {
-  getRequestWindow(event);
-  if (!isReviewAgentChatRequest(request)) throw new Error('Invalid review agent chat request');
-  const backend = await getCoreBackend();
-  const snapshot = await backend.getWorkspaceSnapshot(request.context);
-  const { context: _context, ...chatRequest } = request;
-  const runner = await getReviewAgentRunner(request.context, backend);
-  return runner.chat({ ...chatRequest, repositoryRoot: snapshot.repository.root });
-});
-
-async function getReviewAgentRunner(context: WorkspaceRequestContext, existingBackend?: CoreBackend): Promise<ReviewAgentRunner> {
-  const backend = existingBackend ?? (await getCoreBackend());
-  await backend.getWorkspaceSnapshot(context);
-  if (reviewAgentOwner) return (await requireReviewAgentOwner(context)).runner;
-
-  const ownerContext = context;
-  const runner = new ReviewAgentRunner(createReviewAgentCoreRequest(backend, ownerContext), (terminal) =>
-    createReviewAttentionWithRetry(async () => backend, ownerContext, terminal),
-  );
-  reviewAgentOwner = { context: ownerContext, runner };
-  return runner;
-}
-
-async function requireReviewAgentOwner(context: WorkspaceRequestContext): Promise<NonNullable<typeof reviewAgentOwner>> {
-  const backend = await getCoreBackend();
-  await backend.getWorkspaceSnapshot(context);
-  if (!reviewAgentOwner || !matchesContext(reviewAgentOwner.context, context)) {
-    throw new Error('The legacy review agent runner belongs to another workspace');
-  }
-  return reviewAgentOwner;
-}
-
-function matchesContext(
-  first: { workspaceId: string; workspaceGeneration: string },
-  second: { workspaceId: string; workspaceGeneration: string },
-): boolean {
-  return first.workspaceId === second.workspaceId && first.workspaceGeneration === second.workspaceGeneration;
-}
 
 function applyWorkbenchSnapshot(snapshot: WorkbenchSnapshot): void {
   if (snapshot.sequence < workspaceSummarySequence) return;
@@ -715,20 +675,6 @@ function createTrayIcon(state: TrayAttentionState['icon']) {
   return nativeImage
     .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
     .resize({ width: 18, height: 18 });
-}
-
-function isReviewAgentStartRequest(value: unknown): value is ReviewAgentStartRequest {
-  return isRecord(value) && isWorkspaceRequestContext(value.context) && typeof value.sessionId === 'string' && Array.isArray(value.files);
-}
-
-function isReviewAgentChatRequest(value: unknown): value is ReviewAgentChatRequest {
-  return (
-    isRecord(value) &&
-    isWorkspaceRequestContext(value.context) &&
-    typeof value.sessionId === 'string' &&
-    isRecord(value.thread) &&
-    typeof value.question === 'string'
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

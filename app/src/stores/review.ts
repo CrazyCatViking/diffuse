@@ -1,6 +1,8 @@
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
-import { isActiveWorkspace, useClient } from '../lib/useClient';
+import { getActiveWorkspace, isActiveWorkspace, useClient } from '../lib/useClient';
+import { useReviewAcpStore } from './reviewAcp';
+import { useWorkbenchStore } from './workbench';
 import type {
   ChangedFile,
   DiffTarget,
@@ -22,7 +24,25 @@ const humanParticipantId = 'local-human';
 export const useReviewStore = defineStore('review', () => {
   const client = useClient();
   const repo = useRepoStore();
+  const workbench = useWorkbenchStore();
+  const acpReview = useReviewAcpStore();
+  const agentAdapter = computed({
+    get: () => {
+      const value = workbench.activeWorkspaceId ? workbench.uiState(workbench.activeWorkspaceId).reviewAgentAdapter : '';
+      return value?.startsWith('acp:') ? value : '';
+    },
+    set: (value: string) => {
+      const id = workbench.activeWorkspaceId;
+      if (id) workbench.saveUiState(id, { ...workbench.uiState(id), reviewAgentAdapter: value });
+    },
+  });
   const session = ref<ReviewSession | null>(null);
+  watch(
+    () => [session.value?.id, workbench.activeWorkspaceId],
+    () => {
+      void acpReview.activate(getActiveWorkspace(), session.value?.id);
+    },
+  );
   const sessions = ref<ReviewSession[]>([]);
   const progress = ref<ReviewProgress | null>(null);
   const reviewedFiles = ref<ReviewedFilesState>({ files: {} });
@@ -37,23 +57,11 @@ export const useReviewStore = defineStore('review', () => {
   const draftMode = ref<'comment' | 'chat'>('comment');
   const draftBody = ref('');
   const replyDrafts = ref<Record<string, string>>({});
-  const pendingAgentChatKeys = ref(new Set<string>());
   let reviewedFilesMutation = Promise.resolve();
   let reviewedFilesVersion = 0;
   let workspaceEpoch = 0;
 
   const openThreads = computed(() => threads.value.filter((thread) => thread.status === 'open'));
-  const activeRun = computed(() => {
-    const active = runs.value
-      .filter((run) => run.status === 'starting' || run.status === 'planning' || run.status === 'running' || run.status === 'cancelling')
-      .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt))[0];
-    return active ?? null;
-  });
-  const activeAgentState = computed(() => {
-    const activeRunId = activeRun.value?.id;
-    const states = activeRunId ? agentStates.value.filter((agent) => agent.id === activeRunId) : agentStates.value;
-    return [...states].sort((first, second) => (second.updatedAt ?? '').localeCompare(first.updatedAt ?? ''))[0] ?? null;
-  });
 
   window.diffuse.onWorkbenchEvent((event) => {
     if (event.kind !== 'review/changed' || !isActiveWorkspace(event)) return;
@@ -77,8 +85,6 @@ export const useReviewStore = defineStore('review', () => {
       const next = active ?? (await client.createReviewSession(newSession(repository.root, repository.head, repo.diffTarget)));
       if (epoch !== workspaceEpoch) return;
       session.value = next;
-      await client.recoverStaleReviewRuns(next.id);
-      if (epoch !== workspaceEpoch) return;
       await refreshReviewState();
     } catch (err) {
       if (epoch !== workspaceEpoch) return;
@@ -233,45 +239,6 @@ export const useReviewStore = defineStore('review', () => {
       if (epoch !== workspaceEpoch) return false;
       error.value = err instanceof Error ? err.message : JSON.stringify(err);
       return false;
-    } finally {
-      if (epoch === workspaceEpoch) loading.value = false;
-    }
-  };
-
-  const startAgentReview = async () => {
-    if (!repo.repository) return false;
-    const epoch = workspaceEpoch;
-    if (!session.value) await ensureSession();
-    if (epoch !== workspaceEpoch || !session.value) return false;
-
-    loading.value = true;
-    error.value = undefined;
-    try {
-      await client.startReviewAgent(repo.repository.root, session.value.id, repo.changedFiles);
-      if (epoch !== workspaceEpoch) return false;
-      await refreshReviewState();
-      return true;
-    } catch (err) {
-      if (epoch !== workspaceEpoch) return false;
-      error.value = err instanceof Error ? err.message : JSON.stringify(err);
-      await loadRuns();
-      return false;
-    } finally {
-      if (epoch === workspaceEpoch) loading.value = false;
-    }
-  };
-
-  const stopAgentReview = async () => {
-    const epoch = workspaceEpoch;
-    loading.value = true;
-    error.value = undefined;
-    try {
-      await client.stopReviewAgent();
-      if (epoch !== workspaceEpoch) return;
-      await refreshReviewState();
-    } catch (err) {
-      if (epoch !== workspaceEpoch) return;
-      error.value = err instanceof Error ? err.message : JSON.stringify(err);
     } finally {
       if (epoch === workspaceEpoch) loading.value = false;
     }
@@ -482,153 +449,66 @@ export const useReviewStore = defineStore('review', () => {
     }
   };
 
-  const askAgentInThread = async (thread: ReviewThread, body: string) => {
-    if (!repo.repository) return false;
-    const epoch = workspaceEpoch;
-    if (!session.value) await ensureSession();
-    if (epoch !== workspaceEpoch || !session.value) return false;
-    const text = body.trim();
-    if (!text) return false;
-
-    const context: ReviewChatMessage['context'] = {
-      fileId: thread.fileId,
-      selection: thread.anchor,
-      threadIds: [thread.id],
-    };
-    const chatKey = threadChatKey(thread.id);
-    if (pendingAgentChatKeys.value.has(chatKey)) return false;
-    const userMessage: ReviewChatMessage = {
-      id: createId('chat'),
-      sessionId: session.value.id,
-      role: 'user',
-      body: text,
-      createdAt: new Date().toISOString(),
-      context,
-    };
-    const pendingMessage: ReviewChatMessage = {
-      id: createId('chat'),
-      sessionId: session.value.id,
-      role: 'assistant',
-      body: 'Thinking...',
-      createdAt: new Date().toISOString(),
-      provider: 'opencode',
-      context,
-    };
-
-    loading.value = true;
+  const startAgentReview = async () => {
+    const reference = getActiveWorkspace();
+    const review = session.value;
+    if (!reference || !review) return false;
     error.value = undefined;
-    pendingAgentChatKeys.value = new Set([...pendingAgentChatKeys.value, chatKey]);
     try {
-      const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
-      const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
-      if (epoch !== workspaceEpoch) return false;
-      chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
-      const assistant = await client.chatWithReviewAgent(
-        repo.repository.root,
-        session.value.id,
-        thread,
-        text,
-        chatMessages.value,
-        savedUser.id,
-        savedPending.id,
-      );
-      if (epoch !== workspaceEpoch) return false;
-      chatMessages.value = [...chatMessages.value.filter((item) => item.id !== assistant.id), assistant].sort((first, second) =>
-        first.createdAt.localeCompare(second.createdAt),
-      );
-      return true;
-    } catch (err) {
-      if (epoch !== workspaceEpoch) return false;
-      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      await acpReview.queue(reference, review, agentAdapter.value.startsWith('acp:') ? agentAdapter.value.slice(4) : '');
+      return isActiveWorkspace(reference) && session.value?.id === review.id;
+    } catch (e) {
+      if (isActiveWorkspace(reference) && session.value?.id === review.id) error.value = String(e);
       return false;
-    } finally {
-      if (epoch !== workspaceEpoch) return;
-      const nextPending = new Set(pendingAgentChatKeys.value);
-      nextPending.delete(chatKey);
-      pendingAgentChatKeys.value = nextPending;
-      loading.value = false;
     }
   };
-
-  const askAgentAtDraft = async (body: string) => {
-    if (!repo.repository) return false;
-    const epoch = workspaceEpoch;
-    if (!session.value) await ensureSession();
-    if (epoch !== workspaceEpoch || !session.value || !draftFile.value || !draftAnchor.value) return false;
-    const text = body.trim();
-    if (!text) return false;
-
-    const chatThreadId = selectionChatThreadId(draftFile.value.id, draftAnchor.value);
-    const context: ReviewChatMessage['context'] = {
-      fileId: draftFile.value.id,
-      selection: draftAnchor.value,
-      threadIds: [chatThreadId],
-    };
-    if (pendingAgentChatKeys.value.has(chatThreadId)) return false;
-
-    const now = new Date().toISOString();
-    const pseudoThread: ReviewThread = {
-      id: chatThreadId,
-      sessionId: session.value.id,
-      fileId: draftFile.value.id,
-      oldPath: draftFile.value.oldPath ?? undefined,
-      newPath: draftFile.value.newPath ?? undefined,
-      anchor: draftAnchor.value,
-      status: 'open',
-      createdAt: now,
-      updatedAt: now,
-      messages: [{ id: createId('msg'), authorId: humanParticipantId, body: text, createdAt: now }],
-    };
-    const userMessage: ReviewChatMessage = {
-      id: createId('chat'),
-      sessionId: session.value.id,
-      role: 'user',
-      body: text,
-      createdAt: now,
-      context,
-    };
-    const pendingMessage: ReviewChatMessage = {
-      id: createId('chat'),
-      sessionId: session.value.id,
-      role: 'assistant',
-      body: 'Thinking...',
-      createdAt: new Date().toISOString(),
-      provider: 'opencode',
-      context,
-    };
-
-    loading.value = true;
+  const stopAgentReview = async (agentSessionId?: string) => {
+    if (agentSessionId) return acpReview.stop(agentSessionId);
+    await acpReview.stopReviews();
+  };
+  const askAgentInThread = async (thread: ReviewThread, body: string) => {
+    const reference = getActiveWorkspace();
+    const review = session.value;
+    if (!reference || !review || !body.trim()) return false;
     error.value = undefined;
-    pendingAgentChatKeys.value = new Set([...pendingAgentChatKeys.value, chatThreadId]);
     try {
-      const savedUser = await client.saveReviewChatMessage(session.value.id, userMessage);
-      const savedPending = await client.saveReviewChatMessage(session.value.id, pendingMessage);
-      if (epoch !== workspaceEpoch) return false;
-      chatMessages.value = upsertChatMessages(chatMessages.value, [savedUser, savedPending]);
-      cancelDraft();
-      const assistant = await client.chatWithReviewAgent(
-        repo.repository.root,
-        session.value.id,
-        pseudoThread,
-        text,
-        chatMessages.value,
-        savedUser.id,
-        savedPending.id,
+      await acpReview.queue(
+        reference,
+        review,
+        agentAdapter.value.startsWith('acp:') ? agentAdapter.value.slice(4) : '',
+        body.trim(),
+        thread,
       );
-      if (epoch !== workspaceEpoch) return false;
-      chatMessages.value = upsertChatMessages(chatMessages.value, [assistant]);
-      return true;
-    } catch (err) {
-      if (epoch !== workspaceEpoch) return false;
-      error.value = err instanceof Error ? err.message : JSON.stringify(err);
+      return isActiveWorkspace(reference) && session.value?.id === review.id;
+    } catch (e) {
+      if (isActiveWorkspace(reference) && session.value?.id === review.id) error.value = String(e);
       return false;
-    } finally {
-      if (epoch !== workspaceEpoch) return;
-      const nextPending = new Set(pendingAgentChatKeys.value);
-      nextPending.delete(chatThreadId);
-      pendingAgentChatKeys.value = nextPending;
-      loading.value = false;
     }
+  };
+  const askAgentAtDraft = async (body: string) => {
+    const review = session.value;
+    const file = draftFile.value;
+    const anchor = draftAnchor.value;
+    const epoch = workspaceEpoch;
+    if (!review || !file || !anchor) return false;
+    const now = new Date().toISOString();
+    const result = await askAgentInThread(
+      {
+        id: selectionChatThreadId(file.id, anchor),
+        sessionId: review.id,
+        fileId: file.id,
+        oldPath: file.oldPath ?? undefined,
+        newPath: file.newPath ?? undefined,
+        anchor,
+        status: 'open',
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      },
+      body,
+    );
+    if (result && epoch === workspaceEpoch && draftBody.value.trim() === body.trim()) cancelDraft();
+    return result && epoch === workspaceEpoch;
   };
 
   const threadCountForAnchor = (fileId: string, side: 'old' | 'new', line: number) => {
@@ -649,7 +529,6 @@ export const useReviewStore = defineStore('review', () => {
     agentStates.value = [];
     threads.value = [];
     chatMessages.value = [];
-    pendingAgentChatKeys.value = new Set();
     error.value = undefined;
     replyDrafts.value = {};
     cancelDraft();
@@ -678,15 +557,15 @@ export const useReviewStore = defineStore('review', () => {
   };
 
   return {
+    agentAdapter,
+    acpReview,
     session,
     sessions,
     progress,
     reviewedFiles,
     runs,
     agentStates,
-    activeAgentState,
-    chatMessages,
-    activeRun,
+    chatMessages: computed(() => [...chatMessages.value, ...acpReview.messages]),
     threads,
     openThreads,
     loading,
@@ -696,7 +575,7 @@ export const useReviewStore = defineStore('review', () => {
     draftMode,
     draftBody,
     replyDrafts,
-    pendingAgentChatKeys,
+    pendingAgentChatKeys: computed(() => acpReview.pendingChatKeys),
     ensureSession,
     selectSession,
     startNewSession,
@@ -745,16 +624,8 @@ const newSession = (repositoryRoot: string, headAtCreation: string, target: Diff
   };
 };
 
-const threadChatKey = (threadId: string) => threadId;
-
 const selectionChatThreadId = (fileId: string, anchor: ReviewAnchor) => {
   return `chat:${fileId}:${anchor.side}:${anchor.startLine}:${anchor.endLine}:${anchor.startColumn ?? ''}:${anchor.endColumn ?? ''}`;
-};
-
-const upsertChatMessages = (current: ReviewChatMessage[], messages: ReviewChatMessage[]) => {
-  const byId = new Map(current.map((message) => [message.id, message]));
-  for (const message of messages) byId.set(message.id, message);
-  return [...byId.values()].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
 };
 
 const createId = (prefix: string) => {

@@ -1,4 +1,6 @@
 pub mod acp;
+mod acp_mcp;
+mod acp_transport;
 mod app_core;
 pub mod attention;
 mod database;
@@ -7,11 +9,14 @@ mod error;
 mod event;
 mod legacy_import;
 pub mod lsp;
+mod operation;
 mod repository;
 pub mod review;
 pub mod search;
 pub mod syntax;
 pub mod watcher;
+#[cfg(windows)]
+mod windows_job;
 mod workspace;
 
 pub use app_core::{

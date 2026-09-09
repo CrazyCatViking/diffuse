@@ -70,7 +70,6 @@
     }
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.17.7",
     "@tanstack/vue-virtual": "^3.13.12",
     "@vitejs/plugin-vue": "^6.0.0",
     "electron-vite": "^4.0.0",

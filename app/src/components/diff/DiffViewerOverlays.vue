@@ -13,13 +13,13 @@
 
     <button
       type="button"
-      title="Ask AI about selection"
-      aria-label="Ask AI about selection"
+      title="Ask a review agent about selection"
+      aria-label="Ask a review agent about selection"
       @pointerdown.prevent.stop="emit('chatSelection')"
     >
       <span class="ai-icon" aria-hidden="true" />
 
-      <span>Ask AI</span>
+      <span>Ask agent</span>
     </button>
   </div>
 

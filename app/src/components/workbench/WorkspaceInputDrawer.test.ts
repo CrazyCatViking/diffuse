@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
+import { acpSnapshot } from '../../test/acpFixture';
 import { createPinia, setActivePinia } from 'pinia';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,101 @@ import { useWorkbenchStore } from '../../stores/workbench';
 import WorkspaceInputDrawer from './WorkspaceInputDrawer.vue';
 
 describe('WorkspaceInputDrawer', () => {
+  it('restores incomplete nonsecret ACP form fields across remount and clears revision/terminal drafts', async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const bridge = createMockDesktopBridge();
+    window.diffuse = bridge;
+    const snapshot = acpSnapshot();
+    const input: InputRequest = { ...inputRequest(), revision: 1, kind: 'question', choices: [] };
+    const schema = { type: 'object', properties: { title: { type: 'string' }, count: { type: 'integer' } }, required: ['title', 'count'] };
+    snapshot.inputs = [{ input, sessionId: snapshot.sessions[0].id, method: 'elicitation/create', params: { requestedSchema: schema } }];
+    bridge.getAcpSnapshot.mockImplementation(async () => structuredClone(snapshot));
+    const state = {
+      workspaces: [snapshot.summary],
+      activeWorkspaceId: snapshot.workspaceId,
+      activeWorkspace: null,
+      aggregateAttention: snapshot.summary.attention,
+      attentionItems: [],
+      inputRequests: [input],
+      workspaceUiState: {},
+      legacyReviewImports: [],
+      sequence: 0,
+    };
+    bridge.getWorkbenchSnapshot.mockImplementation(async () => structuredClone(state));
+    const store = useWorkbenchStore();
+    await store.initialize(vi.fn());
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/w/:workspaceId/input/:inputRequestId', component: WorkspaceInputDrawer }],
+    });
+    await router.push('/w/workspace-a/input/input-1');
+    const options = { global: { plugins: [pinia, router] } };
+    let wrapper = mount(WorkspaceInputDrawer, options);
+    await flushPromises();
+    await wrapper.get('input[type="text"]').setValue('Partial title');
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+    expect(store.inputFormDraft(input)).toEqual({ title: 'Partial title' });
+    wrapper = mount(WorkspaceInputDrawer, options);
+    await flushPromises();
+    expect((wrapper.get('input[type="text"]').element as HTMLInputElement).value).toBe('Partial title');
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined();
+    await wrapper.get('input[type="number"]').setValue('2');
+    wrapper.unmount();
+    wrapper = mount(WorkspaceInputDrawer, options);
+    await flushPromises();
+    expect((wrapper.get('input[type="number"]').element as HTMLInputElement).value).toBe('2');
+    input.revision = 2;
+    await store.refreshAgentAttention();
+    await flushPromises();
+    expect(store.uiState(input.workspaceId).inputFormDrafts).toBeUndefined();
+    expect((wrapper.get('input[type="text"]').element as HTMLInputElement).value).toBe('');
+    await wrapper.get('input[type="text"]').setValue('Next revision');
+    input.status = 'cancelled';
+    await store.refreshAgentAttention();
+    await flushPromises();
+    expect(store.uiState(input.workspaceId).inputFormDrafts).toBeUndefined();
+    const secret = { ...input, revision: 3, kind: 'authentication' as const, status: 'pending' as const };
+    store.saveInputFormDraft(secret, schema, { title: 'credential' });
+    store.saveInputDraft(secret, 'credential');
+    expect(JSON.stringify(store.uiState(input.workspaceId))).not.toContain('credential');
+    wrapper.unmount();
+  });
+
+  it('restores ACP permission choices without retaining authentication input', async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    window.diffuse = createMockDesktopBridge();
+    const bridge = window.diffuse as ReturnType<typeof createMockDesktopBridge>;
+    const snapshot = acpSnapshot();
+    const input = inputRequest();
+    snapshot.inputs = [
+      {
+        input,
+        sessionId: snapshot.sessions[0].id,
+        method: 'session/request_permission',
+        params: { options: [{ optionId: 'Allow', name: 'Allow once' }] },
+      },
+    ];
+    bridge.getAcpSnapshot.mockResolvedValue(snapshot);
+    const store = useWorkbenchStore();
+    store.workspaces = [snapshot.summary];
+    store.inputRequests = { [input.id]: input };
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/w/:workspaceId/input/:inputRequestId', component: WorkspaceInputDrawer }],
+    });
+    await router.push('/w/workspace-a/input/input-1');
+    let wrapper = mount(WorkspaceInputDrawer, { global: { plugins: [pinia, router] } });
+    await flushPromises();
+    await wrapper.get('input[value="Allow"]').setValue(true);
+    wrapper.unmount();
+    wrapper = mount(WorkspaceInputDrawer, { global: { plugins: [pinia, router] } });
+    await flushPromises();
+    expect((wrapper.get('input[value="Allow"]').element as HTMLInputElement).checked).toBe(true);
+    wrapper.unmount();
+  });
   it('acknowledges only the exact attention revision and waits for authoritative submit status', async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

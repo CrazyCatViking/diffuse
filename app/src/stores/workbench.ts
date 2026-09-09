@@ -22,6 +22,7 @@ import {
   type WorkspaceUiStateRecord,
 } from '../lib/workbenchContract';
 import type { WorkspaceRouteState } from '../lib/workspaceRoutes';
+import { sanitizeAcpFormDraft, type AcpFormDraft } from '../lib/acpForm';
 
 const workbenchUiStorageKey = 'diffuse.workbench.ui.v1';
 const maxPinnedResults = 500;
@@ -51,6 +52,11 @@ export type WorkspaceUiState = {
     replies?: Record<string, string>;
   };
   inputDrafts?: Record<string, string>;
+  inputFormDrafts?: Record<string, AcpFormDraft>;
+  agentDrafts?: Record<string, string>;
+  agentPromptRequests?: Record<string, { text: string; requestId: string }>;
+  reviewAgentAdapter?: string;
+  reviewAcpBindings?: Record<string, import('./reviewAcp').ReviewAcpBinding>;
   cursor?: unknown;
   logicalFocus?: string;
   activityRevision?: number;
@@ -94,6 +100,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   let eventQueue: Promise<void> = Promise.resolve();
   const pendingUiSaves = new Map<string, PendingUiSave>();
   const uiSavePromises = new Map<string, Promise<void>>();
+  const summarySequences = new Map<string, number>();
 
   const initialize = async (handler: ActivationHandler) => {
     activationHandler = handler;
@@ -218,26 +225,62 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const inputDraftKey = (request: Pick<InputRequest, 'id' | 'revision'>) => `${request.id}:${request.revision}`;
 
   const inputDraft = (request: InputRequest) => {
+    if (request.status !== 'pending' || request.kind === 'authentication' || request.response?.secret) return '';
     const key = inputDraftKey(request);
-    return transientInputDrafts.value[key] ?? uiState(request.workspaceId).inputDrafts?.[key] ?? '';
+    return transientInputDrafts.value[`${request.workspaceId}:${key}`] ?? uiState(request.workspaceId).inputDrafts?.[key] ?? '';
   };
 
   const saveInputDraft = (request: InputRequest, value: string) => {
-    if (request.kind === 'authentication' || request.response?.secret) return;
+    const current = inputRequests.value[request.id];
+    if (
+      request.status !== 'pending' ||
+      request.kind === 'authentication' ||
+      request.response?.secret ||
+      (current && (current.revision !== request.revision || current.status !== 'pending'))
+    )
+      return;
     const key = inputDraftKey(request);
-    transientInputDrafts.value = { ...transientInputDrafts.value, [key]: value };
+    transientInputDrafts.value = { ...transientInputDrafts.value, [`${request.workspaceId}:${key}`]: value };
     const state = uiState(request.workspaceId);
     saveUiState(request.workspaceId, { ...state, inputDrafts: { ...state.inputDrafts, [key]: value } });
   };
 
+  const inputFormDraft = (request: InputRequest): AcpFormDraft =>
+    request.status === 'pending' && request.kind === 'question' && !request.response?.secret
+      ? (uiState(request.workspaceId).inputFormDrafts?.[inputDraftKey(request)] ?? {})
+      : {};
+  const saveInputFormDraft = (request: InputRequest, schema: unknown, values: unknown) => {
+    const current = inputRequests.value[request.id];
+    if (
+      request.status !== 'pending' ||
+      request.kind !== 'question' ||
+      request.response?.secret ||
+      (current && (current.revision !== request.revision || current.status !== 'pending'))
+    )
+      return;
+    const state = uiState(request.workspaceId);
+    saveUiState(request.workspaceId, {
+      ...state,
+      inputFormDrafts: { ...state.inputFormDrafts, [inputDraftKey(request)]: sanitizeAcpFormDraft(schema, values) },
+    });
+  };
+
   const clearInputDraft = (request: InputRequest) => {
     const key = inputDraftKey(request);
-    transientInputDrafts.value = Object.fromEntries(Object.entries(transientInputDrafts.value).filter(([entry]) => entry !== key));
+    transientInputDrafts.value = Object.fromEntries(
+      Object.entries(transientInputDrafts.value).filter(([entry]) => entry !== `${request.workspaceId}:${key}`),
+    );
     const state = uiState(request.workspaceId);
-    if (!state.inputDrafts?.[key]) return;
+    if (!state.inputDrafts?.[key] && !state.inputFormDrafts?.[key]) return;
     const inputDrafts = { ...state.inputDrafts };
+    const inputFormDrafts = { ...state.inputFormDrafts };
     delete inputDrafts[key];
-    saveUiState(request.workspaceId, { ...state, inputDrafts: Object.keys(inputDrafts).length > 0 ? inputDrafts : undefined });
+    delete inputFormDrafts[key];
+    saveUiState(request.workspaceId, {
+      ...state,
+      inputDrafts: Object.keys(inputDrafts).length > 0 ? inputDrafts : undefined,
+      inputFormDrafts: Object.keys(inputFormDrafts).length ? inputFormDrafts : undefined,
+    });
   };
 
   const hasPendingInput = (workspaceId: string) =>
@@ -245,7 +288,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
 
   const hasInputDraft = (workspaceId: string) =>
     Object.values(inputRequests.value).some(
-      (request) => request.workspaceId === workspaceId && request.status === 'pending' && inputDraft(request).trim().length > 0,
+      (request) =>
+        request.workspaceId === workspaceId &&
+        request.status === 'pending' &&
+        (inputDraft(request).trim().length > 0 || Object.keys(inputFormDraft(request)).length > 0),
     );
 
   const acknowledgeAttention = async (attentionId: string, revision: number) => {
@@ -330,6 +376,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       return;
     }
     if (event.kind === 'workspace/added' || event.kind === 'workspace/summaryChanged') {
+      summarySequences.set(event.workspaceId, event.sequence);
       upsertSummary(event.payload);
       return;
     }
@@ -338,6 +385,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       return;
     }
     if (event.kind === 'workspace/activated') {
+      summarySequences.set(event.workspaceId, event.sequence);
       commandGeneration += 1;
       upsertSummary(event.payload.summary);
       await dispatchActivation(event.payload);
@@ -346,6 +394,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     const workspace = workspaces.value.find((item) => item.workspaceId === event.workspaceId);
     if (!workspace || workspace.workspaceGeneration !== event.workspaceGeneration) return;
     if (event.kind === 'workspace/attentionChanged') {
+      summarySequences.set(event.workspaceId, event.sequence);
       applyAttentionItem(event.payload.item);
       upsertSummary(event.payload.summary);
       if (event.payload.item.kind === 'error' && event.payload.item.status === 'unread') {
@@ -371,6 +420,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   };
 
   const applySnapshot = (snapshot: WorkbenchSnapshot) => {
+    summarySequences.clear();
+    for (const workspace of snapshot.workspaces) summarySequences.set(workspace.workspaceId, snapshot.sequence);
     workspaces.value = [...snapshot.workspaces];
     persistedRailOrder.value = workspaces.value.map((workspace) => workspace.workspaceId);
     activeWorkspaceId.value = snapshot.activeWorkspaceId;
@@ -438,11 +489,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   };
 
   const removeSummary = (workspaceId: string) => {
-    const removedInputIds = new Set(
-      Object.values(inputRequests.value)
-        .filter((request) => request.workspaceId === workspaceId)
-        .map((request) => request.id),
-    );
+    summarySequences.delete(workspaceId);
     workspaces.value = workspaces.value.filter((workspace) => workspace.workspaceId !== workspaceId);
     attentionItems.value = Object.fromEntries(Object.entries(attentionItems.value).filter(([, item]) => item.workspaceId !== workspaceId));
     inputRequests.value = Object.fromEntries(
@@ -452,7 +499,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     delete uiByWorkspaceId.value[workspaceId];
     delete dirtyUiByWorkspaceId.value[workspaceId];
     transientInputDrafts.value = Object.fromEntries(
-      Object.entries(transientInputDrafts.value).filter(([key]) => !removedInputIds.has(key.slice(0, key.lastIndexOf(':')))),
+      Object.entries(transientInputDrafts.value).filter(([key]) => !key.startsWith(`${workspaceId}:`)),
     );
     if (activeWorkspaceId.value === workspaceId) activeWorkspaceId.value = null;
     persistedRailOrder.value = workspaces.value.map((workspace) => workspace.workspaceId);
@@ -501,7 +548,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     const prefix = `${request.id}:`;
     transientInputDrafts.value = Object.fromEntries(
       Object.entries(transientInputDrafts.value).filter(
-        ([key]) => !key.startsWith(prefix) || (request.status === 'pending' && key === inputDraftKey(request)),
+        ([key]) =>
+          !key.startsWith(`${request.workspaceId}:${prefix}`) ||
+          (request.status === 'pending' && key === `${request.workspaceId}:${inputDraftKey(request)}`),
       ),
     );
     const state = uiState(request.workspaceId);
@@ -510,10 +559,20 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         ([key]) => !key.startsWith(prefix) || (request.status === 'pending' && key === inputDraftKey(request)),
       ),
     );
-    if (Object.keys(inputDrafts).length === Object.keys(state.inputDrafts ?? {}).length) return;
+    const inputFormDrafts = Object.fromEntries(
+      Object.entries(state.inputFormDrafts ?? {}).filter(
+        ([key]) => !key.startsWith(prefix) || (request.status === 'pending' && key === inputDraftKey(request)),
+      ),
+    );
+    if (
+      Object.keys(inputDrafts).length === Object.keys(state.inputDrafts ?? {}).length &&
+      Object.keys(inputFormDrafts).length === Object.keys(state.inputFormDrafts ?? {}).length
+    )
+      return;
     saveUiState(request.workspaceId, {
       ...state,
       inputDrafts: Object.keys(inputDrafts).length > 0 ? inputDrafts : undefined,
+      inputFormDrafts: Object.keys(inputFormDrafts).length > 0 ? inputFormDrafts : undefined,
     });
   };
 
@@ -628,7 +687,52 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     );
   };
 
+  const refreshAgentAttention = async () => {
+    const snapshot = await window.diffuse.getWorkbenchSnapshot();
+    const live = new Set(
+      snapshot.workspaces
+        .filter((s) => workspaces.value.some((w) => w.workspaceId === s.workspaceId && w.workspaceGeneration === s.workspaceGeneration))
+        .map((s) => s.workspaceId),
+    );
+    // ACP and workbench sequences are independent. A newer UI event must not discard
+    // durable input/attention records; merge their entity revisions instead.
+    for (const summary of snapshot.workspaces)
+      if (live.has(summary.workspaceId) && snapshot.sequence >= (summarySequences.get(summary.workspaceId) ?? 0)) {
+        summarySequences.set(summary.workspaceId, snapshot.sequence);
+        upsertSummary(summary);
+      }
+    for (const item of snapshot.attentionItems) {
+      if (!live.has(item.workspaceId)) continue;
+      const previous = attentionItems.value[item.id];
+      const applied = applyAttentionItem(item);
+      if (applied && item.status === 'unread' && (!previous || previous.revision < item.revision))
+        announce(
+          `${item.kind === 'input' ? 'Input required' : item.kind === 'error' ? 'Agent error' : 'Agent completed'} in ${workspaces.value.find((w) => w.workspaceId === item.workspaceId)?.displayName}.`,
+        );
+    }
+    for (const input of snapshot.inputRequests) if (live.has(input.workspaceId)) applyInputRequest(input);
+    for (const workspaceId of live) {
+      const workspace = workspaces.value.find((w) => w.workspaceId === workspaceId)!;
+      const items = Object.values(attentionItems.value).filter(
+        (item) => item.workspaceId === workspaceId && ['unread', 'acknowledged'].includes(item.status),
+      );
+      const inputRequired = items.filter((item) => item.kind === 'input').length;
+      const errors = items.filter((item) => item.kind === 'error').length;
+      const unread = items.filter((item) => item.kind === 'completion' && item.status === 'unread').length;
+      const running = workspace.attention.running;
+      applyAttentionSummary(workspaceId, {
+        inputRequired,
+        errors,
+        unread,
+        running,
+        total: inputRequired + errors + unread + running,
+        state: inputRequired ? 'input-required' : errors ? 'error' : unread ? 'unread' : running ? 'running' : 'idle',
+      });
+    }
+  };
+
   return {
+    refreshAgentAttention,
     workspaces,
     activeWorkspaceId,
     activeWorkspace,
@@ -656,6 +760,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     saveUiState,
     inputRequest,
     inputDraft,
+    inputFormDraft,
+    saveInputFormDraft,
     saveInputDraft,
     clearInputDraft,
     hasPendingInput,
@@ -680,13 +786,32 @@ function normalizeUiState(state: WorkspaceUiState, requests: Record<string, Inpu
     Object.entries(state.inputDrafts ?? {}).filter(([key]) => {
       const requestId = key.slice(0, key.lastIndexOf(':'));
       const request = requests[requestId];
-      return !request || (request.kind !== 'authentication' && !request.response?.secret);
+      return (
+        !request ||
+        (request.status === 'pending' &&
+          key === `${request.id}:${request.revision}` &&
+          request.kind !== 'authentication' &&
+          !request.response?.secret)
+      );
+    }),
+  );
+  const inputFormDrafts = Object.fromEntries(
+    Object.entries(state.inputFormDrafts ?? {}).filter(([key]) => {
+      const request = requests[key.slice(0, key.lastIndexOf(':'))];
+      return (
+        !request ||
+        (request.status === 'pending' &&
+          key === `${request.id}:${request.revision}` &&
+          request.kind === 'question' &&
+          !request.response?.secret)
+      );
     }),
   );
   return {
     ...state,
     search: state.search ? { ...state.search, pinnedResults: state.search.pinnedResults.slice(0, maxPinnedResults) } : undefined,
     inputDrafts: Object.keys(inputDrafts).length > 0 ? inputDrafts : undefined,
+    inputFormDrafts: Object.keys(inputFormDrafts).length > 0 ? inputFormDrafts : undefined,
   };
 }
 

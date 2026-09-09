@@ -1,4 +1,6 @@
-import type { VersionInfo, ChangedFile, ReviewChatMessage, ReviewThread } from './protocol';
+import type { VersionInfo } from './protocol';
+import type { AcpBridge } from './acpContract';
+import type { ReviewWavesBridge } from './acpReviewWaves';
 import type {
   AttentionMutationResult,
   InputMutationResult,
@@ -22,31 +24,7 @@ export type AttentionNavigationRequest = {
   revision: number;
 };
 
-export type ReviewAgentStartRequest = {
-  context: WorkspaceRequestContext;
-  sessionId: string;
-  files: ChangedFile[];
-};
-
-export type ReviewAgentChatRequest = {
-  context: WorkspaceRequestContext;
-  sessionId: string;
-  thread: ReviewThread;
-  question: string;
-  userMessageId?: string;
-  responseMessageId?: string;
-  chatMessages?: ReviewChatMessage[];
-};
-
-export type ReviewAgentStatus = {
-  running: boolean;
-  runIds?: string[];
-  provider?: string;
-  status?: string;
-  message?: string;
-};
-
-export interface DesktopBridge {
+export interface DesktopBridge extends AcpBridge, ReviewWavesBridge {
   pickRepository(): Promise<string | null>;
   openLspConfig(configPath?: string): Promise<string>;
   getVersion(): Promise<VersionInfo>;
@@ -78,7 +56,4 @@ export interface DesktopBridge {
   workspaceRequest: WorkspaceRequest;
   onWorkbenchEvent(listener: (event: WorkbenchEvent) => void): () => void;
   onAttentionNavigation(listener: (request: AttentionNavigationRequest) => void): () => void;
-  startReviewAgent(request: ReviewAgentStartRequest): Promise<ReviewAgentStatus>;
-  stopReviewAgent(context: WorkspaceRequestContext): Promise<ReviewAgentStatus>;
-  chatWithReviewAgent(request: ReviewAgentChatRequest): Promise<ReviewChatMessage>;
 }

@@ -1,4 +1,4 @@
-export const settingsSectionIds = ['appearance', 'keyboard', 'languageServers', 'syntaxGrammars'] as const;
+export const settingsSectionIds = ['appearance', 'keyboard', 'languageServers', 'syntaxGrammars', 'agentAdapters'] as const;
 
 export type SettingsSectionId = (typeof settingsSectionIds)[number];
 export type SettingsSectionGroupId = 'workbench' | 'languages';
@@ -17,6 +17,13 @@ export const settingsSectionGroups: { id: SettingsSectionGroupId; label: string 
 ];
 
 export const settingsSections: SettingsSection[] = [
+  {
+    id: 'agentAdapters',
+    group: 'workbench',
+    label: 'Agent Adapters',
+    description: 'Trusted ACP executables, environment allowlists, and host sharing.',
+    keywords: ['acp', 'agent', 'adapter', 'authentication', 'multiplex'],
+  },
   {
     id: 'appearance',
     group: 'workbench',

@@ -166,7 +166,7 @@ const openAttention = async (item: AttentionItem) => {
     router,
     selectReviewSession: review.selectSession,
   });
-  await workbench.acknowledgeAttention(item.id, item.revision);
+  if (item.target.kind !== 'agent') await workbench.acknowledgeAttention(item.id, item.revision);
 };
 
 const retryRestore = async (workspaceId: string) => {

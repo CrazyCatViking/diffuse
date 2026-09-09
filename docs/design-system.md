@@ -25,7 +25,7 @@ The main design system sources are:
 - `app/src/components/ui/Toolbar.vue` for horizontal application bars.
 - `app/src/components/ui/EmptyState.vue` for loading, empty, and unavailable states.
 - `app/src/components/ui/TreeList.vue` for collapsible hierarchical lists with feature-owned row content.
-- Feature components under `app/src/components/diff/`, `app/src/components/review/`, `app/src/components/changed-files/`, `app/src/components/settings/`, and `app/src/components/repositories/` for domain-specific UI patterns.
+- Feature components under `app/src/components/agents/`, `app/src/components/workbench/`, `app/src/components/diff/`, `app/src/components/review/`, `app/src/components/changed-files/`, `app/src/components/settings/`, and `app/src/components/repositories/` for domain-specific UI patterns.
 
 Shared primitives should stay generic. Diff-specific and review-specific concepts should stay in feature components unless they are reused across unrelated surfaces.
 
@@ -179,6 +179,24 @@ Acknowledgement is exact and focus-gated. The input surface may acknowledge only
 
 Workbench layout sizes use `--size-workspace-rail`, `--size-workspace-rail-narrow`, `--size-workspace-rail-item`, and `--size-workspace-status`. Keep workspace controls under `app/src/components/workbench/`; they are application-domain components rather than generic UI primitives. Durable ownership and status behavior are specified in [`review-spec-v2.md`](review-spec-v2.md) and [`agent-workbench-design.md`](agent-workbench-design.md).
 
+### Agent Sessions
+
+[`AgentSessionsView.vue`](../app/src/components/agents/AgentSessionsView.vue) is the canonical session/history surface at `/w/:workspaceId/agents/:agentSessionId?`, not an always-mounted chat sidebar. Use the existing `Toolbar`, `Panel`, `Badge`, `Button` and `EmptyState` primitives. The session list and conversation form a two-column layout that stacks at `900px`; preserve `min-width: 0`, wrapped text and the main workspace's single-heavy-view model.
+
+- Session buttons show adapter, review/chat kind, state and a short identity; use `pressed` selection rather than color alone. Keep unavailable/unsupported adapter options visibly labelled and disabled. No automatic selection or retired legacy-runner option.
+- Keep session state, continuity and permission policy visible. A continuity reset explains that earlier local history is not remote continuity. Reconnect/load is an explicit action for failed/closed sessions, not a spinner promising automatic retry.
+- Distinguish Queue prompt, Cancel queued prompt, Cancel active turn and Close session. Closing asks for confirmation and cancels queued work; mode controls are available only for advertised modes when ready. Do not collapse these operations into one ambiguous Stop action.
+- Render transcript text as text with preserved whitespace/wrapping, never peer HTML. Plans, tools and activity use collapsible details and descriptive statuses. Thought chunks are excluded; text-only presentation must not imply multimodal support.
+- Pending input buttons navigate to the canonical input drawer, not a second independent permission form inside chat. Session attention can be acknowledged only after selected history loads and the connected, visible owning surface has window/document focus; preserve exact revision checks.
+
+`useAcpStore` owns snapshots and the active history projection, while compact prompt drafts/request IDs and focus/route state use workspace UI restoration. Keep workspace generation, view epoch, history revision and ACP/workbench stream cursors separate when loading or replacing history. A replayed transcript must replace its projection rather than visibly duplicate messages. Unmounting a view must not cancel a session or main-owned review wave.
+
+### Agent Inputs
+
+[`AgentInputForm.vue`](../app/src/components/agents/AgentInputForm.vue) stays feature-local inside `WorkspaceInputDrawer.vue`. Use labelled native fields and fieldsets for supported text, boolean, numeric, enum and string multi-select schemas. Show required markers, descriptions, length/range/selection bounds, and visible validation errors. Permission choices display the provider's option name and kind, not just opaque IDs. Do not preselect or invent an approval.
+
+Unsupported schemas show an alert and a cancellation path, not a generic text box that bypasses validation. Keep Submit response, Decline form and Cancel request distinct; `response-submitted` remains unresolved until its enclosing ACP operation succeeds. Decline is a form action, not a new durable status. Forms are explicitly non-secret: show the credentials warning, refuse secret/write-only schemas, and restore only schema-sanitized non-secret draft values for the matching request/revision. Typed authentication inputs retain Phase 5 redaction/no-draft handling and are not an ACP authentication feature.
+
 ### Diff Viewer
 
 The diff viewer is optimized for scan speed.
@@ -222,6 +240,12 @@ Thread navigation should be request-based, not persistent selection state. Click
 
 Avoid reintroducing an always-visible review side panel or drawer that competes with diff exploration space. Keep the overview reachable from workspace navigation instead.
 
+[`ReviewAgentControls.vue`](../app/src/components/review/ReviewAgentControls.vue) and `ReviewAgentPicker.vue` present native ACP review execution. Start requires an explicitly configured adapter; explain HTTP MCP support, deny-all review permissions and trusted-executable limits. Review controls show run status, completed/total shards, assigned file count, Stop all ACP review shards and a separate Stop and dismiss failed review action. Individual sessions link to history/reconnect. Historical v1 runs appear in a read-only details section, never as a legacy execution fallback.
+
+The renderer presents wave plans; [`AcpReviewWaves`](../app/electron/acpReviewWaves.ts) in Electron main schedules and persists them. Never drive later-wave admission from a mounted component or overwrite the reserved `acpReviewWaves` UI-state key from renderer saves. Keep queued shards visible even when no ACP turn is currently running. File assignments are immutable server-side authorization, not an editable UI filter. Scope progress merges are authoritative core results; do not mark the entire review complete when only one shard finishes.
+
+Inline AI questions remain inside `InlineReviewBox.vue` with the same explicit adapter picker and selected file/thread context. Use the stored ACP binding/history rather than a second transcript file or a synthetic provider reply. Adapter errors stay visible; do not silently substitute another provider or automatically replay an interrupted question. Preserve normal manual-review drafting and thread navigation.
+
 ### Settings
 
 Settings should use the same status language as the diff viewer:
@@ -236,6 +260,8 @@ Use shared buttons and badge-like state chips. Keep install commands in `code` b
 Settings uses a feature-local shell with grouped navigation and one focused content pane. Keep settings sections under `app/src/components/settings/` unless a component is generic enough for unrelated features. Add new settings by extending the section registry and creating a section component; avoid returning to a single page that loads every setting and integration at once.
 
 Settings content should lazy-load expensive integration state from the active section. For example, language server and Tree-sitter grammar RPC calls belong in their section components, not in the settings shell.
+
+[`AgentAdaptersSettings.vue`](../app/src/components/settings/AgentAdaptersSettings.vue) uses this shell for explicit adapter metadata: ID, absolute executable, literal arguments one per line, environment key names (never values), authentication profile reference and opt-in multiplexing. Availability badges mean configured-file/platform support, not a successful provider probe or platform runtime certification. Keep the trusted-executable warning, no-secrets guidance and migration notice visible. Legacy provider/model/agent overrides require explicit supported arguments; never guess a translation. Old `.opencode/tools/diffuse_review.ts` is preserved, but users must disable/remove it if auto-loaded because its Node bridge is retired. Do not delete repository configuration as an implicit settings side effect.
 
 ## Building New UI
 

@@ -18,7 +18,7 @@ use napi::bindgen_prelude::{AsyncTask, Env, JsFunction, Task};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, JsError, JsUnknown, Result, Status};
 use napi_derive::napi;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const EVENT_SUBSCRIPTION_CAPACITY: usize = 256;
@@ -283,7 +283,7 @@ impl ResolvedOptions {
 
 struct EventDrain {
     stop: Arc<AtomicBool>,
-    subscription: Mutex<Option<EventSubscription>>,
+    subscription: Arc<Mutex<Option<EventSubscription>>>,
     callback: Mutex<Option<EventCallback>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -294,17 +294,29 @@ impl EventDrain {
         mut callback: EventCallback,
         env: &Env,
         health: Arc<HealthState>,
+        acp_stream: bool,
+        recovery: Option<AppCore>,
     ) -> std::result::Result<Self, NativeFailure> {
         callback.unref(env).map_err(initialization_failure)?;
         let callback_control = callback.clone();
         let worker_subscription = subscription.clone();
+        let subscription = Arc::new(Mutex::new(Some(subscription)));
+        let worker_slot = subscription.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let thread = thread::Builder::new()
             .name("diffuse-node-events".to_owned())
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    drain_events(worker_subscription, callback, &worker_stop, &health)
+                    drain_events(
+                        worker_subscription,
+                        callback,
+                        &worker_stop,
+                        &health,
+                        acp_stream,
+                        recovery,
+                        &worker_slot,
+                    )
                 }));
                 if result.is_err() {
                     health.mark_degraded(NativeFailure::new(
@@ -316,7 +328,7 @@ impl EventDrain {
             .map_err(|error| initialization_failure(error.to_string()))?;
         Ok(Self {
             stop,
-            subscription: Mutex::new(Some(subscription)),
+            subscription,
             callback: Mutex::new(Some(callback_control)),
             thread: Mutex::new(Some(thread)),
         })
@@ -366,6 +378,7 @@ struct AddonInner {
     runtime: tokio::runtime::Runtime,
     health: Arc<HealthState>,
     events: EventDrain,
+    acp_events: Option<EventDrain>,
     restoration: Arc<RestorationState>,
 }
 
@@ -402,6 +415,9 @@ impl Drop for AddonInner {
     fn drop(&mut self) {
         // Abort the Node boundary before core fields drop so blocked event publishers are released.
         self.events.abort_and_join();
+        if let Some(events) = &self.acp_events {
+            events.abort_and_join();
+        }
     }
 }
 
@@ -409,6 +425,7 @@ impl AddonInner {
     fn build(
         options: ResolvedOptions,
         callback: JsFunction,
+        acp_callback: Option<JsFunction>,
         env: &Env,
     ) -> std::result::Result<Self, NativeFailure> {
         let database = if options.in_memory {
@@ -437,12 +454,31 @@ impl AddonInner {
             })
             .map_err(initialization_failure)?;
         let health = Arc::new(HealthState::default());
-        let events = EventDrain::start(subscription, callback, env, health.clone())?;
+        let events = EventDrain::start(subscription, callback, env, health.clone(), false, None)?;
+        let acp_events = if let Some(callback) = acp_callback {
+            let (_, subscription) = core.acp_events().subscribe(EVENT_SUBSCRIPTION_CAPACITY);
+            let callback = callback
+                .create_threadsafe_function(EVENT_CALLBACK_QUEUE_CAPACITY, |context| {
+                    Ok(vec![context.value])
+                })
+                .map_err(initialization_failure)?;
+            Some(EventDrain::start(
+                subscription,
+                callback,
+                env,
+                health.clone(),
+                true,
+                Some(core.clone()),
+            )?)
+        } else {
+            None
+        };
         Ok(Self {
             core,
             runtime,
             health,
             events,
+            acp_events,
             restoration: Arc::new(RestorationState::default()),
         })
     }
@@ -488,7 +524,10 @@ impl AddonInner {
                         Err(_) => Err(NativeFailure::panic()),
                     };
                     let event_stop = catch_unwind(AssertUnwindSafe(|| {
-                        inner.events.stop_and_join(&inner.health)
+                        inner.events.stop_and_join(&inner.health);
+                        if let Some(events) = &inner.acp_events {
+                            events.stop_and_join(&inner.health);
+                        }
                     }));
                     let result = if event_stop.is_err() && result.is_ok() {
                         Err(NativeFailure::new(
@@ -520,6 +559,7 @@ impl AddonInner {
 #[napi(object)]
 pub struct DiffuseCoreOptions {
     pub on_event_batch: JsFunction,
+    pub on_acp_event_batch: Option<JsFunction>,
     pub database_path: Option<String>,
     pub syntax_runner_path: Option<String>,
 }
@@ -547,6 +587,122 @@ impl DiffuseCore {
     pub fn get_workbench_snapshot(&self) -> AsyncTask<CoreTask> {
         self.task("getWorkbenchSnapshot", |inner| {
             serialize(inner.core.workbench_snapshot()?).map_err(Into::into)
+        })
+    }
+
+    #[napi(js_name = "saveAcpAdapter")]
+    pub fn save_acp_adapter(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("saveAcpAdapter", move |inner| {
+            inner.core.save_acp_adapter(acp_request(request)?)?;
+            Ok(Value::Null)
+        })
+    }
+    #[napi(js_name = "discoverAcpAdapters")]
+    pub fn discover_acp_adapters(&self) -> AsyncTask<CoreTask> {
+        self.task("discoverAcpAdapters", |inner| {
+            serialize(inner.core.discover_acp_adapters()?).map_err(Into::into)
+        })
+    }
+    #[napi(js_name = "openAcpSession")]
+    pub fn open_acp_session(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("openAcpSession", move |inner| {
+            let request = acp_open_request(request)?;
+            Ok(json!({"sessionId":inner.core.launch_acp_session(request)?}))
+        })
+    }
+    #[napi(js_name = "queueAcpPrompt")]
+    pub fn queue_acp_prompt(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("queueAcpPrompt", move |inner| {
+            let request: AcpPromptRequest = acp_request(request)?;
+            serialize(inner.core.queue_acp_prompt(
+                &request.context,
+                &request.session_id,
+                &request.text,
+            )?)
+            .map_err(Into::into)
+        })
+    }
+    #[napi(js_name = "cancelAcpTurn")]
+    pub fn cancel_acp_turn(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("cancelAcpTurn",move |inner| {let request:AcpQueuedTurnRequest=acp_request(request)?;Ok(json!({"cancelled":inner.core.cancel_queued_acp_turn(&request.context,&request.session_id,&request.turn_id)?}))})
+    }
+    #[napi(js_name = "cancelAcpSession")]
+    pub fn cancel_acp_session(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("cancelAcpSession", move |inner| {
+            let request: AcpSessionRequest = acp_request(request)?;
+            inner
+                .core
+                .cancel_acp_session(&request.context, &request.session_id)?;
+            Ok(Value::Null)
+        })
+    }
+    #[napi(js_name = "closeAcpSession")]
+    pub fn close_acp_session(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("closeAcpSession", move |inner| {
+            let request: AcpSessionRequest = acp_request(request)?;
+            inner
+                .core
+                .stop_acp_session(&request.context, &request.session_id)?;
+            Ok(Value::Null)
+        })
+    }
+
+    #[napi(js_name = "setAcpMode")]
+    pub fn set_acp_mode(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("setAcpMode", move |inner| {
+            let request: AcpModeRequest = acp_request(request)?;
+            inner
+                .core
+                .set_acp_mode(&request.context, &request.session_id, &request.mode_id)
+                .map_err(Into::into)
+        })
+    }
+    #[napi(js_name = "getAcpSnapshot")]
+    pub fn get_acp_snapshot(&self, context: Value) -> AsyncTask<CoreTask> {
+        self.task("getAcpSnapshot", move |inner| {
+            inner
+                .core
+                .acp_workspace_snapshot(&acp_request(context)?)
+                .map_err(Into::into)
+        })
+    }
+    #[napi(js_name = "getAcpHistory")]
+    pub fn get_acp_history(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("getAcpHistory", move |inner| {
+            let request: AcpHistoryRequest = acp_request(request)?;
+            serialize(inner.core.acp_history(
+                &request.context,
+                &request.session_id,
+                request.after,
+            )?)
+            .map_err(Into::into)
+        })
+    }
+    #[napi(js_name = "getAcpActivity")]
+    pub fn get_acp_activity(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("getAcpActivity", move |inner| {
+            let request: AcpHistoryRequest = acp_request(request)?;
+            serialize(inner.core.acp_activity(
+                &request.context,
+                &request.session_id,
+                request.after,
+            )?)
+            .map_err(Into::into)
+        })
+    }
+    #[napi(js_name = "readAcpEvents")]
+    pub fn read_acp_events(&self, request: Value) -> AsyncTask<CoreTask> {
+        self.task("readAcpEvents", move |inner| {
+            let request: AcpReplayRequest = acp_request(request)?;
+            if request.after_sequence > 9_007_199_254_740_991 {
+                return Err(NativeFailure::new(
+                    "InvalidParams",
+                    "afterSequence exceeds safe integer range",
+                ));
+            }
+            let future = request.after_sequence > inner.core.acp_events().current_sequence();
+            let replay = inner.core.acp_events().replay_after(request.after_sequence);
+            Ok(json!({"events":replay.events,"requiresSnapshot":future||replay.requires_snapshot}))
         })
     }
 
@@ -803,12 +959,13 @@ pub fn create_core(env: Env, options: DiffuseCoreOptions) -> Result<DiffuseCore>
 fn create_addon(env: Env, options: DiffuseCoreOptions) -> Result<DiffuseCore> {
     let DiffuseCoreOptions {
         on_event_batch,
+        on_acp_event_batch,
         database_path,
         syntax_runner_path,
     } = options;
     let options = ResolvedOptions::new(database_path, syntax_runner_path);
     match catch_unwind(AssertUnwindSafe(|| {
-        AddonInner::build(options, on_event_batch, &env)
+        AddonInner::build(options, on_event_batch, on_acp_event_batch, &env)
     })) {
         Ok(Ok(inner)) => {
             let inner = Arc::new(inner);
@@ -817,6 +974,145 @@ fn create_addon(env: Env, options: DiffuseCoreOptions) -> Result<DiffuseCore> {
         }
         Ok(Err(failure)) => Err(safe_napi_error(&env, failure)),
         Err(_) => Err(safe_napi_error(&env, NativeFailure::panic())),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpSessionRequest {
+    context: WorkspaceRequestContext,
+    session_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpModeRequest {
+    context: WorkspaceRequestContext,
+    session_id: String,
+    mode_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpPromptRequest {
+    context: WorkspaceRequestContext,
+    session_id: String,
+    text: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpQueuedTurnRequest {
+    context: WorkspaceRequestContext,
+    session_id: String,
+    turn_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpHistoryRequest {
+    context: WorkspaceRequestContext,
+    session_id: String,
+    #[serde(default)]
+    after: u64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpReplayRequest {
+    after_sequence: u64,
+}
+
+fn acp_request<T: serde::de::DeserializeOwned>(
+    value: Value,
+) -> std::result::Result<T, NativeFailure> {
+    if value.to_string().len() > 256 * 1024 {
+        return Err(NativeFailure::new(
+            "InvalidParams",
+            "ACP request exceeds limit",
+        ));
+    }
+    serde_json::from_value(value).map_err(|error| invalid_params("ACP request", error))
+}
+
+fn acp_open_request(
+    value: Value,
+) -> std::result::Result<diffuse_core_lib::acp::OpenSessionRequest, NativeFailure> {
+    let request: diffuse_core_lib::acp::OpenSessionRequest = acp_request(value)?;
+    request.validate()?;
+    Ok(request)
+}
+
+#[cfg(test)]
+mod acp_contract_tests {
+    use super::*;
+    fn context() -> Value {
+        json!({"workspaceId":"00000000-0000-4000-8000-000000000001","workspaceGeneration":"00000000-0000-4000-8000-000000000002","requestId":"request"})
+    }
+    #[test]
+    fn review_shard_request_is_optional_bounded_and_requires_review_session() {
+        let whole = acp_open_request(
+            json!({"context":context(),"adapterId":"agent","reviewSessionId":"review"}),
+        )
+        .unwrap();
+        assert!(whole.review_file_ids.is_none());
+        let base = json!({"context":context(),"adapterId":"agent","reviewSessionId":"review","reviewFileIds":["src/a.rs","src/b.rs"]});
+        assert_eq!(
+            acp_open_request(base.clone())
+                .unwrap()
+                .review_file_ids
+                .unwrap(),
+            vec!["src/a.rs", "src/b.rs"]
+        );
+        for files in [
+            json!(null),
+            json!([]),
+            json!(["a", "a"]),
+            json!([1]),
+            json!([""]),
+            json!(["x".repeat(4097)]),
+            json!((0..1025).map(|i| i.to_string()).collect::<Vec<_>>()),
+        ] {
+            let mut invalid = base.clone();
+            invalid["reviewFileIds"] = files;
+            assert!(acp_open_request(invalid).is_err());
+        }
+        let mut invalid = base;
+        invalid.as_object_mut().unwrap().remove("reviewSessionId");
+        assert!(acp_open_request(invalid).is_err());
+    }
+    #[test]
+    fn acp_requests_have_explicit_scope_and_reject_unknown_fields() {
+        let valid = json!({"context":context(),"sessionId":"session","text":"hello"});
+        let request: AcpPromptRequest = acp_request(valid.clone()).unwrap();
+        assert_eq!(request.session_id, "session");
+        assert_eq!(request.context.request_id, "request");
+        let mut invalid = valid;
+        invalid["workspaceId"] = json!("foreign");
+        assert!(acp_request::<AcpPromptRequest>(invalid).is_err());
+        assert!(acp_request::<AcpSessionRequest>(json!({"sessionId":"session"})).is_err());
+        assert!(
+            acp_request::<AcpHistoryRequest>(
+                json!({"context":context(),"sessionId":"session","after":-1})
+            )
+            .is_err()
+        );
+        assert!(
+            acp_request::<AcpPromptRequest>(
+                json!({"context":context(),"sessionId":"session","text":"x".repeat(256*1024)})
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn queue_result_keeps_camel_case_contract_and_explicit_terminal_reason() {
+        let turn = diffuse_core_lib::acp::QueuedTurn {
+            id: "turn".into(),
+            session_id: "session".into(),
+            request_id: "request".into(),
+            text: "hello".into(),
+            state: "completed".into(),
+            stop_reason: Some("end_turn".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(turn).unwrap(),
+            json!({"id":"turn","sessionId":"session","requestId":"request","text":"hello","state":"completed","stopReason":"end_turn"})
+        );
     }
 }
 
@@ -922,16 +1218,41 @@ impl Task for CoreTask {
 }
 
 fn drain_events(
-    subscription: EventSubscription,
+    mut subscription: EventSubscription,
     callback: EventCallback,
     stop: &AtomicBool,
     health: &HealthState,
+    acp_stream: bool,
+    recovery: Option<AppCore>,
+    slot: &Mutex<Option<EventSubscription>>,
 ) {
     while !stop.load(Ordering::Acquire) {
         let first = match subscription.recv_timeout(EVENT_IDLE_WAIT) {
             Ok(event) => event,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if acp_stream && health.state.load(Ordering::Acquire) < STATE_STOPPING {
+                    if let Some(core) = &recovery {
+                        let (sequence, replacement) =
+                            core.acp_events().subscribe(EVENT_SUBSCRIPTION_CAPACITY);
+                        *lock_unpoisoned(slot) = Some(replacement.clone());
+                        subscription = replacement;
+                        if callback.call(
+                            json!({"events":[],"requiresSnapshot":true,"sequence":sequence}),
+                            ThreadsafeFunctionCallMode::Blocking,
+                        ) == Status::Closing
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    callback.call(
+                        json!({"events":[],"requiresSnapshot":true}),
+                        ThreadsafeFunctionCallMode::Blocking,
+                    );
+                }
+                break;
+            }
         };
         let batch = collect_event_batch(first, |timeout| subscription.recv_timeout(timeout));
         if stop.load(Ordering::Acquire) {
@@ -949,6 +1270,11 @@ fn drain_events(
         };
         // Only this dedicated drain thread may wait for bounded TSFN capacity. Core workers and
         // core lifecycle locks never perform this blocking Node delivery call.
+        let value = if acp_stream {
+            json!({"events":value,"requiresSnapshot":false})
+        } else {
+            value
+        };
         match callback.call(value, ThreadsafeFunctionCallMode::Blocking) {
             Status::Ok => {}
             status => {

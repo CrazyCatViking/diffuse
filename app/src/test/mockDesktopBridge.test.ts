@@ -23,14 +23,13 @@ describe('mock DesktopBridge', () => {
     expect(listener).toHaveBeenCalledWith(event);
   });
 
-  it('provides a deterministic agent lifecycle', async () => {
+  it('exposes ACP without retired Node runner entrypoints', async () => {
     const bridge = createMockDesktopBridge();
     const context = { workspaceId: 'workspace-1', workspaceGeneration: 'generation-1', requestId: 'request-1' };
-    const request = { context, sessionId: 'review-1', files: [] };
-
-    await expect(bridge.startReviewAgent(request)).resolves.toEqual({ running: true });
-    await expect(bridge.stopReviewAgent(context)).resolves.toEqual({ running: false });
-    expect(bridge.startReviewAgent).toHaveBeenCalledWith(request);
+    await expect(bridge.getAcpReviewWaves(context)).resolves.toEqual([]);
+    expect('startReviewAgent' in bridge).toBe(false);
+    expect('chatWithReviewAgent' in bridge).toBe(false);
+    expect(bridge.openAcpSession).toBeTypeOf('function');
   });
 
   it('supports Phase 5 workspace persistence commands', async () => {

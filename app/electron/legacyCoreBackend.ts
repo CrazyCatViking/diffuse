@@ -1,4 +1,5 @@
 import type { CoreMethods } from '../src/lib/coreContract';
+import { AcpBackend } from './acpBackend';
 import type {
   AnswerInputRequest,
   AttentionCasRequest,
@@ -15,11 +16,13 @@ import type {
 import { CoreBackendError, type CoreBackend, type CoreBackendEventListener, type CoreBackendHealth } from './coreBackend';
 import { LegacyWorkspaceRegistry } from './legacyWorkspaceRegistry';
 
-export class LegacyCoreBackend implements CoreBackend {
+export class LegacyCoreBackend extends AcpBackend implements CoreBackend {
   private state: 'running' | 'stopping' | 'stopped' = 'running';
   private shutdownOperation: Promise<void> | null = null;
 
-  constructor(private readonly registry: LegacyWorkspaceRegistry) {}
+  constructor(private readonly registry: LegacyWorkspaceRegistry) {
+    super();
+  }
 
   getVersion() {
     this.requireRunning();
@@ -128,7 +131,7 @@ export class LegacyCoreBackend implements CoreBackend {
     if (this.state === 'stopped') return { status: 'stopped' };
     return {
       status: 'degraded',
-      message: 'Legacy RPC mode does not support durable attention, input, or restore-failure operations',
+      message: 'Legacy RPC mode does not support ACP agents, durable attention, input, or restore-failure operations',
       errorCode: 'UNSUPPORTED_IN_RPC_MODE',
     };
   }

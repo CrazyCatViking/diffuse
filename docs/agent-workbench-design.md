@@ -4,18 +4,18 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented through Phase 5; Phase 6 Rust-only first slice implemented, remainder proposed |
+| Status | Phase 6 current feature scope delivered; real-provider/manual platform validation and later hardening remain |
 | Last updated | 2026-09-07 |
 | Target shell | Electron and Vue |
 | Target core | One application-wide Rust core loaded through N-API |
 | Window model | One primary workbench window with multiple workspaces |
 | Agent protocol | Agent Client Protocol (ACP) with Diffuse tools exposed through MCP |
 
-This document defines the target architecture and user experience and records implementation status by phase. The current implementation through Phase 5 and the first Rust-only Phase 6 ACP slice is documented in [`architecture.md`](architecture.md), with hybrid persistence ownership and schema 3 ACP history in [`review-spec-v2.md`](review-spec-v2.md). The target ACP pooling, resume, discovery, MCP, durable permission delivery, and desktop UI below remain proposals, as do hardening and fallback removal. Phase 6 is not complete.
+This document defines the workbench architecture and records implementation status by phase. Phase 6's current feature scope is delivered beyond first-slice commit `82adf08`: native Agents, adapter settings, scoped review waves/inline chat, queues, explicit reconnect, pooling, forms and MCP, with the desktop Node runner retired. [`architecture.md`](architecture.md) describes runtime boundaries; [`review-spec-v2.md`](review-spec-v2.md) defines current schema 7 literal-ID compatibility, immutable scope, history/incarnations and main-owned wave persistence. Windows Job Objects are implemented and cross-target Clippy verified, not runtime verified. Real-provider/manual Windows/macOS/OS integration and later performance hardening remain unclaimed. Text-only presentation, explicit reconnect and explicit adapter-override migration are current limits, not automatic replay/translation promises.
 
 ## Executive Summary
 
-Diffuse is a single-window workbench for reviewing changes, running the retained review agent, and moving between multiple repositories without losing context. Phase 6 extends it into the target ACP Agent Workbench.
+Diffuse is a single-window workbench for reviewing changes, running native ACP sessions and bounded review waves, and moving between repositories without losing context. Phase 6 replaces desktop Node-agent execution; preserved legacy files are history, not a runnable fallback.
 
 The application creates one primary `BrowserWindow`. Opening another repository adds or activates a workspace inside that window instead of creating another window. A compact workspace rail and searchable workbench overview show all open workspaces, their background activity, and whether any workspace requires user input.
 
@@ -28,7 +28,7 @@ The architecture must satisfy these central rules:
 - Inactive workspaces may continue watching files, running agents, and waiting for input.
 - Every workspace-bound command, result, and event carries explicit workspace identity.
 - Selecting a workspace never accidentally acknowledges or resolves its pending attention.
-- SQLite owns local workbench state and first-slice ACP session/activity history; `.diffuse/reviews` owns portable review artifacts under the hybrid v2 boundary.
+- SQLite owns local workbench state and ACP adapters, sessions, queues, input delivery and history; `.diffuse/reviews` owns portable review artifacts under the hybrid v2 boundary.
 - The Vue renderer depends on a shell-neutral typed bridge, not directly on Electron or N-API.
 
 ## Terminology
@@ -299,7 +299,7 @@ Opening the same canonical worktree root twice activates the existing workspace.
 
 Closing a workspace is different from switching away from it or closing the application window.
 
-If a workspace has active legacy review or chat work, pending input, or unsaved drafts, Close Workspace requires confirmation before stopping work and forcing the close. Cancelling the confirmation keeps the workspace open. Forced close aborts in-flight retained-runner chat and replaces its pending response with a durable cancellation message before workspace removal. If work races with a normal close, a second confirmation is required before it is stopped or changed to `cancelled`.
+If a workspace has active ACP review/chat work, pending input or drafts, Close Workspace requires confirmation. Main also rejects non-forced close while review waves are queued/running, even without a renderer. Forced close persists wave cancellation and stops scoped sessions before core removal. Core pending-input refusal preserves live hosts; accepted close cancels/drains agents and MCP work and gives remaining inputs terminal cancellation/expiry outcomes. A close-policy race requires explicit force confirmation. The old Node placeholder-cancellation behavior is historical, not a current provider path.
 
 There is no state in which a workspace is removed from all workbench surfaces while Diffuse-owned agents continue invisibly. A user may hide the application window while agents continue because the tray, operating-system notification, and next launch restore the workbench.
 
@@ -474,7 +474,7 @@ SQLite is currently authoritative for:
 - Typed archives of imported legacy v1 run, agent, chat-message, and prompt records.
 - Rebuildable indexes over local workbench history.
 
-The Phase 6 first slice extends that same device-local authority with schema 3 `acp_sessions` snapshots and `acp_activity` records, alongside metadata/state in `agent_sessions`. It persists host/session/turn identity, capabilities, remote IDs, prompt text, raw peer updates, and terminal outcomes. Remote IDs are historical metadata, not resumable sessions. Normalized messages/tool summaries, durable queued prompts, resume, and workbench history presentation remain target work; see [the implemented persistence contract](review-spec-v2.md#acp-session-and-activity-history).
+Phase 6 extends device-local authority with snapshots/activity, adapters, queues, normalized/replay history, input delivery and schema 5 worker incarnations. Schema 6 introduced immutable `reviewFileIds` compatibility; current schema 7 additionally marks ambiguous pre-v7 display-quoted scopes and rejects their reconnect without changing session IDs, stored scopes or history. Those sessions require new sessions with current literal IDs, not automatic unquoting. Main-owned bounded wave plans use revisioned `workspace_ui_state.state.acpReviewWaves`. Remote IDs support explicit capability-gated resume/load, not automatic retry. Successful load replaces the replayable projection and advances `historyRevision`; interrupted admitted turns fail while never-admitted queues remain for reconnect. See [the persistence contract](review-spec-v2.md#acp-session-and-activity-history).
 
 Secrets, provider tokens, and authentication credentials do not belong in SQLite or `.diffuse`. Authentication remains owned by the ACP harness or the platform credential store.
 
@@ -490,9 +490,9 @@ Database writes that create input or attention state are transactional. For exam
 - Reviewed-file state.
 - Findings and discussion threads.
 
-Workbench-only input requests, unread state, and local UI state now live in SQLite under the hybrid v2 boundary. Existing v1 `runs`, `agents`, `chat/messages`, and `prompts` data is imported read-only into typed SQLite archive tables because it is already persisted user data. The retained Node runner continues writing those legacy files, and they are never deleted automatically during migration. Future ACP transcripts, turns, and telemetry belong in SQLite rather than the repository.
+Workbench-only input, unread and local UI state live in SQLite. Historical v1 `runs`, `agents`, `chat/messages` and `prompts` are imported read-only into typed archives and never deleted automatically. The Node desktop runner no longer writes them. ACP transcripts, queues, input delivery, activity and wave plans are device-local; only portable review tool results are written into the repository.
 
-[`review-spec-v2.md`](review-spec-v2.md) defines current ownership and migration guarantees. [`review-spec-v1.md`](review-spec-v1.md) continues to define portable file formats and the retained runner's legacy families.
+[`review-spec-v2.md`](review-spec-v2.md) defines current ownership and migration guarantees. [`review-spec-v1.md`](review-spec-v1.md) defines portable formats and the retired runner's historical families.
 
 External review artifact writes remain atomic. Rust serializes local read-modify-write operations per repository and uses stable revisions or compare-and-swap where external writers may race. Watcher events are deduplicated so Diffuse's own writes do not produce duplicate attention.
 
@@ -502,17 +502,15 @@ Attention is device-local and must not be committed into `.diffuse/reviews`.
 
 Acknowledgement is revision-based rather than timestamp-based. An acknowledgement transaction identifies the attention item and exact revision. If a newer revision already exists, the operation does not mark it read.
 
-Input responses persist only the data needed for delivery and recovery. Secret values are never retained; only a redacted secret marker may be stored. A response enters `response-submitted` and remains unresolved until its owning producer records `accepted` or `rejected`; `accepted`, `rejected`, `expired`, `cancelled`, and `superseded` remain distinct terminal states. Phase 5 implements these core transitions, while ACP delivery and confirmation remain Phase 6 work.
+Input responses persist only the data needed for delivery and recovery. Typed secret values are never retained; only a redacted secret marker may be stored. A response enters `response-submitted` and remains unresolved until its producer records a terminal outcome; `accepted`, `rejected`, `expired`, `cancelled`, and `superseded` remain distinct Phase 5 states. ACP now claims/delivers non-secret permission/form responses and accepts delivered responses when the enclosing prompt/session/mode operation succeeds. This is not a separate provider acknowledgement RPC or exactly-once delivery across crashes. ACP forms are not an authentication-secret channel, and arbitrary prompt/transcript data is not automatically redacted.
 
 ## Agent Architecture
 
 ### ACP Hosts And Sessions
 
-**Target design, not first-slice behavior:** the current Rust `WorkspaceRuntime` owns an `AgentManager` with one process per session, explicit executable configuration, and no pooling, discovery, load/resume, or reconnect. Its public API and separate Rust-only activity stream have no N-API, RPC, or UI exposure. All permissions are denied without durable permission input/UI, and no MCP servers are attached. Trusted executables retain their OS privileges; ACP denial is not an OS sandbox. The input and MCP flows below are still proposed.
+**Current implementation:** each `WorkspaceRuntime` owns an `AgentManager` with a workspace-local pool keyed by invocation configuration and authentication profile. Settings persist explicit adapter definitions; discovery reports those definitions' executable-file availability and platform support, not automatic provider installation/discovery. Multiplexing defaults off and is enabled explicitly for adapters known to support it. One dispatcher per host correlates requests and routes sessions, reserving at most eight local sessions before growing the pool. Adaptive saturation/serialization tuning remains future resource-policy work.
 
-ACP supports multiple independent sessions on one agent connection. The target Diffuse resource policy therefore avoids defaulting to one process per session once pooling parity is established.
-
-`AgentManager` owns a host pool keyed by adapter, authentication profile, executable configuration, and compatibility constraints. A capable host multiplexes sessions. The pool expands when an adapter serializes turns, becomes saturated, or requires workspace isolation. An adapter that cannot safely multiplex may opt into one process per session.
+Native N-API, validated desktop IPC, Agents routes, review/inline chat and a separate ACP event callback expose the workbench. RPC rollback has no agent execution. Unix process groups contain ordinary descendants, not escaped groups. Windows starts children suspended, assigns non-inheritable kill-on-close Job Objects without breakaway, and resumes only after verified assignment; failures stop/reap instead of running uncontained. This covers ACP hosts and cancellable MCP Git jobs. Windows cross-Clippy verification is not runtime validation. Trusted adapters retain OS privileges and are not sandboxed. Closing a pooled session normally preserves siblings, but failed cleanup stops its shared host and can fail mapped sessions.
 
 This is a resource policy, not a user-visible agent-count limit. Persisted and open sessions are not capped by an arbitrary product constant.
 
@@ -526,39 +524,42 @@ Each agent session stores:
 - Pending and completed turns.
 - Reconnect or resume state.
 
-On restart, Diffuse uses `session/resume` or `session/load` only when advertised. Otherwise it starts a new remote session and clearly marks continuity limitations instead of pretending the old process was resumed.
+On restart, Diffuse marks interrupted sessions/admitted turns failed and expires unresolved ACP inputs; it does not restart hosts automatically. Explicit reconnect selects advertised `session/resume`, otherwise `session/load`, otherwise a new remote session with `reset` continuity and a visible limitation. Rejected resume/load is a failure, not an automatic retry cascade. Never-admitted queued work can continue after reconnect; interrupted turns are never silently retried. History replacement revisions, workspace generations and schema 5 worker incarnation tokens fence replay and stale writes independently.
 
 ### Input Request Flow
 
-The input flow is:
+The implemented permission/form flow is:
 
-1. An ACP host requests permission, asks a question, or reports another blocking input.
+1. An interactive ACP session requests permission, or a session sends a supported form elicitation. Review-bound permission requests are denied automatically; arbitrary authentication/URL elicitation is not implemented.
 2. `AgentManager` assigns a stable input ID and revision.
 3. SQLite transactionally stores the input and its attention item.
 4. `EventHub` publishes workspace summary and input events.
 5. The rail and overview show `input-required` even if the workspace is inactive or the window is hidden.
 6. The user opens the exact input surface and submits a response against the current revision.
-7. `AgentManager` sends the response exactly once to the owning ACP session.
-8. The input and attention resolve only after acceptance, cancellation, expiry, or supersession.
+7. `AgentManager` claims delivery and sends the non-secret response to its owning session; duplicate answer replay cannot grant again, but crash-safe exactly-once delivery is not promised.
+8. The input remains response-submitted until the enclosing operation succeeds, or finishes through cancellation/expiry. Peer request cancellation is scoped to the owning input, not every pooled session.
 
 Closing or switching a workspace cannot reroute an input response to another workspace or session. Draft responses are scoped to input ID and revision.
 
 ### Diffuse MCP Tools
 
-Diffuse exposes repository and review capabilities to ACP sessions through session-scoped MCP tools. Tool scope is bound server-side to workspace, generation, review session, and agent turn.
+Diffuse exposes repository and review capabilities through a session-scoped loopback bearer-authenticated MCP Streamable HTTP endpoint. Review sessions require advertised `mcpCapabilities.http`; unsupported adapters fail initialization rather than receive unscoped tools. Scope is bound server-side to workspace, generation, review session and active agent turn. The current transport is POST JSON responses, not SSE or a general network daemon.
 
-Initial tools cover:
+Implemented tools cover:
 
-- List assigned changed files.
+- List changed files within the session's immutable assignment, or the whole bound target for unscoped sessions.
 - Read diff metadata or requested diff ranges.
 - Add a validated review finding.
 - Update review progress.
 - Update user-visible agent activity.
 - Read selected review threads when explicitly included as context.
+- Update reviewed-file state within the bound target.
 
-This replaces generated repository tool files and process-global environment routing. An agent cannot select a different workspace by submitting another path or ID in its tool payload.
+ACP uses bound tools instead of generated repository tools. The desktop Node runner, SDK, private IPC and environment-routed bridge are removed. Existing `.opencode/tools/diffuse_review.ts` is preserved, not migrated into MCP; users should disable/remove it if an adapter auto-loads it. Neither tool arguments nor peer IDs authorize changing workspace or immutable file scope. Tool work is bounded, cancellable and drained before scope release.
 
-Review mode denies file edits and unrestricted terminal use by default. Interactive coding mode follows the configured ACP permission policy and routes undecided permissions to durable input requests.
+Main-owned `AcpReviewWaves` partitions saved review targets using `maxParallelAgents`, splits scopes above 1,024 IDs/128 KiB into later waves and persists plans with revisioned SQLite UI state. The renderer cannot overwrite its reserved `acpReviewWaves` key. At most each run's configured concurrency executes; completed shard sessions close before new waves launch. Plans survive renderer loss and are inspected after restart, but interrupted sessions are not automatically reconnected/replayed. Failed waves stop the run, cancel pending shards and expose error attention. Scoped progress is merged into the portable review-wide state without clobbering sibling file assignments. Legacy provider/model/agent settings stay preserved but must be explicitly mapped to supported adapter arguments; no translation is guessed.
+
+Review mode denies all ACP permission requests, and its tools expose no file-edit or unrestricted terminal capability. Non-review interactive sessions route permission choices to durable input requests. Supported forms render typed fields, enum choices and string multi-select; unsupported/secret schemas cannot become arbitrary grants. These protocol policies are not an OS sandbox: the adapter executable itself remains trusted.
 
 ## Concurrency And Resource Management
 
@@ -593,9 +594,9 @@ Concurrency rules are:
 | --- | --- |
 | Renderer reload or crash | `AppCore` and agents continue; the renderer obtains a workbench snapshot and resumes events from a sequence. |
 | Stale asynchronous result | The workspace generation or request ID mismatch causes the result to be discarded. |
-| ACP host crash | Affected sessions enter reconnecting or failed state; Diffuse attempts capability-based resume and creates error attention if user action is needed. |
+| ACP host crash | Mapped sessions fail and create error attention; explicit reconnect uses advertised resume/load or marks continuity reset. Interrupted turns are not retried automatically. |
 | Rust task panic | Catch at task and N-API boundaries where possible, mark the owning service or workspace degraded, and preserve the rest of `AppCore`. |
-| Native process crash | The application exits; on the next launch, SQLite recovery and ACP capability-based resume restore durable state. |
+| Native process crash | The application exits; startup recovers SQLite, fails interrupted ACP work and expires its input. Durable history and never-admitted queues remain for explicit reconnect, not automatic resume. |
 | Repository moved or removed | Keep a `restore-failed` workspace entry with Locate, Retry, and Remove actions. |
 | Permission loss | Mark the workspace degraded and create actionable attention. |
 | Watcher overflow | Perform a full rescan and re-establish the watcher. |
@@ -655,7 +656,9 @@ The implementation is not complete unless these invariants hold:
 
 ## Implementation Plan
 
-The migration keeps a runnable application at the end of every phase. A phase does not remove its fallback until its exit criteria pass on all supported platforms.
+The migration keeps a runnable application at the end of every phase. The original plan gated fallback removal on all-platform exit verification. Current status below distinguishes delivered feature cutover from that broader verification goal: the Node desktop runner is retired, while real-provider/manual platform validation is not claimed.
+
+Phases 0-5 below are historical delivery records: references to the Node runner describe its role then, not current execution. Phase 6 retires that desktop runner with explicit adapter migration and documented verification limits. The broader platform/performance matrix and remaining Git/review RPC rollback are tracked separately; feature delivery does not claim that manual platform validation has run.
 
 ### Phase 0: Baseline And Contract Guardrails
 
@@ -796,7 +799,7 @@ Exit criteria:
 
 Purpose: implement the exact needs-input and unread behavior defined by this specification.
 
-Implementation status: Complete. Phase 5 introduced SQLite schema v2 for stable workspace order/active state, revisioned UI restoration, input requests and non-secret responses, attention lifecycle, acknowledgement and notification claims, restore diagnostics, and typed provenance-preserving archives for legacy v1 runs, agents, chat messages, and prompts; schema 3 retains these guarantees. Input and attention compare-and-swap invariants, transaction-before-event sequencing, generation fencing, stale UI-state rebasing, active-first bounded startup restoration, exact review-session restoration, close confirmation and forced input/review/chat cancellation, priority summaries, grouped overview, the `/w/:workspaceId/input/:inputRequestId` surface, focus-gated exact acknowledgement, live announcements, tray aggregation, renderer-ready notification navigation, notification claim deduplication, and review completion/error attention production are implemented. The hybrid ownership contract is [`review-spec-v2.md`](review-spec-v2.md). The legacy Electron/Node opencode runner remains process-local, continues writing v1 files, and is not projected into SQLite `running` counts; the separate Rust-only ACP slice is described under Phase 6. `DIFFUSE_DESKTOP_CORE=rpc` remains a degraded rollback path and does not support durable Phase 5 attention, input, or restore-failure operations.
+Implementation status: Complete (historical Phase 5 delivery). Schema v2 introduced workspace order/active state, revisioned UI restoration, non-secret input, attention lifecycle/acknowledgement/notification claims and provenance-preserving legacy archives; schema 7 retains those guarantees. Phase 5 delivered compare-and-swap, transaction-before-event ordering, generation fencing, active-first bounded restoration, exact review-session restoration, close confirmation/forced input-review-chat cancellation, priority overview, input surfaces, focus-gated acknowledgement, announcements, tray and renderer-ready deduplicated notifications. At that phase, the process-local Node runner still wrote v1 files and did not contribute SQLite running counts. Phase 6 now retires that runner and supplies ACP session counts/attention plus main-owned review waves. The [hybrid contract](review-spec-v2.md) and degraded RPC rollback limits remain; RPC does not gain durable Phase 5 operations or agent execution.
 
 Work:
 
@@ -821,11 +824,11 @@ Exit criteria:
 
 Purpose: replace the provider-specific Electron runner with reusable Rust ACP supervision.
 
-Implementation status: First Rust-only slice implemented; Phase 6 is not complete and the provider-specific Electron runner remains in place. `AppCore` exposes start, text prompt, cancel, stop, session snapshots, durable activity pagination, and a separate bounded ACP event stream. Each session has one explicitly configured process; ACP v1 initialization, capability storage, session creation, streamed updates, bounded framing/deadlines, generation fencing, close/shutdown cleanup, and schema 3 failed-on-restart recovery are implemented. Prompt admission is not a durable acknowledgement, and slow ACP subscribers disconnect and recover from durable history/snapshots without changing Phase 5 event delivery.
+Implementation status: Delivered for current Phase 6 feature scope. N-API/validated desktop IPC expose adapter settings, Agents, durable queues, cancellation/close, modes, history, explicit reconnect and bounded replay. Main-owned bounded review waves and inline selection/thread chat use configured adapters with HTTP MCP findings, progress and reviewed-file tools. Interactive permissions/forms and completion/error attention integrate with the existing input, overview, rail, tray and notification snapshot paths. The Node runner, opencode SDK, private runner IPC and environment bridge are retired; legacy data and compatible file APIs remain historical, not an execution fallback.
 
-ACP start is supported only on Unix in this slice; non-Unix starts explicitly fail as unsupported. Each host has a dedicated Unix process group whose ordinary descendants are terminated on stop, timeout, accepted close, and shutdown. Descendants that escape the group are not contained; this is lifecycle cleanup, not an OS sandbox. ACP commits, absolute running-count summaries, and event enqueue share the Phase 5 mutation/snapshot gate, with delivery after releasing it and a separate ACP event sequence. Foreground mutations drain before the close policy check, while ACP uses background lifetime permits: a non-forced close refused for pending input preserves the live host; an accepted close stops and drains it. Fake-peer regression tests cover these cleanup, refusal, and concurrent-summary paths on Linux only.
+Schema 6 introduced immutable `reviewFileIds` across reopen/downgrade; current schema 7 adds the legacy display-quoted-scope reconnect guard while retaining incarnation fencing and prior queues/history/replay/input delivery. Rust metadata uses NUL-delimited actual paths; exact-file diffs/signatures use literal pathspecs with descendant exclusion and inherited pathspec-mode overrides cleared. File-scoped MCP reads/writes remain enforced and progress merges without overwriting siblings. Main persists wave plans under its protected SQLite UI-state key, bounds per-run active sessions and continues scheduling without the renderer. The native 1,034-file fixture exercises two scopes and persisted completion. Shared Phase 5 commit/summary/enqueue ordering and independent stream watermarks/revisions remain intact. Unix process groups and Windows suspended-start kill-on-close Job Objects own host/Git lifecycles; failed containment never falls back to uncontained Windows execution.
 
-There is no N-API/RPC/UI exposure, host pooling, adapter discovery, load/resume/reconnect, durable prompt queue, MCP integration, or durable permission delivery/UI. Permission requests always receive a cancelled outcome; this is not an OS sandbox, and adapter executables must be trusted. ACP does not yet produce completion/error attention or replace the legacy review/chat/finding/progress workflow. Verification is limited to a deterministic fake peer on Linux and database recovery tests, not real-provider compatibility, cross-platform ACP parity, or satisfaction of the exit criteria below. See [the current API and limits](architecture.md#rust-acp-first-slice).
+Verification limits: Linux fake-peer/native/app/database checks and Windows cross-target Clippy are the available evidence; Windows runtime, real-provider/manual Windows/macOS, OS notification/tray and later performance hardening are not claimed. Windows runtime tests exist but cross-compilation is not execution. Reconnect is explicit with no automatic interrupted-turn replay, transcript presentation is text-only, and HTTP MCP is required for review tools. Legacy provider/model/agent overrides require explicit adapter setup; generated repository tools are preserved and must be disabled if auto-loaded. These are documented boundaries of the delivered scope, not claims that the broader manual exit matrix below ran. See [current contracts and limits](architecture.md#native-acp-workbench).
 
 Work:
 
@@ -837,7 +840,7 @@ Work:
 - Attach workspace-scoped Diffuse MCP review tools to each session.
 - Add direct chat, review runs, and session history to the active workspace routes.
 - Remove process-global review bridge environment routing.
-- Keep the existing Node runner only until equivalent start, stop, chat, finding, progress, and recovery behavior passes.
+- Retire the Node desktop runner after native start/stop/chat/finding/progress/recovery and bounded-wave delivery; preserve historical data and require explicit adapter migration (implemented).
 
 Exit criteria:
 
@@ -877,7 +880,7 @@ Work:
 
 - Remove the RPC rollback path and Zig desktop runtime after the rollback period; N-API `AppCore` is already the default.
 - Remove per-workspace legacy core processes and JSON-RPC desktop routing after the rollback period.
-- Remove `ReviewAgentRunner`, generated opencode tools, and the localhost bridge after ACP parity.
+- `ReviewAgentRunner`, its SDK/private IPC and Node localhost bridge were removed in Phase 6. Do not automatically delete generated repository tools; retain explicit migration guidance for auto-loaded obsolete files.
 - Update build requirements, installers, release CI, versioning, signing, command shims, and completions.
 - Keep the separate Rust CLI linked to `diffuse-core`.
 - Update [`architecture.md`](architecture.md), [`README.md`](../README.md), [`lsp.md`](lsp.md), the review specification, and the design system to describe implemented behavior rather than the migration.

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -131,6 +131,7 @@ pub(crate) struct Repository {
     root: PathBuf,
     canonical_root: PathBuf,
     head: String,
+    operation: Option<crate::operation::OperationControl>,
 }
 
 impl Repository {
@@ -146,6 +147,7 @@ impl Repository {
             root,
             canonical_root,
             head,
+            operation: None,
         })
     }
 
@@ -153,6 +155,13 @@ impl Repository {
         OpenRepositoryResult {
             root: self.root.to_string_lossy().into_owned(),
             head: self.head.clone(),
+        }
+    }
+
+    pub(crate) fn with_operation(&self, operation: crate::operation::OperationControl) -> Self {
+        Self {
+            operation: Some(operation),
+            ..self.clone()
         }
     }
 
@@ -227,27 +236,29 @@ impl Repository {
         Ok(branches)
     }
 
+    /// The public file-ID contract is UTF-8 strings. Skip only entries that
+    /// cannot be represented (either side of a rename), with an aggregate stderr
+    /// warning. Never turn raw bytes into lossy or display-quoted file IDs.
     pub(crate) fn list_changed_files(&self, target: &DiffTarget) -> CoreResult<Vec<ChangedFile>> {
-        let name_status = self.git_diff(target, &["--name-status", "-M"], None)?;
-        let numstat = self.git_diff(target, &["--numstat"], None)?;
+        // Machine-readable paths must remain actual Git paths, not C-quoted
+        // display strings that could name a different tracked file when reused.
+        let name_status = self.git_diff_bytes(target, &["--name-status", "-z", "-M"], None)?;
+        let numstat = self.git_diff_bytes(target, &["--numstat", "-z"], None)?;
         let mut files = Vec::new();
-
-        for line in name_status.lines() {
-            if line.is_empty() {
+        let mut skipped = 0;
+        let mut fields = name_status.split(|byte| *byte == 0);
+        while let Some(status_text) = fields.next() {
+            if status_text.is_empty() {
                 continue;
             }
-            let mut fields = line.split('\t');
-            let Some(status_text) = fields.next() else {
-                continue;
-            };
+            let status_text =
+                std::str::from_utf8(status_text).map_err(|_| CoreError::GitCommandFailed)?;
             let status = file_status_from_name_status(status_text);
-            let Some(first_path) = fields.next() else {
-                continue;
-            };
+            let first_path = fields.next().ok_or(CoreError::GitCommandFailed)?;
             let (old_path, new_path) = if status == FileStatus::Renamed {
                 (
-                    Some(first_path.to_owned()),
-                    fields.next().unwrap_or(first_path),
+                    Some(first_path),
+                    fields.next().ok_or(CoreError::GitCommandFailed)?,
                 )
             } else {
                 (None, first_path)
@@ -255,11 +266,23 @@ impl Repository {
             if new_path.is_empty() {
                 continue;
             }
+            // Consume both raw rename fields before decoding so an invalid old
+            // path cannot desynchronize the remaining records.
+            let (old_path, new_path) = match (
+                old_path.map(std::str::from_utf8).transpose(),
+                std::str::from_utf8(new_path),
+            ) {
+                (Ok(old), Ok(new)) => (old, new),
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
             let (additions, deletions) = parse_numstat(&numstat, new_path);
 
             files.push(ChangedFile {
                 id: new_path.to_owned(),
-                old_path,
+                old_path: old_path.map(str::to_owned),
                 new_path: Some(new_path.to_owned()),
                 status,
                 additions,
@@ -267,7 +290,14 @@ impl Repository {
                 signature: self.diff_signature(target, new_path)?,
             });
         }
-
+        if skipped != 0 {
+            // Diagnostics must not become aliases, leak raw filenames, pollute
+            // JSON-RPC stdout, or fail the list operation if stderr is closed.
+            let _ = writeln!(
+                io::stderr().lock(),
+                "Diffuse warning: skipped {skipped} changed-file entries with non-UTF-8 paths; the string file-ID API cannot represent them (renames require both paths to be UTF-8)."
+            );
+        }
         Ok(files)
     }
 
@@ -291,7 +321,7 @@ impl Repository {
             return Ok(Vec::new());
         }
 
-        let mut args = Vec::with_capacity(flags.len() + 5);
+        let mut args = Vec::with_capacity(flags.len() + 7);
         args.push("diff");
         args.extend_from_slice(flags);
 
@@ -305,12 +335,17 @@ impl Repository {
             args.push(target.base.as_deref().unwrap_or("HEAD"));
         }
 
-        if let Some(path) = path {
+        let literal = path.map(|path| format!(":(top,literal){path}"));
+        // A literal pathspec also matches descendants when a file becomes a
+        // directory (or vice versa). Those are different, unassigned file IDs.
+        let descendants = path.map(|path| format!(":(top,exclude,literal){path}/"));
+        if let (Some(literal), Some(descendants)) = (&literal, &descendants) {
             args.push("--");
-            args.push(path);
+            args.push(literal);
+            args.push(descendants);
         }
 
-        git_bytes(&self.root, &args)
+        git_bytes_controlled(&self.root, &args, self.operation.as_ref(), path.is_some())
     }
 
     fn diff_signature(&self, target: &DiffTarget, path: &str) -> CoreResult<String> {
@@ -347,14 +382,56 @@ pub(crate) fn git(repo_path: &Path, args: &[&str]) -> CoreResult<String> {
 }
 
 fn git_bytes(repo_path: &Path, args: &[&str]) -> CoreResult<Vec<u8>> {
-    let mut child = Command::new("git")
+    git_bytes_controlled(repo_path, args, None, false)
+}
+
+fn git_bytes_controlled(
+    repo_path: &Path,
+    args: &[&str],
+    operation: Option<&crate::operation::OperationControl>,
+    exact_file: bool,
+) -> CoreResult<Vec<u8>> {
+    if let Some(operation) = operation {
+        operation.check()?;
+    }
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo_path)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| CoreError::GitCommandFailed)?;
+        .stderr(Stdio::piped());
+    if exact_file {
+        // Explicit literal pathspecs must not be reinterpreted by inherited
+        // global magic/glob/case settings. Leave general Git calls unchanged.
+        for key in [
+            "GIT_LITERAL_PATHSPECS",
+            "GIT_GLOB_PATHSPECS",
+            "GIT_NOGLOB_PATHSPECS",
+            "GIT_ICASE_PATHSPECS",
+        ] {
+            command.env_remove(key);
+        }
+    }
+    #[cfg(unix)]
+    if operation.is_some() {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    let (mut child, mut job) = if operation.is_some() {
+        let (child, job) = crate::windows_job::WindowsJob::spawn_std(&mut command)?;
+        (child, Some(job))
+    } else {
+        (
+            command.spawn().map_err(|_| CoreError::GitCommandFailed)?,
+            None,
+        )
+    };
+    #[cfg(not(windows))]
+    let mut child = command.spawn().map_err(|_| CoreError::GitCommandFailed)?;
+    #[cfg(unix)]
+    let mut group = operation.map(|_| GitProcessGroup(child.id() as libc::pid_t));
     let stdout = child.stdout.take().ok_or(CoreError::GitCommandFailed)?;
     let stderr = child.stderr.take().ok_or(CoreError::GitCommandFailed)?;
     let (limit_sender, limit_receiver) = mpsc::channel();
@@ -363,6 +440,16 @@ fn git_bytes(repo_path: &Path, args: &[&str]) -> CoreResult<Vec<u8>> {
     let mut exceeded_limit = false;
 
     let status = loop {
+        if operation.is_some_and(|op| op.check().is_err()) {
+            #[cfg(windows)]
+            drop(job.take());
+            #[cfg(unix)]
+            if let Some(group) = &mut group {
+                group.terminate();
+            }
+            let _ = child.kill();
+            break child.wait().map_err(|_| CoreError::GitCommandFailed)?;
+        }
         if limit_receiver.try_recv().is_ok() {
             exceeded_limit = true;
             let _ = child.kill();
@@ -373,6 +460,14 @@ fn git_bytes(repo_path: &Path, args: &[&str]) -> CoreResult<Vec<u8>> {
         }
         thread::sleep(Duration::from_millis(1));
     };
+    // Helpers may inherit stdout/stderr. Terminate the owned group before
+    // joining pipe readers, including when the Git parent has already exited.
+    #[cfg(unix)]
+    if let Some(group) = &mut group {
+        group.terminate();
+    }
+    #[cfg(windows)]
+    drop(job.take());
     let stdout = stdout_reader
         .join()
         .map_err(|_| CoreError::GitCommandFailed)?
@@ -381,6 +476,9 @@ fn git_bytes(repo_path: &Path, args: &[&str]) -> CoreResult<Vec<u8>> {
         .join()
         .map_err(|_| CoreError::GitCommandFailed)?
         .map_err(|_| CoreError::GitCommandFailed)?;
+    if let Some(operation) = operation {
+        operation.check()?;
+    }
 
     if !status.success()
         || exceeded_limit
@@ -391,6 +489,27 @@ fn git_bytes(repo_path: &Path, args: &[&str]) -> CoreResult<Vec<u8>> {
     }
 
     Ok(stdout)
+}
+
+#[cfg(unix)]
+struct GitProcessGroup(libc::pid_t);
+#[cfg(unix)]
+impl GitProcessGroup {
+    fn terminate(&mut self) {
+        if self.0 != 0 {
+            // SAFETY: this PGID is the positive PID of our process_group(0) child.
+            unsafe {
+                libc::killpg(self.0, libc::SIGKILL);
+            }
+            self.0 = 0;
+        }
+    }
+}
+#[cfg(unix)]
+impl Drop for GitProcessGroup {
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 fn read_bounded(
@@ -421,21 +540,37 @@ fn file_status_from_name_status(status: &str) -> FileStatus {
     }
 }
 
-fn parse_numstat(output: &str, path: &str) -> (u32, u32) {
-    for line in output.lines() {
-        let mut fields = line.split('\t');
+fn parse_numstat(output: &[u8], path: &str) -> (u32, u32) {
+    let mut records = output.split(|byte| *byte == 0);
+    while let Some(record) = records.next() {
+        let mut fields = record.splitn(3, |byte| *byte == b'\t');
         let Some(additions) = fields.next() else {
             continue;
         };
         let Some(deletions) = fields.next() else {
             continue;
         };
-        if fields.next() != Some(path) {
+        let name = match fields.next() {
+            Some([]) => {
+                // With -z a rename has an empty path column, then two NUL
+                // terminated paths. Match counts against its canonical new ID.
+                let _old = records.next();
+                records.next()
+            }
+            name => name,
+        };
+        if name != Some(path.as_bytes()) {
             continue;
         }
         return (
-            additions.parse().unwrap_or(0),
-            deletions.parse().unwrap_or(0),
+            std::str::from_utf8(additions)
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0),
+            std::str::from_utf8(deletions)
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0),
         );
     }
     (0, 0)
@@ -769,6 +904,314 @@ mod tests {
             .unwrap();
         assert!(output.contains("-fixture") && output.contains("+committed"));
         assert!(!output.contains("uncommitted"));
+    }
+
+    #[test]
+    fn exact_file_diff_excludes_descendants_across_file_directory_transitions() {
+        let (temp, repository) = repository();
+        fs::write(temp.path().join("entry"), "owned original\n").unwrap();
+        git_ok(temp.path(), &["add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "file"]);
+        fs::remove_file(temp.path().join("entry")).unwrap();
+        fs::create_dir(temp.path().join("entry")).unwrap();
+        fs::write(temp.path().join("entry/private.txt"), "PRIVATE_CHILD\n").unwrap();
+        git_ok(temp.path(), &["add", "-A"]);
+        let exact = repository
+            .git_diff(&DiffTarget::default(), &[], Some("entry"))
+            .unwrap();
+        assert!(exact.contains("-owned original"), "{exact}");
+        assert!(
+            !exact.contains("PRIVATE_CHILD") && !exact.contains("entry/private.txt"),
+            "{exact}"
+        );
+        assert!(
+            repository
+                .git_diff(&DiffTarget::default(), &[], None)
+                .unwrap()
+                .contains("PRIVATE_CHILD")
+        );
+        git_ok(temp.path(), &["commit", "-m", "directory"]);
+        fs::remove_file(temp.path().join("entry/private.txt")).unwrap();
+        fs::remove_dir(temp.path().join("entry")).unwrap();
+        fs::write(temp.path().join("entry"), "owned replacement\n").unwrap();
+        git_ok(temp.path(), &["add", "-A"]);
+        let exact = repository
+            .git_diff(&DiffTarget::default(), &[], Some("entry"))
+            .unwrap();
+        assert!(exact.contains("+owned replacement"), "{exact}");
+        assert!(
+            !exact.contains("PRIVATE_CHILD") && !exact.contains("entry/private.txt"),
+            "{exact}"
+        );
+        assert!(
+            repository
+                .git_diff(&DiffTarget::default(), &[], None)
+                .unwrap()
+                .contains("PRIVATE_CHILD")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_file_diffs_and_signatures_treat_glob_and_magic_names_literally() {
+        let (temp, repository) = repository();
+        let names = [
+            "*.txt",
+            "[ab].txt",
+            ":(glob)*.txt",
+            ":(exclude)private.txt",
+            ":(literal)*.txt",
+            "question?.txt",
+        ];
+        for (index, name) in names.iter().enumerate() {
+            fs::write(temp.path().join(name), format!("OWNED_{index}_base\n")).unwrap();
+        }
+        for name in ["private.txt", "a.txt", "b.txt", "questionx.txt"] {
+            fs::write(temp.path().join(name), "PRIVATE_base\n").unwrap();
+        }
+        git_ok(temp.path(), &["--literal-pathspecs", "add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "literal files"]);
+        for (index, name) in names.iter().enumerate() {
+            fs::write(temp.path().join(name), format!("OWNED_{index}_staged\n")).unwrap();
+        }
+        for name in ["private.txt", "a.txt", "b.txt", "questionx.txt"] {
+            fs::write(temp.path().join(name), "PRIVATE_staged\n").unwrap();
+        }
+        git_ok(temp.path(), &["--literal-pathspecs", "add", "."]);
+        for (index, name) in names.iter().enumerate() {
+            fs::write(temp.path().join(name), format!("OWNED_{index}_working\n")).unwrap();
+        }
+        for name in ["private.txt", "a.txt", "b.txt", "questionx.txt"] {
+            fs::write(temp.path().join(name), "PRIVATE_working\n").unwrap();
+        }
+        for (target, before, after) in [
+            (DiffTarget::default(), "base", "working"),
+            (
+                DiffTarget {
+                    include_unstaged: false,
+                    ..DiffTarget::default()
+                },
+                "base",
+                "staged",
+            ),
+            (
+                DiffTarget {
+                    include_staged: false,
+                    ..DiffTarget::default()
+                },
+                "staged",
+                "working",
+            ),
+        ] {
+            for (index, name) in names.iter().enumerate() {
+                let output = repository.git_diff(&target, &[], Some(name)).unwrap();
+                assert!(
+                    output.contains(&format!("-OWNED_{index}_{before}"))
+                        && output.contains(&format!("+OWNED_{index}_{after}")),
+                    "{name}: {output}"
+                );
+                assert!(!output.contains("PRIVATE_"), "{name}: {output}");
+                for other in 0..names.len() {
+                    if other != index {
+                        assert!(
+                            !output.contains(&format!("OWNED_{other}_")),
+                            "{name}: {output}"
+                        );
+                    }
+                }
+            }
+        }
+        let old = repository
+            .list_changed_files(&DiffTarget::default())
+            .unwrap();
+        fs::write(temp.path().join("private.txt"), "PRIVATE_changed_again\n").unwrap();
+        let new = repository
+            .list_changed_files(&DiffTarget::default())
+            .unwrap();
+        for name in names {
+            assert_eq!(
+                old.iter().find(|f| f.id == name).unwrap().signature,
+                new.iter().find(|f| f.id == name).unwrap().signature
+            );
+        }
+        git_ok(temp.path(), &["commit", "-m", "staged comparison"]);
+        let target = DiffTarget {
+            base: Some("HEAD~1".into()),
+            compare: Some("HEAD".into()),
+            ..DiffTarget::default()
+        };
+        for (index, name) in names.iter().enumerate() {
+            let output = repository.git_diff(&target, &[], Some(name)).unwrap();
+            assert!(
+                output.contains(&format!("-OWNED_{index}_base"))
+                    && output.contains(&format!("+OWNED_{index}_staged")),
+                "{output}"
+            );
+            assert!(
+                !output.contains("PRIVATE_") && !output.contains("_working"),
+                "{output}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nul_metadata_preserves_renamed_paths_and_counts_without_display_quoting() {
+        let (temp, repository) = repository();
+        let before = (0..20).map(|n| format!("line {n}\n")).collect::<String>();
+        fs::write(temp.path().join("old\tname.txt"), &before).unwrap();
+        git_ok(temp.path(), &["add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "old name"]);
+        fs::rename(
+            temp.path().join("old\tname.txt"),
+            temp.path().join("new\nname.txt"),
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("new\nname.txt"),
+            before.replace("line 10\n", "changed line\n"),
+        )
+        .unwrap();
+        git_ok(temp.path(), &["add", "-A"]);
+        let files = repository
+            .list_changed_files(&DiffTarget::default())
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, "new\nname.txt");
+        assert_eq!(files[0].old_path.as_deref(), Some("old\tname.txt"));
+        assert_eq!(files[0].status, FileStatus::Renamed);
+        assert_eq!((files[0].additions, files[0].deletions), (1, 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_filename_is_skipped_without_hiding_valid_files_or_creating_aliases() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let (temp, repository) = repository();
+        let invalid = OsString::from_vec(b"bad\xff.txt".to_vec());
+        fs::write(temp.path().join("normal.txt"), "normal before\n").unwrap();
+        fs::write(temp.path().join(&invalid), "PRIVATE before\n").unwrap();
+        git_ok(temp.path(), &["add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "mixed filenames"]);
+        fs::write(temp.path().join("normal.txt"), "normal after\n").unwrap();
+        fs::write(
+            temp.path().join(&invalid),
+            "PRIVATE after\nPRIVATE second\nPRIVATE third\n",
+        )
+        .unwrap();
+        let files = repository
+            .list_changed_files(&DiffTarget::default())
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, "normal.txt");
+        assert_eq!((files[0].additions, files[0].deletions), (1, 1));
+        let normal_signature = files[0].signature.clone();
+        let replacement = "bad\u{fffd}.txt";
+        let quoted = "\"bad\\377.txt\"";
+        assert!(!files.iter().any(|f| f.id == replacement || f.id == quoted));
+
+        // Actual UTF-8 files resembling lossy/quoted representations must still
+        // have their own identity, contents, and counts, never the invalid file's.
+        fs::write(temp.path().join(replacement), "replacement file only\n").unwrap();
+        fs::write(temp.path().join(quoted), "quoted file only\n").unwrap();
+        git_ok(
+            temp.path(),
+            &["--literal-pathspecs", "add", "--", replacement, quoted],
+        );
+        let files = repository
+            .list_changed_files(&DiffTarget::default())
+            .unwrap();
+        assert_eq!(files.len(), 3);
+        let ids: HashSet<_> = files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, HashSet::from(["normal.txt", replacement, quoted]));
+        assert_eq!(
+            files
+                .iter()
+                .find(|f| f.id == "normal.txt")
+                .unwrap()
+                .signature,
+            normal_signature
+        );
+        for (name, content) in [
+            (replacement, "replacement file only"),
+            (quoted, "quoted file only"),
+        ] {
+            let file = files.iter().find(|f| f.id == name).unwrap();
+            assert_eq!((file.additions, file.deletions), (1, 0));
+            let diff = repository
+                .git_diff(&DiffTarget::default(), &[], Some(name))
+                .unwrap();
+            assert!(diff.contains(content));
+            assert!(!diff.contains("PRIVATE"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renames_with_either_non_utf8_path_are_skipped_as_whole_entries() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let (temp, repository) = repository();
+        let old_invalid = OsString::from_vec(b"old-\xff.txt".to_vec());
+        let new_invalid = OsString::from_vec(b"new-\xfe.txt".to_vec());
+        let source = (0..20)
+            .map(|n| format!("PRIVATE invalid source {n}\n"))
+            .collect::<String>();
+        let destination = (0..20)
+            .map(|n| format!("PRIVATE invalid destination {n}\n"))
+            .collect::<String>();
+        fs::write(temp.path().join(&old_invalid), source).unwrap();
+        fs::write(temp.path().join("valid-old.txt"), destination).unwrap();
+        fs::write(temp.path().join("normal.txt"), "before\n").unwrap();
+        git_ok(temp.path(), &["add", "."]);
+        git_ok(temp.path(), &["commit", "-m", "rename sources"]);
+        fs::rename(
+            temp.path().join(&old_invalid),
+            temp.path().join("readable-new.txt"),
+        )
+        .unwrap();
+        fs::rename(
+            temp.path().join("valid-old.txt"),
+            temp.path().join(&new_invalid),
+        )
+        .unwrap();
+        fs::write(temp.path().join("normal.txt"), "after\n").unwrap();
+        git_ok(temp.path(), &["add", "-A"]);
+        let raw = repository
+            .git_diff_bytes(&DiffTarget::default(), &["--name-status", "-z", "-M"], None)
+            .unwrap();
+        assert_eq!(
+            raw.split(|b| *b == 0)
+                .filter(|field| *field == b"R100")
+                .count(),
+            2
+        );
+        let files = repository
+            .list_changed_files(&DiffTarget::default())
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, "normal.txt");
+        assert_eq!(files[0].old_path, None);
+        assert_eq!((files[0].additions, files[0].deletions), (1, 1));
+        assert!(
+            !repository
+                .git_diff(&DiffTarget::default(), &[], Some("normal.txt"))
+                .unwrap()
+                .contains("PRIVATE")
+        );
+    }
+
+    #[test]
+    fn numstat_consumes_raw_rename_paths_and_compares_valid_ids_as_bytes() {
+        let raw = b"8\t9\tbad\xff.txt\0\
+            4\t5\t\0old\xff.txt\0new\xfe.txt\0\
+            6\t7\t\0old\xfd.txt\0readable-new.txt\0\
+            1\t2\tnormal.txt\0\
+            3\t4\tbad\xef\xbf\xbd.txt\0";
+        assert_eq!(parse_numstat(raw, "normal.txt"), (1, 2));
+        assert_eq!(parse_numstat(raw, "bad\u{fffd}.txt"), (3, 4));
+        assert_eq!(parse_numstat(raw, "\"bad\\377.txt\""), (0, 0));
     }
 
     #[test]

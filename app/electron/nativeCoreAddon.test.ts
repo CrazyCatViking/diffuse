@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { acpMethodNames } from '../src/lib/acpContract';
 import { describe, expect, it } from 'vitest';
 import { CoreBackendError } from './coreBackend';
 import { nativeAddonFactoryFromModule, resolveNativeAddonPath } from './nativeCoreAddon';
@@ -98,6 +99,7 @@ describe('native core addon loading', () => {
 
 function completeAddon() {
   return {
+    ...Object.fromEntries(acpMethodNames.map((method) => [method, async () => null])),
     getVersion: async () => undefined,
     getWorkbenchSnapshot: async () => undefined,
     openWorkspace: async () => undefined,

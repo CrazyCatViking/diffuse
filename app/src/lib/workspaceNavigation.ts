@@ -1,6 +1,6 @@
 import type { Router } from 'vue-router';
 import type { WorkspaceNavigationTarget } from './workbenchContract';
-import { diffRoute, inputRoute, overviewRoute } from './workspaceRoutes';
+import { agentRoute, diffRoute, inputRoute, overviewRoute } from './workspaceRoutes';
 
 export const openWorkspaceSettingsEvent = 'diffuse:open-workspace-settings';
 
@@ -47,8 +47,5 @@ export async function dispatchWorkspaceNavigation(
     else window.dispatchEvent(new CustomEvent(openWorkspaceSettingsEvent, { detail: { section: target.section } }));
     return;
   }
-  await dispatcher.router.push({
-    ...overviewRoute(workspaceId),
-    query: { agentSessionId: target.agentSessionId },
-  });
+  await dispatcher.router.push(agentRoute(workspaceId, target.agentSessionId));
 }

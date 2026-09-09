@@ -51,7 +51,7 @@ These scripts are hosted directly in this repository and served by GitHub throug
 | LSP support           | Shows hover information and diagnostics from language servers.                                   |
 | Review state          | Keeps portable review sessions, progress, reviewed files, and threads under `.diffuse/reviews`.  |
 | Durable attention     | Prioritizes input, errors, unread completions, and core-recorded running work across workspaces.  |
-| AI review             | Can run opencode-based review agents and save their findings back into Diffuse.                  |
+| AI review and chat    | Runs configured ACP adapters with scoped review waves, durable queues, and inline chat.           |
 | Local-first design    | One in-process Rust core works through local Git, local files, and local helper processes.       |
 
 ## How It Works
@@ -66,9 +66,9 @@ diffuse/
   docs/   GitHub-readable docs, architecture notes, and data-format specs
 ```
 
-The renderer calls a typed preload bridge, Electron main validates IPC, and one native addon hosts one application-wide Rust `AppCore`. Normal desktop use does not start a Diffuse core child per workspace. Git commands, language servers, the isolated syntax helper, and the existing review-agent provider remain child-process boundaries.
+The renderer calls a typed preload bridge, Electron main validates IPC, and one native addon hosts one application-wide Rust `AppCore`. Normal desktop use does not start a Diffuse core child per workspace. Git commands, language servers, the isolated syntax helper, and ACP adapter hosts remain child-process boundaries.
 
-Persistence uses a hybrid boundary. Portable review configuration, sessions, progress, reviewed-file state, and threads remain inspectable under `.diffuse/reviews`. The device-local `<Electron userData>/workbench.sqlite3` owns workspace order and restoration, pending input, attention, acknowledgement, notification delivery, and compatibility archives of legacy runner files.
+Persistence uses a hybrid boundary. Portable review configuration, sessions, progress, reviewed-file state, and threads remain inspectable under `.diffuse/reviews`. The device-local `<Electron userData>/workbench.sqlite3` (schema 7) owns workspace order/restoration, pending input, attention, acknowledgement, notification delivery, ACP adapter definitions/sessions/immutable file scopes/queues/history, main-owned review-wave plans, and compatibility archives of legacy runner files.
 
 ```text
 your-repo/
@@ -82,14 +82,14 @@ your-repo/
           progress.json
           reviewed-files.json
           threads/
-          # Transitional files still written by the retained Node runner:
+          # Historical files preserved from the retired Node runner:
           runs/
           agents/
           chat/messages/
           prompts/
 ```
 
-The four transitional families are imported read-only into SQLite when a workspace opens, but their source files remain untouched and the current runner still uses them. See [`docs/`](docs/) for the documentation index, [`docs/architecture.md`](docs/architecture.md) for internal architecture notes, [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for retained file formats, [`docs/review-spec-v2.md`](docs/review-spec-v2.md) for hybrid ownership and migration, and [`docs/lsp.md`](docs/lsp.md) for language server details.
+The four historical families are imported read-only into SQLite when a workspace opens; their source files remain untouched, but the desktop no longer runs the Node provider that wrote them. See [`docs/`](docs/) for the documentation index, [`docs/architecture.md`](docs/architecture.md) for internal architecture notes, [`docs/review-spec-v1.md`](docs/review-spec-v1.md) for retained file formats, [`docs/review-spec-v2.md`](docs/review-spec-v2.md) for hybrid ownership and migration, and [`docs/lsp.md`](docs/lsp.md) for language server details.
 
 ## Install Prebuilt Release
 
@@ -205,13 +205,13 @@ diffuse diff --repo /path/to/repository --file src/example.ts
 
 When no repository is open, Diffuse shows a start screen with an `Open Repository` action and recent repositories. Opening a repository starts or resumes the local review workspace for that repository. Opening another repository reuses the primary Diffuse window and keeps the previous workspace loaded in the background; invoking `diffuse <path>` again activates or adds that repository in the existing application instead of opening another workspace window.
 
-The workspace rail keeps open repositories in stable order and provides the Workbench Overview, native open action, and searchable All Workspaces switcher. Each workspace shows its highest-priority state and count: input required, error, unread completion, running, or idle. The overview groups workspaces by that priority without rearranging the rail and keeps the separate input, error, unread, and running counts visible. In Phase 5, `running` counts come from core-recorded agent sessions; activity in the retained Node/opencode runner remains visible in its review surface and protected by close handling, but is not projected into that SQLite count.
+The workspace rail keeps open repositories in stable order and provides the Workbench Overview, native open action, and searchable All Workspaces switcher. Each workspace shows its highest-priority state and count: input required, error, unread completion, running, or idle. The overview groups workspaces by that priority without rearranging the rail and keeps the separate input, error, unread, and running counts visible. Running counts come from core-recorded ACP sessions; review-wave controls separately show pending and completed shard counts, including work not yet launched.
 
 `Ctrl+Tab` and `Ctrl+Shift+Tab` move through workspaces, `Ctrl+1` through `Ctrl+9` select visible rail slots, `Ctrl+Shift+O` opens the overview, `Ctrl+O` opens a repository, and `Ctrl+K` opens the switcher. These workbench shortcuts are configurable under Keyboard settings. Each workspace restores its last review/file/folder/input route, selected review session, diff target and layout, search and pinned results, cursor history, review drafts, non-secret input drafts, and logical focus while retaining only one heavy workspace view in renderer memory. If a selected review session no longer exists, Diffuse falls back to the repository's portable active session and removes the stale route selection.
 
 Pending questions, permissions, authentication requests, and conflict decisions open in the workspace input drawer. Submitting an answer changes it to `response-submitted`; it remains unresolved until the producer reports `accepted` or `rejected`. Requests can also finish as `expired`, `cancelled`, or `superseded`. Secret authentication values are not saved. Opening a workspace alone never clears attention: Diffuse acknowledges only the exact item revision after its owning surface is visibly focused or after you explicitly open that item from the overview or a notification.
 
-Closing a workspace with pending input, an unsaved draft, or active legacy review/chat work asks for confirmation. A confirmed forced close stops matching legacy review work, aborts in-flight chat, replaces its pending response with a cancellation record, and changes pending or `response-submitted` input to `cancelled`; if work appears during a normal close, Diffuse asks again before forcing cancellation. Application quit also stops the retained runner before shutting down the core. Closing the primary window instead hides Diffuse while open workspaces and background work remain available. The tray summarizes all workspace counts, and an unfocused or hidden app can issue deduplicated notifications for new input and errors when desktop notifications are available. Notification clicks return to the exact owning workspace and item after renderer restoration is ready.
+Closing a workspace with pending input, an unsaved draft, or active ACP review/chat work asks for confirmation. Main-process policy also rejects non-forced close while review waves are queued or running. Confirmed forced close cancels wave plans and stops scoped sessions/queued work before core removal; unresolved input receives its terminal cancellation or session-expiry outcome. If work appears during a normal close, Diffuse asks again before forcing cancellation. Quit stops wave scheduling before shutting down the core. Closing the primary window instead hides Diffuse while workspaces and background work remain available. The tray summarizes workspace counts, and an unfocused or hidden app can issue deduplicated notifications for new input and errors when desktop notifications are available. Notification clicks return to the exact owning workspace and item after renderer restoration is ready.
 
 At startup, Diffuse restores the previously active workspace first and then restores other open workspaces with bounded concurrency. Repositories that are missing, inaccessible, or no longer valid remain listed under Restore Failures with Retry and Dismiss actions instead of silently disappearing. At narrow desktop widths, the rail compacts and changed files plus pinned search results open as drawers so the diff remains the primary reading surface.
 
@@ -366,15 +366,26 @@ Built-in defaults exist for TypeScript/JavaScript, Rust, Python, Go, Zig, and Lu
 
 ## AI Review
 
-Diffuse includes an experimental opencode review runner. When started from the review bar, the Electron app creates opencode sessions for the opened repository, sends review prompts, and persists findings through the Diffuse core. Completed runs create unread completion attention; failed runs create error attention.
+Phase 6's native ACP Agent Workbench feature scope is delivered: adapter settings, sessions, queues, explicit reconnect, pooling, permissions/forms, scoped review waves and inline selection/thread chat. The desktop Node/opencode runner has been retired, not kept as a fallback. ACP uses the normal N-API backend; RPC rollback does not support agent execution. Feature delivery is not a claim of real-provider or manual cross-platform validation.
 
-The review bar also shows recent review sessions and agent runs. Portable session, progress, reviewed-file, comment, and thread state remains under `.diffuse/reviews`. The retained Node runner still writes v1 run, agent, chat-message, and prompt files there; Diffuse imports read-only copies into its local SQLite compatibility archive on workspace open and leaves the source files untouched. This runner is not ACP supervision and has not been replaced. See [`docs/review-spec-v1.md`](docs/review-spec-v1.md) and [`docs/review-spec-v2.md`](docs/review-spec-v2.md).
+1. Open **Settings / Agent Adapters** and save a trusted adapter's ID, absolute executable path, literal arguments, environment key allowlist and optional authentication profile reference. Values for allowlisted keys come from the native process environment at launch; do not put credentials in arguments or profile names. Discovery lists this saved configuration and executable-file availability, not an automatic provider search or installation service.
+2. Open **Agents** for a workspace to create a chat session or a review session bound to the current target. Review sessions deny all permissions; non-review chat can explicitly enable interactive permission requests. Review tools require the adapter to advertise ACP HTTP MCP support (`mcpCapabilities.http`).
+3. Queue text prompts, inspect text transcripts, plans/tool activity and turn outcomes, cancel queued or active work, change an advertised mode, or close a session. Queues and history are device-local and survive renderer reload. Sessions continue while viewing another workspace or hiding the window.
+4. In the review overview or inline AI chat, explicitly choose a configured ACP adapter. **Start ACP review** partitions the saved target using `maxParallelAgents` and runs bounded waves with immutable server-enforced file assignments. Main owns scheduling, so later waves continue without the renderer. Controls show shard/file counts, stop-all and failed-run dismissal. Selection/thread questions use bound review tools; findings, merged progress and reviewed-file state still update portable files. No adapter is selected silently.
 
-Phase 6 has a first Rust-only ACP slice, not a completed Agent Workbench. Public `AppCore` methods can start an explicitly configured ACP v1 executable, submit text turns, cancel or stop a session, and read device-local session/activity history in SQLite schema 3. There is no N-API, RPC, or UI exposure. Each session gets its own process; pooling, load/resume, adapter discovery, MCP tools, and durable permission delivery/UI remain unimplemented. All ACP permission requests are denied, but this is not an OS sandbox: adapter executables must be trusted. Verification is limited to a fake peer on Linux, not real-provider or cross-platform ACP parity. See [the ACP boundary](docs/architecture.md#rust-acp-first-slice) for the contributor API and limits.
+**Reconnect / load** is explicit, not automatic retry. After failure/restart, interrupted admitted turns are failed, while never-admitted queued prompts remain for reconnect. The adapter's capabilities select resume, load, or a new remote conversation with a visible continuity-reset notice. The UI reloads replaced history rather than duplicating replayed messages. Completed non-cancelled turns create completion attention; session failures create error attention. Interactive permission choices and supported non-secret forms appear in the existing input drawer, remaining response-submitted until the enclosing provider operation succeeds. Merely switching workspaces does not acknowledge them.
 
-ACP start is explicitly unsupported on non-Unix platforms in this slice. On Unix, each host has a dedicated process group so stop, timeout, accepted workspace close, and shutdown terminate ordinary descendants still in that group. Descendants that escape the process group are not contained. A non-forced close refused for pending input preserves the live ACP host; committed ACP running-count summaries share the Phase 5 coordination gate while remaining on the separate Rust-only event stream.
+Enable adapter multiplexing only when the adapter safely supports concurrent sessions. Pooling is opt-in and workspace-local. Unix process groups clean up ordinary descendants on host teardown, but escaped process groups are not contained. Windows now implements suspended-start, kill-on-close Job Objects for ACP hosts and cancellable MCP Git work, failing closed if containment cannot be established. The Windows implementation has cross-target Clippy verification, not Windows runtime verification. Trusted executables retain OS privileges: neither containment, deny-all review policy nor MCP scoping is an OS sandbox. Prompts/transcripts/forms are not a safe place for credentials. Linux fake-peer/native/app verification includes a 1,034-file review split into bounded waves without a renderer; real-provider, manual Windows/macOS and OS notification behavior are not claimed. Transcript presentation remains text-only. See [architecture and limits](docs/architecture.md#native-acp-workbench).
 
-Agent behavior can be configured per repository in `.diffuse/reviews/config.json`. If the file does not exist, Diffuse uses this default:
+### Migrating Agent Setup
+
+Existing v1 run, agent, chat and prompt files remain readable history, and SQLite import leaves their source files untouched. The desktop no longer includes the opencode SDK, private `review-agent:*` IPC or environment-routed Node bridge. ACP history lives only in SQLite; portable sessions/findings/progress/threads remain in the repository. Review-wave plans persist in device-local UI state, not transcript or repository files. See [`docs/review-spec-v1.md`](docs/review-spec-v1.md) and [`docs/review-spec-v2.md`](docs/review-spec-v2.md).
+
+Legacy `provider`, `model`, `agent`, `DIFFUSE_OPENCODE_MODEL` and `DIFFUSE_OPENCODE_AGENT` settings are not automatically translated or used to select an ACP adapter. Configure equivalent supported provider/model/agent arguments explicitly for the chosen executable; use environment-key references for credentials. Old generated `.opencode/tools/diffuse_review.ts` files are **not deleted** during migration. If an adapter auto-loads that file, explicitly disable or remove the obsolete generated tool: its Node bridge no longer exists and it must not be mistaken for the new session-scoped MCP server.
+
+Schema 6 introduced immutable shard file scopes; schema 7 protects the move to literal Git file IDs. Changed-file metadata now uses NUL-delimited paths, and exact-file diffs/signatures treat wildcard and Git pathspec syntax as filename text, not permission to match other files. Pre-v7 scoped sessions with potentially display-quoted IDs are preserved as history but cannot reconnect; start a new session/review using the current changed-file IDs. Migration does not rename session IDs, rewrite old assignments or guess how to unquote them. New literal quote-prefixed filenames remain supported. See [scope compatibility](docs/review-spec-v2.md#sessions-and-queues).
+
+Repository `.diffuse/reviews/config.json` supplies `promptInstructions` to ACP review/chat and `maxParallelAgents` to the review-wave scheduler. Legacy provider/model/agent fields remain preserved data, not execution settings. If the file does not exist, the compatible configuration default is:
 
 ```json
 {
@@ -382,13 +393,6 @@ Agent behavior can be configured per repository in `.diffuse/reviews/config.json
   "maxParallelAgents": 1,
   "promptInstructions": "Prefer high-signal correctness, security, data-loss, race, and test-coverage findings. Do not comment on non-actionable observations."
 }
-```
-
-Optional overrides:
-
-```sh
-DIFFUSE_OPENCODE_MODEL=provider/model
-DIFFUSE_OPENCODE_AGENT=agent-name
 ```
 
 This workflow is still evolving. Treat AI findings as review assistance, not as a replacement for human judgment.
@@ -425,7 +429,7 @@ just uninstall
 
 ## Project Status
 
-Diffuse is early and actively under development. The repository already contains working pieces for local diff viewing, review persistence, LSP integration, and opencode-assisted reviews, but the overall product should be considered experimental.
+Diffuse is early and actively under development. Local diff viewing, review persistence, LSP integration and the Phase 6 native ACP workbench are implemented, but the overall product should be considered experimental. Delivered feature scope does not imply completed real-provider/manual platform verification or later performance hardening.
 
 Expect changes in:
 

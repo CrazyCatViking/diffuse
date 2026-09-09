@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { acpMethodNames, type AcpMethod, type AcpMethods } from '../src/lib/acpContract';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { CoreMethods } from '../src/lib/coreContract';
@@ -20,10 +21,16 @@ export type NativeEventBatchCallback = (events: unknown) => void;
 
 export type NativeCoreAddonCreateOptions = {
   onEventBatch: NativeEventBatchCallback;
+  onAcpEventBatch?: NativeEventBatchCallback;
   [key: string]: unknown;
 };
 
-export interface NativeCoreAddon {
+type NativeAcpMethods = {
+  [M in AcpMethod]: (
+    ...args: undefined extends AcpMethods[M]['params'] ? [request?: AcpMethods[M]['params']] : [request: AcpMethods[M]['params']]
+  ) => Promise<unknown>;
+};
+export interface NativeCoreAddon extends NativeAcpMethods {
   getVersion(): Promise<unknown>;
   getWorkbenchSnapshot(): Promise<unknown>;
   openWorkspace(path: string): Promise<unknown>;
@@ -115,6 +122,7 @@ export function nativeAddonFactoryFromModule(loaded: unknown): NativeCoreAddonFa
 
 function validateAddon(value: unknown): NativeCoreAddon {
   const methods = [
+    ...acpMethodNames,
     'getVersion',
     'getWorkbenchSnapshot',
     'openWorkspace',

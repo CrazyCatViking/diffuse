@@ -259,34 +259,6 @@ export const useClient = () => {
     return workspaceRequest('addReviewComment', { sessionId, comment: plainJson(comment) });
   };
 
-  const startReviewAgent = async (_repositoryRoot: string, sessionId: string, files: ChangedFile[]): Promise<void> => {
-    await window.diffuse.startReviewAgent({ context: requestContext(), sessionId, files: plainJson(files) });
-  };
-
-  const stopReviewAgent = async (): Promise<void> => {
-    await window.diffuse.stopReviewAgent(requestContext());
-  };
-
-  const chatWithReviewAgent = async (
-    _repositoryRoot: string,
-    sessionId: string,
-    thread: ReviewThread,
-    question: string,
-    chatMessages: ReviewChatMessage[],
-    userMessageId?: string,
-    responseMessageId?: string,
-  ): Promise<ReviewChatMessage> => {
-    return window.diffuse.chatWithReviewAgent({
-      context: requestContext(),
-      sessionId,
-      thread: plainJson(thread),
-      question,
-      userMessageId,
-      responseMessageId,
-      chatMessages: plainJson(chatMessages),
-    });
-  };
-
   const listTreeSitterGrammars = async (): Promise<TreeSitterGrammar[]> => {
     return workspaceRequest('listTreeSitterGrammars');
   };
@@ -359,9 +331,6 @@ export const useClient = () => {
     saveReviewThread,
     getReviewChatMessages,
     saveReviewChatMessage,
-    startReviewAgent,
-    stopReviewAgent,
-    chatWithReviewAgent,
     installTreeSitterGrammar,
     listTreeSitterGrammars,
     syncTreeSitterRegistry,

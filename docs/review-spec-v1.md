@@ -8,9 +8,9 @@ This directory is intentionally plain JSON and Markdown so external agent harnes
 
 Phase 5 introduced the hybrid transitional boundary documented in [`review-spec-v2.md`](review-spec-v2.md). `config.json`, `active-session`, `review.json`, `progress.json`, `reviewed-files.json`, and `threads/*.json` remain authoritative portable files. The four legacy device-local families under `runs/`, `agents/`, `chat/messages/`, and `prompts/` are imported read-only into typed device-local SQLite archive tables when a workspace opens, but the source files are left untouched.
 
-The retained Electron/Node opencode runner still reads and writes those four legacy families during the transition. Their SQLite import is an idempotent compatibility archive; existing legacy review APIs do not read the archive in place of these files.
+The Phase 5 Electron/Node opencode runner historically read and wrote those four legacy families. Phase 6 retires it from the desktop, along with its SDK, private IPC and environment bridge. The files and compatibility APIs remain for history/integrations; their SQLite import is an idempotent read-only archive, not a replacement live store.
 
-The first Rust-only Phase 6 ACP slice adds device-local session snapshots and activity in SQLite schema 3, as described in [the v2 persistence boundary](review-spec-v2.md#acp-session-and-activity-history). It does not change any v1 file format, replace the retained runner, or expose ACP through RPC/tools or the desktop UI. ACP history is not written into this layout.
+The delivered native Phase 6 ACP workbench uses SQLite schema 7 for adapter/session/queue/history/input state, incarnations and file-scope compatibility. Schema 6 introduced immutable shard scope; schema 7 preserves old data while blocking ambiguous display-quoted scopes from reconnecting under literal Git path semantics. Affected sessions require new sessions with current IDs, not rewritten historical IDs. Main-owned bounded review waves persist in local UI state. See [the v2 persistence boundary](review-spec-v2.md#acp-session-and-activity-history). MCP tools write findings, merged shard progress and reviewed-file state through the portable formats here, never ACP transcripts into legacy run/chat/prompt families. Agents, review and inline chat use native ACP only; Diffuse RPC rollback has no agent execution fallback.
 
 ## Layout
 
@@ -38,7 +38,7 @@ The first Rust-only Phase 6 ACP slice adds device-local session snapshots and ac
           file-review.md
 ```
 
-The first six portable entities and `threads/` remain authoritative under the v2 boundary. `runs/`, `agents/`, `chat/messages/`, and `prompts/` retain their v1 shapes for the current legacy runner and are imported as described in [`review-spec-v2.md`](review-spec-v2.md).
+The first six portable entities and `threads/` remain authoritative under the v2 boundary. `runs/`, `agents/`, `chat/messages/`, and `prompts/` retain their v1 shapes for historical data and compatibility APIs, and are imported as described in [`review-spec-v2.md`](review-spec-v2.md).
 
 ## Writing Files
 
@@ -77,7 +77,7 @@ The core rejects RPC writes with invalid path-segment IDs before constructing pe
 }
 ```
 
-`provider` currently defaults to `opencode`. `maxParallelAgents` controls how many file shards the built-in runner starts. Environment variables can still override `model` and `agent` at runtime.
+The compatible `provider` default remains `opencode`, but provider/model/agent fields no longer select desktop execution. ACP review/chat uses `promptInstructions`; the main-owned review-wave scheduler uses `maxParallelAgents` for bounded concurrent file assignments. Legacy model/agent environment overrides are not consumed or auto-translated: configure equivalent supported adapter arguments explicitly and keep credentials in environment-key references or the adapter's authentication system.
 
 `review.json` describes the review target and participants.
 
@@ -186,7 +186,7 @@ Threads can be `open` or `resolved`. Replies append to `messages`; resolving or 
 
 ## Agent State
 
-For the retained legacy runner, files in `runs/` are the source of truth consumed by the existing review APIs for managed review run lifecycle. Electron provider adapters may own external process handles, but they report lifecycle state back to core by updating these run records. Under the hybrid v2 boundary they are also imported read-only into the device-local compatibility archive; that archive is not used as the current runner's live store.
+Historically, the Node runner used `runs/` as its lifecycle authority and reported provider state through core file APIs. These records remain readable by legacy review APIs and are imported read-only into SQLite archives. Current ACP execution and wave plans use the v2 device-local stores instead; the archive is not a live execution store.
 
 ```json
 {
@@ -242,11 +242,11 @@ Selection-only AI chat may use a synthetic thread id in `context.threadIds` with
 chat:<file-id>:<side>:<start-line>:<end-line>:<start-column>:<end-column>
 ```
 
-Assistant responses from the built-in provider include `provider: "opencode"` and may include `runId`.
+Historical assistant responses from the retired built-in provider include `provider: "opencode"` and may include `runId`. Current ACP transcript history is not written into these files.
 
 ## Built-In Tool Calls
 
-Built-in providers should use Diffuse RPC/tool calls instead of writing JSON directly when possible:
+The following retained core file APIs support v1 data and integrations. They are not the current ACP MCP tool names; native agents use the scoped tools described in [architecture](architecture.md#inputs-and-review-tools). Integrations should prefer validated core calls over direct JSON writes where available:
 
 ```text
 listReviewSessions
@@ -277,7 +277,7 @@ recoverStaleReviewRuns
 
 `addReviewComment` accepts a complete thread object as `comment` and persists it under `threads/<id>.json`.
 
-`addReviewCommentPayload` accepts the compact tool payload used by the built-in opencode bridge:
+`addReviewCommentPayload` accepts the compact tool payload historically used by the opencode bridge and retained by compatible core APIs:
 
 ```json
 {
@@ -297,24 +297,26 @@ The core expands that payload into a normal thread, anchors it to the active dif
 
 `recoverStaleReviewRuns` marks active runs as failed when Diffuse restarts without an attached provider process.
 
-## Built-In opencode Runner
+## Historical opencode Runner
 
-The desktop app can start built-in opencode review runs for the active session. The selected core owns the review run state in `runs/<agent-run-id>.json`; both current core implementations preserve v1 files and unknown extension fields. Electron only acts as the opencode provider adapter: it starts opencode through `@opencode-ai/sdk`, creates opencode sessions for the repository directory, sends review prompts asynchronously, and reports status changes back to core.
+This section records the Phase 5 and earlier contract, not a current desktop capability. The runner, `@opencode-ai/sdk` dependency, private `review-agent:*` IPC and Node bridge are removed in Phase 6. Existing files are preserved; current agent execution uses [native ACP](architecture.md#native-acp-workbench).
 
-Cancellation uses the opencode SDK `session.abort` API.
+The desktop historically started opencode reviews for the active session. The core owned `runs/<agent-run-id>.json`, while Electron used the SDK to create provider sessions, send prompts and report status changes back to core. Compatible core file APIs continue preserving v1 data and unknown extension fields.
 
-Environment overrides:
+Cancellation used the opencode SDK `session.abort` API.
+
+Historical environment overrides (not current ACP settings):
 
 ```text
 DIFFUSE_OPENCODE_MODEL=provider/model
 DIFFUSE_OPENCODE_AGENT=agent-name
 ```
 
-The runner generates opencode custom tools that call back into Diffuse for validated comments, progress, agent state, assigned changed files, and diff access. Future chat provider sessions should preserve the same persisted file contract in `chat/messages/`.
+The runner generated custom tools for validated comments, progress, agent state, assigned changed files and diffs. Its chat persisted in `chat/messages/`; ACP history now uses SQLite instead.
 
-The generated tools are written under the reviewed repository's `.opencode/tools/diffuse_review.ts`. If `.opencode/package.json` is missing, Diffuse creates a minimal package file with `@opencode-ai/plugin` as a dependency.
+Generated tools were written to `.opencode/tools/diffuse_review.ts`; when absent, `.opencode/package.json` was created with `@opencode-ai/plugin`. Migration deliberately does not delete these repository files. If an ACP adapter auto-loads the old generated tool, explicitly disable or remove it during adapter setup: the Node endpoints it calls are retired, not aliases for the new session-scoped MCP tools. Do not automatically translate old provider/model/agent overrides into adapter flags.
 
-The local tool bridge listens on `127.0.0.1` for the active run and requires a bearer token passed through `DIFFUSE_REVIEW_BRIDGE_URL` and `DIFFUSE_REVIEW_BRIDGE_TOKEN`. The bridge exposes these endpoints to the generated tools:
+The historical bridge listened on `127.0.0.1` with a bearer token routed through `DIFFUSE_REVIEW_BRIDGE_URL` and `DIFFUSE_REVIEW_BRIDGE_TOKEN`. These retired endpoints were exposed to generated tools:
 
 - `/changed-files`
 - `/diff`

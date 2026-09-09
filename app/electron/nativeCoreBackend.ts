@@ -1,4 +1,6 @@
 import type { CoreMethods } from '../src/lib/coreContract';
+import { isAcpEventBatch } from '../src/lib/acpContract';
+import { AcpBackend } from './acpBackend';
 import { isDeepStrictEqual } from 'node:util';
 import type { VersionInfo } from '../src/lib/protocol';
 import {
@@ -36,7 +38,7 @@ import {
 import { CoreBackendError, type CoreBackend, type CoreBackendEventListener, type CoreBackendHealth } from './coreBackend';
 import type { NativeCoreAddon, NativeCoreAddonCreateOptions, NativeCoreAddonFactory } from './nativeCoreAddon';
 
-export class NativeCoreBackend implements CoreBackend {
+export class NativeCoreBackend extends AcpBackend implements CoreBackend {
   private readonly addon: NativeCoreAddon;
   private readonly eventListeners = new Set<CoreBackendEventListener>();
   private state: 'running' | 'stopping' | 'stopped' = 'running';
@@ -45,8 +47,23 @@ export class NativeCoreBackend implements CoreBackend {
   private shutdownOperation: Promise<void> | null = null;
 
   constructor(factory: NativeCoreAddonFactory, options: Omit<NativeCoreAddonCreateOptions, 'onEventBatch'> = {}) {
+    super((method, request) => this.call(method, () => (this.addon[method] as (request: unknown) => Promise<unknown>)(request)));
     try {
-      this.addon = factory({ ...options, onEventBatch: (events) => this.receiveEventBatch(events) });
+      this.addon = factory({
+        ...options,
+        onEventBatch: (events) => this.receiveEventBatch(events),
+        onAcpEventBatch: (batch) => {
+          if (this.state !== 'running') return;
+          const valid = isAcpEventBatch(batch) ? batch : { events: [], requiresSnapshot: true };
+          for (const listener of this.acpListeners) {
+            try {
+              listener(valid);
+            } catch {
+              /* A renderer listener must not interrupt native delivery. */
+            }
+          }
+        },
+      });
     } catch (error) {
       throw normalizeNativeError('initialize', error, 'NATIVE_ADDON_INIT_FAILED');
     }
@@ -230,6 +247,7 @@ export class NativeCoreBackend implements CoreBackend {
     if (this.shutdownOperation) return this.shutdownOperation;
     this.state = 'stopping';
     this.eventListeners.clear();
+    this.acpListeners.clear();
     this.shutdownOperation = this.invokeShutdown();
     return this.shutdownOperation;
   }

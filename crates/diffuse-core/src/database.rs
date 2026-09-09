@@ -17,7 +17,12 @@ use crate::{
 };
 
 pub const DEFAULT_DATABASE_FILE_NAME: &str = "workbench.sqlite3";
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 7;
+
+pub(crate) struct AcpCommit {
+    pub activity: crate::acp::SessionActivity,
+    pub turns: Vec<crate::acp::QueuedTurn>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RestorableWorkspace {
@@ -523,16 +528,281 @@ impl WorkbenchDatabase {
                 INSERT INTO schema_migrations(version, applied_at) VALUES (3, unixepoch('subsec') * 1000);",
             )?;
         }
+        if version < 4 {
+            transaction.execute_batch("CREATE TABLE acp_adapters(id TEXT PRIMARY KEY, definition_json TEXT NOT NULL CHECK(json_valid(definition_json)));
+                CREATE TABLE acp_turns(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,session_id TEXT NOT NULL REFERENCES acp_sessions(id) ON DELETE CASCADE,request_id TEXT NOT NULL,text TEXT NOT NULL,state TEXT NOT NULL,stop_reason TEXT,UNIQUE(session_id,request_id));
+                CREATE INDEX acp_turns_queue_idx ON acp_turns(session_id,state,ordinal);
+                CREATE TABLE acp_history(sequence INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL REFERENCES acp_sessions(id) ON DELETE CASCADE,turn_id TEXT,kind TEXT NOT NULL,content_json TEXT NOT NULL CHECK(json_valid(content_json)));
+                CREATE TABLE acp_input_delivery(input_id TEXT PRIMARY KEY REFERENCES input_requests(id) ON DELETE CASCADE,state TEXT NOT NULL);
+                CREATE TABLE acp_replay_history(sequence INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL REFERENCES acp_sessions(id) ON DELETE CASCADE,kind TEXT NOT NULL,content_json TEXT NOT NULL CHECK(json_valid(content_json)));
+                CREATE INDEX acp_history_session_idx ON acp_history(session_id,sequence);
+                INSERT INTO acp_history(session_id,turn_id,kind,content_json)
+                SELECT session_id,turn_id,
+                  CASE WHEN kind='turn-started' THEN 'user-message'
+                    WHEN json_extract(payload_json,'$.sessionUpdate')='agent_message_chunk' THEN 'agent-message'
+                    WHEN json_extract(payload_json,'$.sessionUpdate')='user_message_chunk' THEN 'user-message'
+                    WHEN json_extract(payload_json,'$.sessionUpdate') IN ('tool_call','tool_call_update') THEN 'tool-call'
+                    WHEN json_extract(payload_json,'$.sessionUpdate')='plan' THEN 'plan'
+                    WHEN json_extract(payload_json,'$.sessionUpdate')='current_mode_update' THEN 'mode'
+                    ELSE 'activity' END,
+                  CASE WHEN kind='session-update' AND json_extract(payload_json,'$.sessionUpdate')='plan' THEN COALESCE(json_extract(payload_json,'$.entries'),'[]')
+                    WHEN kind='session-update' AND json_extract(payload_json,'$.sessionUpdate')='current_mode_update' THEN json_object('modeId',json_extract(payload_json,'$.currentModeId'))
+                    ELSE payload_json END
+                FROM acp_activity WHERE kind='turn-started' OR (kind='session-update' AND COALESCE(json_extract(payload_json,'$.sessionUpdate'),'')!='agent_thought_chunk') ORDER BY sequence;
+                INSERT OR IGNORE INTO acp_turns(id,session_id,request_id,text,state,stop_reason)
+                  SELECT turn_id,session_id,turn_id,COALESCE(json_extract(payload_json,'$.text'),''),'failed','historical-interruption'
+                  FROM acp_activity WHERE kind='turn-started' AND turn_id IS NOT NULL ORDER BY sequence;
+                UPDATE acp_turns SET stop_reason=(SELECT json_extract(a.payload_json,'$.stopReason') FROM acp_activity a WHERE a.turn_id=acp_turns.id AND a.kind='turn-ended' ORDER BY a.sequence DESC LIMIT 1)
+                  WHERE EXISTS(SELECT 1 FROM acp_activity a WHERE a.turn_id=acp_turns.id AND a.kind='turn-ended');
+                UPDATE acp_turns SET state=CASE WHEN stop_reason='cancelled' THEN 'cancelled' ELSE 'completed' END WHERE stop_reason!='historical-interruption';
+                INSERT INTO schema_migrations(version,applied_at) VALUES(4,unixepoch('subsec')*1000);")?;
+        }
+        if version < 5 {
+            transaction.execute_batch("CREATE TABLE acp_session_incarnations(session_id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,generation TEXT NOT NULL,token TEXT NOT NULL);
+                INSERT INTO schema_migrations(version,applied_at) VALUES(5,unixepoch('subsec')*1000);")?;
+        }
+        if version < 6 {
+            // Older cores must not silently discard a persisted authorization
+            // scope when deserializing and reconnecting an agent session.
+            transaction.execute_batch("INSERT INTO schema_migrations(version,applied_at) VALUES(6,unixepoch('subsec')*1000);")?;
+        }
+        if version < 7 {
+            // Pre-v7 changed-file IDs could contain Git's display quoting.
+            // Do not reinterpret an existing delegated scope as permission to
+            // access a different file whose literal name equals that display.
+            transaction.execute_batch("CREATE TABLE acp_legacy_quoted_scopes(session_id TEXT PRIMARY KEY REFERENCES acp_sessions(id) ON DELETE CASCADE);
+                INSERT INTO acp_legacy_quoted_scopes(session_id)
+                  SELECT DISTINCT a.id FROM acp_sessions a, json_each(a.snapshot_json,'$.reviewFileIds') f
+                  WHERE f.type='text' AND substr(f.value,1,1)='\"';
+                INSERT INTO schema_migrations(version,applied_at) VALUES(7,unixepoch('subsec')*1000);")?;
+        }
         transaction.commit()?;
         Ok(())
+    }
+
+    pub(crate) fn claim_acp_session(
+        &self,
+        id: &str,
+        workspace: WorkspaceId,
+        generation: WorkspaceGeneration,
+        token: &str,
+    ) -> CoreResult<()> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=?1 AND generation=?2 AND is_open=1)",
+            params![workspace.to_string(), generation.to_string()],
+            |r| r.get(0),
+        )?;
+        if !current {
+            return Err(CoreError::StaleWorkspaceGeneration);
+        }
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT workspace_id FROM agent_sessions WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if owner.is_some_and(|owner| owner != workspace.to_string()) {
+            return Err(CoreError::WorkspaceNotFound);
+        }
+        tx.execute("INSERT INTO acp_session_incarnations VALUES(?1,?2,?3,?4) ON CONFLICT(session_id) DO UPDATE SET workspace_id=excluded.workspace_id,generation=excluded.generation,token=excluded.token",params![id,workspace.to_string(),generation.to_string(),token])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn save_acp_adapter(
+        &self,
+        definition: &crate::acp::AdapterDefinition,
+    ) -> CoreResult<()> {
+        definition.validate()?;
+        self.connection.lock().expect("database lock poisoned").execute("INSERT INTO acp_adapters VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json", params![definition.id, serde_json::to_string(definition).map_err(|e| CoreError::Serialization(e.to_string()))?])?;
+        Ok(())
+    }
+
+    pub(crate) fn acp_adapters(&self) -> CoreResult<Vec<crate::acp::AdapterDefinition>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut query =
+            connection.prepare("SELECT definition_json FROM acp_adapters ORDER BY id")?;
+        query
+            .query_map([], |r| r.get::<_, String>(0))?
+            .map(|r| serde_json::from_str(&r?).map_err(|e| CoreError::Serialization(e.to_string())))
+            .collect()
+    }
+
+    pub(crate) fn queue_acp_turn(
+        &self,
+        workspace: WorkspaceId,
+        session: &str,
+        request: &str,
+        text: &str,
+    ) -> CoreResult<crate::acp::QueuedTurn> {
+        if request.is_empty()
+            || request.len() > 256
+            || text.len() > crate::acp::MAX_MESSAGE_BYTES / 8
+        {
+            return Err(CoreError::InvalidParams("invalid ACP prompt".into()));
+        }
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let owned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE id=?1 AND workspace_id=?2)",
+            params![session, workspace.to_string()],
+            |r| r.get(0),
+        )?;
+        if !owned {
+            return Err(CoreError::InvalidParams("unknown ACP session".into()));
+        }
+        let existing: Option<(String,String,String,Option<String>)> = tx.query_row("SELECT id,text,state,stop_reason FROM acp_turns WHERE session_id=?1 AND request_id=?2",params![session,request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if let Some((id, old, state, stop_reason)) = existing {
+            if old != text {
+                return Err(CoreError::InvalidParams(
+                    "requestId reused with different prompt".into(),
+                ));
+            }
+            return Ok(crate::acp::QueuedTurn {
+                id,
+                session_id: session.into(),
+                request_id: request.into(),
+                text: old,
+                state,
+                stop_reason,
+            });
+        }
+        let count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM acp_turns WHERE session_id=?1 AND state='queued'",
+            [session],
+            |r| r.get(0),
+        )?;
+        if count >= 64 {
+            return Err(CoreError::InvalidParams("ACP prompt queue is full".into()));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        tx.execute("INSERT INTO acp_turns(id,session_id,request_id,text,state) VALUES(?1,?2,?3,?4,'queued')",params![id,session,request,text])?;
+        tx.commit()?;
+        Ok(crate::acp::QueuedTurn {
+            id,
+            session_id: session.into(),
+            request_id: request.into(),
+            text: text.into(),
+            state: "queued".into(),
+            stop_reason: None,
+        })
+    }
+
+    pub(crate) fn next_acp_turn(
+        &self,
+        session: &str,
+        incarnation: &str,
+    ) -> CoreResult<Option<crate::acp::QueuedTurn>> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM acp_session_incarnations i JOIN workspaces w ON w.id=i.workspace_id WHERE i.session_id=?1 AND i.token=?2 AND w.generation=i.generation AND w.is_open=1)",params![session,incarnation],|r|r.get(0))?;
+        if !current {
+            return Err(CoreError::TaskFailed(
+                "Stale ACP session incarnation".into(),
+            ));
+        }
+        let turn = tx.query_row("SELECT id,request_id,text FROM acp_turns WHERE session_id=?1 AND state='queued' ORDER BY ordinal LIMIT 1",[session],|r|Ok(crate::acp::QueuedTurn { id:r.get(0)?,session_id:session.into(),request_id:r.get(1)?,text:r.get(2)?,state:"admitted".into(),stop_reason:None })).optional()?;
+        if let Some(turn) = &turn {
+            tx.execute(
+                "UPDATE acp_turns SET state='admitted' WHERE id=?1",
+                [&turn.id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(turn)
+    }
+
+    pub(crate) fn acp_turns(
+        &self,
+        workspace: WorkspaceId,
+        session: &str,
+    ) -> CoreResult<Vec<crate::acp::QueuedTurn>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut query = connection.prepare("SELECT t.id,t.request_id,t.text,t.state,t.stop_reason FROM acp_turns t JOIN agent_sessions s ON s.id=t.session_id WHERE s.workspace_id=?1 AND t.session_id=?2 ORDER BY ordinal DESC LIMIT 100")?;
+        query
+            .query_map(params![workspace.to_string(), session], |r| {
+                Ok(crate::acp::QueuedTurn {
+                    id: r.get(0)?,
+                    session_id: session.into(),
+                    request_id: r.get(1)?,
+                    text: r.get(2)?,
+                    state: r.get(3)?,
+                    stop_reason: r.get(4)?,
+                })
+            })?
+            .map(|r| r.map_err(Into::into))
+            .collect()
+    }
+
+    pub(crate) fn cancel_queued_acp_turn(
+        &self,
+        workspace: WorkspaceId,
+        session: &str,
+        turn: &str,
+    ) -> CoreResult<bool> {
+        Ok(self.connection.lock().expect("database lock poisoned").execute("UPDATE acp_turns SET state='cancelled',stop_reason='cancelled' WHERE id=?1 AND session_id=?2 AND state='queued' AND EXISTS(SELECT 1 FROM agent_sessions WHERE id=?2 AND workspace_id=?3)",params![turn,session,workspace.to_string()])? == 1)
+    }
+
+    pub(crate) fn acp_history(
+        &self,
+        workspace: WorkspaceId,
+        session: &str,
+        after: u64,
+    ) -> CoreResult<Vec<crate::acp::HistoryEntry>> {
+        let after = i64::try_from(after)
+            .map_err(|_| CoreError::InvalidParams("invalid history cursor".into()))?;
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut query = connection.prepare("SELECT h.sequence,h.turn_id,h.kind,h.content_json FROM acp_history h JOIN agent_sessions s ON s.id=h.session_id WHERE s.workspace_id=?1 AND h.session_id=?2 AND h.sequence>?3 ORDER BY h.sequence LIMIT 100")?;
+        query
+            .query_map(params![workspace.to_string(), session, after], |r| {
+                Ok((
+                    r.get::<_, u64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
+            .map(|r| {
+                let (sequence, turn_id, kind, content) = r?;
+                Ok(crate::acp::HistoryEntry {
+                    sequence,
+                    session_id: session.into(),
+                    turn_id,
+                    kind,
+                    content: serde_json::from_str(&content)
+                        .map_err(|e| CoreError::Serialization(e.to_string()))?,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn pending_acp_inputs(&self, workspace: WorkspaceId) -> CoreResult<Vec<Value>> {
+        let connection = self.connection.lock().expect("database lock poisoned");
+        let mut query=connection.prepare("SELECT i.id,h.content_json FROM input_requests i JOIN acp_history h ON json_extract(h.content_json,'$.input.id')=i.id WHERE i.workspace_id=?1 AND i.status IN ('pending','response-submitted') AND h.kind='input-request' ORDER BY h.sequence")?;
+        query
+            .query_map([workspace.to_string()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, content) = row?;
+                let mut value: Value = serde_json::from_str(&content)
+                    .map_err(|e| CoreError::Serialization(e.to_string()))?;
+                value["input"] = json!(select_input(&connection, workspace, &id)?);
+                Ok(value)
+            })
+            .collect()
     }
 
     pub(crate) fn record_acp_activity(
         &self,
         session: &crate::acp::SessionSnapshot,
+        incarnation: &str,
         kind: &str,
         payload: Value,
-    ) -> CoreResult<crate::acp::SessionActivity> {
+    ) -> CoreResult<AcpCommit> {
         let mut connection = self.connection.lock().expect("database lock poisoned");
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current: bool = tx.query_row(
@@ -546,20 +816,142 @@ impl WorkbenchDatabase {
         if !current {
             return Err(CoreError::StaleWorkspaceGeneration);
         }
+        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM acp_session_incarnations WHERE session_id=?1 AND token=?2 AND workspace_id=?3 AND generation=?4)",params![session.id,incarnation,session.workspace_id.to_string(),session.workspace_generation.to_string()],|r|r.get(0))?;
+        if !current {
+            return Err(CoreError::TaskFailed(
+                "Stale ACP session incarnation".into(),
+            ));
+        }
+        let mut changed_ids = Vec::<String>::new();
+        if kind == "session-ended" {
+            let mut query=tx.prepare("SELECT id FROM acp_turns WHERE session_id=?1 AND (state IN ('running','admitted') OR (?2 AND state='queued')) ORDER BY ordinal")?;
+            changed_ids = query
+                .query_map(
+                    params![
+                        session.id,
+                        session.state == crate::acp::SessionState::Closed
+                    ],
+                    |r| r.get(0),
+                )?
+                .collect::<Result<_, _>>()?;
+        } else if matches!(kind, "turn-started" | "turn-ended") {
+            changed_ids.extend(session.turn_id.clone());
+        }
         tx.execute("INSERT INTO agent_sessions(id,workspace_id,adapter,remote_session_id,capabilities_json,state,created_at,updated_at)
             VALUES (?1,?2,?3,?4,?5,?6,unixepoch('subsec')*1000,unixepoch('subsec')*1000)
             ON CONFLICT(id) DO UPDATE SET remote_session_id=excluded.remote_session_id,capabilities_json=excluded.capabilities_json,state=excluded.state,updated_at=excluded.updated_at",
             params![session.id,session.workspace_id.to_string(),session.adapter_id,session.remote_session_id,session.capabilities.to_string(),session.state.as_str()])?;
         tx.execute("INSERT INTO acp_sessions(id,snapshot_json) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET snapshot_json=excluded.snapshot_json", params![session.id,serde_json::to_string(session).map_err(|e| CoreError::Serialization(e.to_string()))?])?;
+        tx.execute(
+            "UPDATE agent_sessions SET authentication_profile=?2,review_session_id=?3 WHERE id=?1",
+            params![
+                session.id,
+                session.authentication_profile,
+                session.review_session_id
+            ],
+        )?;
         tx.execute("INSERT INTO acp_activity(session_id,turn_id,kind,payload_json,created_at) VALUES (?1,?2,?3,?4,unixepoch('subsec')*1000)", params![session.id,session.turn_id,kind,payload.to_string()])?;
         let sequence = tx.last_insert_rowid() as u64;
+        if kind == "session-starting" {
+            tx.execute(
+                "DELETE FROM acp_replay_history WHERE session_id=?1",
+                [&session.id],
+            )?;
+        }
+        if kind == "history-replaced" {
+            tx.execute("DELETE FROM acp_history WHERE session_id=?1 AND kind IN ('user-message','agent-message','tool-call','plan','mode')",[&session.id])?;
+            tx.execute("INSERT INTO acp_history(session_id,kind,content_json) SELECT session_id,kind,content_json FROM acp_replay_history WHERE session_id=?1 ORDER BY sequence",[&session.id])?;
+            tx.execute(
+                "DELETE FROM acp_replay_history WHERE session_id=?1",
+                [&session.id],
+            )?;
+        }
+        if kind == "turn-started" {
+            tx.execute("INSERT INTO acp_turns(id,session_id,request_id,text,state) VALUES(?1,?2,?1,?3,'running') ON CONFLICT(id) DO UPDATE SET state='running'",params![session.turn_id,session.id,payload["text"].as_str().unwrap_or_default()])?;
+        } else if kind == "turn-ended" {
+            let reason = payload["stopReason"].as_str().unwrap_or("end_turn");
+            tx.execute(
+                "UPDATE acp_turns SET state=?2,stop_reason=?3 WHERE id=?1",
+                params![
+                    session.turn_id,
+                    if reason == "cancelled" {
+                        "cancelled"
+                    } else {
+                        "completed"
+                    },
+                    reason
+                ],
+            )?;
+        } else if kind == "session-ended" {
+            tx.execute("UPDATE acp_turns SET state=?2,stop_reason='host-stopped' WHERE session_id=?1 AND state IN ('running','admitted')",params![session.id,if session.state==crate::acp::SessionState::Closed {"cancelled"} else {"failed"}])?;
+            if session.state == crate::acp::SessionState::Closed {
+                tx.execute("UPDATE acp_turns SET state='cancelled',stop_reason='host-stopped' WHERE session_id=?1 AND state='queued'",[&session.id])?;
+            }
+        }
+        let normalized = if matches!(kind, "agent-activity" | "permission-denied") {
+            Some(("activity", payload.clone()))
+        } else if kind == "turn-started" {
+            Some(("user-message", payload.clone()))
+        } else if matches!(kind, "session-update" | "session-replay-update") {
+            match payload["sessionUpdate"].as_str() {
+                Some("agent_message_chunk") => Some((
+                    "agent-message",
+                    json!({"messageId":payload["messageId"],"content":payload["content"]}),
+                )),
+                Some("user_message_chunk") => Some((
+                    "user-message",
+                    json!({"messageId":payload["messageId"],"content":payload["content"]}),
+                )),
+                Some("tool_call" | "tool_call_update") => Some(("tool-call", payload.clone())),
+                Some("plan") => Some(("plan", payload["entries"].clone())),
+                Some("current_mode_update") => {
+                    Some(("mode", json!({"modeId":payload["currentModeId"]})))
+                }
+                _ => Some(("activity", payload.clone())),
+            }
+        } else {
+            None
+        };
+        if let Some((entry_kind, content)) = normalized {
+            if kind == "session-replay-update" {
+                tx.execute(
+                    "INSERT INTO acp_replay_history(session_id,kind,content_json) VALUES(?1,?2,?3)",
+                    params![session.id, entry_kind, content.to_string()],
+                )?;
+            } else {
+                tx.execute(
+                "INSERT INTO acp_history(session_id,turn_id,kind,content_json) VALUES(?1,?2,?3,?4)",
+                params![session.id, session.turn_id, entry_kind, content.to_string()],
+            )?;
+            }
+        }
+        let mut turns = Vec::new();
+        for id in changed_ids {
+            turns.push(tx.query_row(
+                "SELECT id,session_id,request_id,text,state,stop_reason FROM acp_turns WHERE id=?1",
+                [id],
+                |r| {
+                    Ok(crate::acp::QueuedTurn {
+                        id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        request_id: r.get(2)?,
+                        text: r.get(3)?,
+                        state: r.get(4)?,
+                        stop_reason: r.get(5)?,
+                    })
+                },
+            )?);
+        }
         tx.commit()?;
-        Ok(crate::acp::SessionActivity {
-            sequence,
-            session_id: session.id.clone(),
-            turn_id: session.turn_id.clone(),
-            kind: kind.into(),
-            payload,
+        Ok(AcpCommit {
+            turns,
+            activity: crate::acp::SessionActivity {
+                sequence,
+                session_id: session.id.clone(),
+                turn_id: session.turn_id.clone(),
+                kind: kind.into(),
+                payload,
+            },
         })
     }
 
@@ -577,6 +969,18 @@ impl WorkbenchDatabase {
             .collect()
     }
 
+    pub(crate) fn ensure_current_acp_file_ids(
+        &self,
+        workspace: WorkspaceId,
+        session: &str,
+    ) -> CoreResult<()> {
+        let legacy:bool=self.connection.lock().expect("database lock poisoned").query_row("SELECT EXISTS(SELECT 1 FROM acp_legacy_quoted_scopes l JOIN agent_sessions a ON a.id=l.session_id WHERE l.session_id=?1 AND a.workspace_id=?2)",params![session,workspace.to_string()],|row|row.get(0))?;
+        if legacy {
+            return Err(CoreError::InvalidParams("saved reviewFileIds use legacy Git display quoting; start a new session with current changed-file IDs".into()));
+        }
+        Ok(())
+    }
+
     pub(crate) fn acp_activity(
         &self,
         workspace: WorkspaceId,
@@ -586,7 +990,7 @@ impl WorkbenchDatabase {
         let connection = self.connection.lock().expect("database lock poisoned");
         let after = i64::try_from(after)
             .map_err(|_| CoreError::InvalidParams("invalid activity cursor".into()))?;
-        let mut query = connection.prepare("SELECT a.sequence,a.turn_id,a.kind,a.payload_json FROM acp_activity a JOIN agent_sessions s ON s.id=a.session_id WHERE s.workspace_id=?1 AND a.session_id=?2 AND a.sequence>?3 ORDER BY a.sequence LIMIT 100")?;
+        let mut query = connection.prepare("SELECT a.sequence,a.turn_id,a.kind,a.payload_json FROM acp_activity a JOIN agent_sessions s ON s.id=a.session_id WHERE s.workspace_id=?1 AND a.session_id=?2 AND a.sequence>?3 AND NOT (a.kind='session-update' AND COALESCE(json_extract(a.payload_json,'$.sessionUpdate'),'')='agent_thought_chunk') ORDER BY a.sequence LIMIT 100")?;
         query
             .query_map(params![workspace.to_string(), session, after], |row| {
                 Ok((
@@ -614,6 +1018,11 @@ impl WorkbenchDatabase {
     pub(crate) fn recover_acp_sessions(&self) -> CoreResult<()> {
         let mut connection = self.connection.lock().expect("database lock poisoned");
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM acp_session_incarnations", [])?;
+        tx.execute("DELETE FROM acp_replay_history", [])?;
+        tx.execute("UPDATE acp_turns SET state='failed',stop_reason='application-restarted' WHERE state IN ('running','admitted')",[])?;
+        tx.execute_batch("UPDATE attention_items SET status='expired',lifecycle='expired' WHERE id IN (SELECT attention_id FROM input_requests WHERE agent_session_id IN (SELECT id FROM acp_sessions) AND status IN ('pending','response-submitted'));
+            UPDATE input_requests SET status='expired' WHERE agent_session_id IN (SELECT id FROM acp_sessions) AND status IN ('pending','response-submitted');")?;
         tx.execute_batch("INSERT INTO acp_activity(session_id,turn_id,kind,payload_json,created_at)
             SELECT a.id,json_extract(a.snapshot_json,'$.turnId'),'session-ended','{\"reason\":\"application-restarted\"}',unixepoch('subsec')*1000
             FROM acp_sessions a JOIN agent_sessions s USING(id) WHERE s.state IN ('starting','ready','running');
@@ -1243,10 +1652,46 @@ impl WorkbenchDatabase {
         &self,
         request: &CreateInputRequest,
     ) -> CoreResult<InputMutationResult> {
+        self.create_input_internal(request, None)
+    }
+
+    pub(crate) fn create_acp_input(
+        &self,
+        request: &CreateInputRequest,
+        session: &str,
+        metadata: &Value,
+    ) -> CoreResult<InputMutationResult> {
+        self.create_input_internal(request, Some((session, metadata)))
+    }
+
+    pub(crate) fn acp_input(&self, workspace: WorkspaceId, id: &str) -> CoreResult<InputRequest> {
+        select_input(
+            &self.connection.lock().expect("database lock poisoned"),
+            workspace,
+            id,
+        )?
+        .ok_or(CoreError::WorkspaceNotFound)
+    }
+
+    pub(crate) fn is_acp_input(&self, workspace: WorkspaceId, id: &str) -> CoreResult<bool> {
+        Ok(self.connection.lock().expect("database lock poisoned").query_row("SELECT EXISTS(SELECT 1 FROM input_requests i JOIN acp_sessions a ON a.id=i.agent_session_id WHERE i.id=?1 AND i.workspace_id=?2)",params![id,workspace.to_string()],|r|r.get(0))?)
+    }
+
+    fn create_input_internal(
+        &self,
+        request: &CreateInputRequest,
+        agent_session: Option<(&str, &Value)>,
+    ) -> CoreResult<InputMutationResult> {
         request.validate()?;
         let mut connection = self.connection.lock().expect("database lock poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_workspace(&transaction, request.workspace_id)?;
+        if let Some((session, _)) = agent_session {
+            let owned:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM agent_sessions a JOIN workspaces w ON w.id=a.workspace_id WHERE a.id=?1 AND w.id=?2 AND w.generation=?3 AND w.is_open=1)",params![session,request.workspace_id.to_string(),request.workspace_generation.to_string()],|r|r.get(0))?;
+            if !owned {
+                return Err(CoreError::StaleWorkspaceGeneration);
+            }
+        }
         let id = request
             .id
             .clone()
@@ -1371,7 +1816,7 @@ impl WorkbenchDatabase {
             "INSERT INTO input_requests(
                 id, workspace_id, agent_session_id, revision, kind, status,
                 request_json, response_json, created_at, updated_at, attention_id
-             ) VALUES (?1, ?2, NULL, ?3, ?4, 'pending', ?5, NULL, ?6, ?6, ?7)",
+             ) VALUES (?1, ?2, ?8, ?3, ?4, 'pending', ?5, NULL, ?6, ?6, ?7)",
             params![
                 id,
                 request.workspace_id.to_string(),
@@ -1380,6 +1825,7 @@ impl WorkbenchDatabase {
                 request_json,
                 now,
                 attention_id,
+                agent_session.map(|(session, _)| session),
             ],
         )?;
         let input = InputRequest {
@@ -1397,6 +1843,13 @@ impl WorkbenchDatabase {
             updated_at: timestamp_millis(now),
         };
         let attention = select_attention(&transaction, request.workspace_id, &attention_id)?;
+        if let Some((session, metadata)) = agent_session {
+            transaction.execute(
+                "INSERT INTO acp_input_delivery VALUES(?1,'waiting')",
+                [&input.id],
+            )?;
+            transaction.execute("INSERT INTO acp_history(session_id,kind,content_json) VALUES(?1,'input-request',?2)",params![session,json!({"input":input,"method":metadata["method"],"params":metadata["params"],"sessionId":session}).to_string()])?;
+        }
         let summary = attention_summary_tx(&transaction, request.workspace_id)?;
         transaction.commit()?;
         Ok(InputMutationResult {
@@ -1478,29 +1931,87 @@ impl WorkbenchDatabase {
         expected_revision: u64,
         desired: InputRequestStatus,
     ) -> CoreResult<InputMutationResult> {
+        self.finish_input_internal(workspace_id, input_id, expected_revision, desired, false)
+    }
+
+    pub(crate) fn finish_acp_input(
+        &self,
+        workspace_id: WorkspaceId,
+        input_id: &str,
+        expected_revision: u64,
+        desired: InputRequestStatus,
+    ) -> CoreResult<InputMutationResult> {
+        self.finish_input_internal(workspace_id, input_id, expected_revision, desired, true)
+    }
+
+    pub(crate) fn claim_acp_input(
+        &self,
+        workspace: WorkspaceId,
+        id: &str,
+    ) -> CoreResult<Option<InputRequest>> {
+        let mut connection = self.connection.lock().expect("database lock poisoned");
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let input = select_input(&tx, workspace, id)?.ok_or(CoreError::WorkspaceNotFound)?;
+        if input.status != InputRequestStatus::ResponseSubmitted {
+            return Ok(None);
+        }
+        if tx.execute(
+            "UPDATE acp_input_delivery SET state='sending' WHERE input_id=?1 AND state='waiting'",
+            [id],
+        )? != 1
+        {
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(input))
+    }
+
+    fn finish_input_internal(
+        &self,
+        workspace_id: WorkspaceId,
+        input_id: &str,
+        expected_revision: u64,
+        desired: InputRequestStatus,
+        producer: bool,
+    ) -> CoreResult<InputMutationResult> {
         validate_entity_revision(expected_revision, "expectedRevision")?;
         debug_assert!(desired.is_terminal());
         let mut connection = self.connection.lock().expect("database lock poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut input = select_input(&transaction, workspace_id, input_id)?
             .ok_or(CoreError::WorkspaceNotFound)?;
-        let allowed = match desired {
-            InputRequestStatus::Accepted | InputRequestStatus::Rejected => {
-                input.status == InputRequestStatus::ResponseSubmitted
-            }
-            InputRequestStatus::Cancelled => {
-                input.cancellation_supported
-                    && matches!(
-                        input.status,
-                        InputRequestStatus::Pending | InputRequestStatus::ResponseSubmitted
-                    )
-            }
-            InputRequestStatus::Expired | InputRequestStatus::Superseded => matches!(
-                input.status,
-                InputRequestStatus::Pending | InputRequestStatus::ResponseSubmitted
-            ),
-            _ => false,
-        };
+        let delivery: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM acp_input_delivery WHERE input_id=?1",
+                [input_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let producer_owned = !producer
+            && delivery.is_some()
+            && (delivery.as_deref() == Some("sending")
+                || matches!(
+                    desired,
+                    InputRequestStatus::Accepted | InputRequestStatus::Rejected
+                ));
+        let allowed = !producer_owned
+            && match desired {
+                InputRequestStatus::Accepted | InputRequestStatus::Rejected => {
+                    input.status == InputRequestStatus::ResponseSubmitted
+                }
+                InputRequestStatus::Cancelled => {
+                    input.cancellation_supported
+                        && matches!(
+                            input.status,
+                            InputRequestStatus::Pending | InputRequestStatus::ResponseSubmitted
+                        )
+                }
+                InputRequestStatus::Expired | InputRequestStatus::Superseded => matches!(
+                    input.status,
+                    InputRequestStatus::Pending | InputRequestStatus::ResponseSubmitted
+                ),
+                _ => false,
+            };
         let outcome = if expected_revision != input.revision {
             MutationOutcome::Stale
         } else if input.status == desired {
@@ -2363,6 +2874,208 @@ mod tests {
     }
 
     #[test]
+    fn schema_three_activity_is_migrated_to_normalized_history_and_turns() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, workspace_generation) = workspace(&database, "/old-acp");
+        let mut session:crate::acp::SessionSnapshot=serde_json::from_value(json!({"id":"old-session","hostId":"old-host","workspaceId":workspace_id,"workspaceGeneration":workspace_generation,"adapterId":"fake","remoteSessionId":"remote","capabilities":{},"state":"running","turnId":"old-turn","permissionPolicy":"deny-all"})).unwrap();
+        database
+            .claim_acp_session(&session.id, workspace_id, workspace_generation, "test")
+            .unwrap();
+        database
+            .record_acp_activity(&session, "test", "turn-started", json!({"text":"hello"}))
+            .unwrap();
+        database.record_acp_activity(&session,"test","session-update",json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"answer"}})).unwrap();
+        session.state = crate::acp::SessionState::Ready;
+        database
+            .record_acp_activity(
+                &session,
+                "test",
+                "turn-ended",
+                json!({"stopReason":"end_turn"}),
+            )
+            .unwrap();
+        database.connection.lock().unwrap().execute_batch("DROP TABLE acp_input_delivery; DROP TABLE acp_turns; DROP TABLE acp_history; DROP TABLE acp_replay_history; DROP TABLE acp_adapters; DROP TABLE acp_session_incarnations; DROP TABLE acp_legacy_quoted_scopes; DELETE FROM schema_migrations WHERE version>=4;").unwrap();
+        database.migrate().unwrap();
+        database.migrate().unwrap();
+        let history = database.acp_history(workspace_id, &session.id, 0).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].kind, "user-message");
+        assert_eq!(history[1].kind, "agent-message");
+        let turns = database.acp_turns(workspace_id, &session.id).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].state, "completed");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(
+            database.acp_sessions(workspace_id).unwrap()[0].permission_policy,
+            "deny-all"
+        );
+    }
+
+    #[test]
+    fn legacy_git_quoted_scopes_cannot_be_reinterpreted_as_literal_file_permissions() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, workspace_generation) = workspace(&database, "/quoted-scope");
+        let quoted = "\"line\\nname.txt\"";
+        let session = |id: &str, files: Value| {
+            serde_json::from_value::<crate::acp::SessionSnapshot>(json!({"id":id,"hostId":"host","workspaceId":workspace_id,"workspaceGeneration":workspace_generation,"adapterId":"fake","remoteSessionId":null,"capabilities":{},"state":"closed","turnId":null,"permissionPolicy":"deny-all","reviewSessionId":"review","reviewFileIds":files})).unwrap()
+        };
+        for snapshot in [
+            session("legacy-quoted", json!([quoted])),
+            session("ordinary", json!(["*.txt"])),
+            session("whole", Value::Null),
+        ] {
+            database
+                .claim_acp_session(&snapshot.id, workspace_id, workspace_generation, "test")
+                .unwrap();
+            database
+                .record_acp_activity(&snapshot, "test", "session-starting", json!({}))
+                .unwrap();
+        }
+        database.connection.lock().unwrap().execute_batch("DROP TABLE acp_legacy_quoted_scopes; DELETE FROM schema_migrations WHERE version=7;").unwrap();
+        database.migrate().unwrap();
+        database.migrate().unwrap();
+        assert!(
+            database
+                .ensure_current_acp_file_ids(workspace_id, "legacy-quoted")
+                .is_err()
+        );
+        assert!(
+            database
+                .ensure_current_acp_file_ids(workspace_id, "ordinary")
+                .is_ok()
+        );
+        assert!(
+            database
+                .ensure_current_acp_file_ids(workspace_id, "whole")
+                .is_ok()
+        );
+        assert_eq!(
+            database
+                .acp_sessions(workspace_id)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.id == "legacy-quoted")
+                .unwrap()
+                .review_file_ids,
+            Some(vec![quoted.into()])
+        );
+        // Newly selected literal quote/backslash filenames are still supported.
+        let current = session("current-literal", json!([quoted]));
+        database
+            .claim_acp_session(&current.id, workspace_id, workspace_generation, "new")
+            .unwrap();
+        database
+            .record_acp_activity(&current, "new", "session-starting", json!({}))
+            .unwrap();
+        assert!(
+            database
+                .ensure_current_acp_file_ids(workspace_id, &current.id)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn acp_input_delivery_is_claimed_once_and_only_the_producer_confirms_it() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, workspace_generation) = workspace(&database, "/acp-input");
+        let session:crate::acp::SessionSnapshot=serde_json::from_value(json!({"id":"session","hostId":"host","workspaceId":workspace_id,"workspaceGeneration":workspace_generation,"adapterId":"fake","remoteSessionId":"remote","capabilities":{},"state":"ready","turnId":null,"permissionPolicy":"interactive"})).unwrap();
+        database
+            .claim_acp_session(&session.id, workspace_id, workspace_generation, "test")
+            .unwrap();
+        database
+            .record_acp_activity(&session, "test", "session-starting", json!({}))
+            .unwrap();
+        let request = CreateInputRequest {
+            id: Some("permission".into()),
+            workspace_id,
+            workspace_generation,
+            revision: 1,
+            kind: InputRequestKind::Permission,
+            prompt: "Allow read?".into(),
+            choices: vec!["allow".into()],
+            cancellation_supported: true,
+            attention_id: None,
+            target: None,
+        };
+        database
+            .create_acp_input(
+                &request,
+                &session.id,
+                &json!({"method":"session/request_permission","params":{"sessionId":"remote"}}),
+            )
+            .unwrap();
+        assert_eq!(database.pending_acp_inputs(workspace_id).unwrap().len(), 1);
+        database
+            .answer_input(
+                workspace_id,
+                "permission",
+                1,
+                InputResponse {
+                    value: "allow".into(),
+                    secret: None,
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            database
+                .claim_acp_input(workspace_id, "permission")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            database
+                .claim_acp_input(workspace_id, "permission")
+                .unwrap()
+                .is_none()
+        );
+        for desired in [InputRequestStatus::Cancelled, InputRequestStatus::Accepted] {
+            assert_eq!(
+                database
+                    .finish_input(workspace_id, "permission", 1, desired)
+                    .unwrap()
+                    .outcome,
+                MutationOutcome::Invalid
+            );
+        }
+        assert_eq!(
+            database
+                .finish_acp_input(workspace_id, "permission", 1, InputRequestStatus::Accepted)
+                .unwrap()
+                .outcome,
+            MutationOutcome::Applied
+        );
+        assert!(
+            database
+                .pending_acp_inputs(workspace_id)
+                .unwrap()
+                .is_empty()
+        );
+        let pending = CreateInputRequest {
+            id: Some("interrupted".into()),
+            ..request
+        };
+        database
+            .create_acp_input(&pending, &session.id, &json!({}))
+            .unwrap();
+        database.recover_acp_sessions().unwrap();
+        assert_eq!(
+            database
+                .acp_input(workspace_id, "interrupted")
+                .unwrap()
+                .status,
+            InputRequestStatus::Expired
+        );
+        assert_eq!(
+            database
+                .acp_input(workspace_id, "permission")
+                .unwrap()
+                .status,
+            InputRequestStatus::Accepted
+        );
+    }
+
+    #[test]
     fn acp_recovery_is_durable_idempotent_and_generation_fenced() {
         use crate::acp::{SessionSnapshot, SessionState};
         let database = WorkbenchDatabase::open_in_memory().unwrap();
@@ -2378,9 +3091,18 @@ mod tests {
             state: SessionState::Running,
             turn_id: Some("interrupted-turn".into()),
             permission_policy: "deny-all".into(),
+            review_session_id: None,
+            review_file_ids: None,
+            modes: Value::Null,
+            authentication_profile: None,
+            history_revision: 0,
+            continuity: crate::acp::SessionContinuity::Unknown,
         };
         database
-            .record_acp_activity(&session, "turn-started", json!({"text":"hello"}))
+            .claim_acp_session(&session.id, workspace_id, workspace_generation, "test")
+            .unwrap();
+        database
+            .record_acp_activity(&session, "test", "turn-started", json!({"text":"hello"}))
             .unwrap();
         assert_eq!(database.attention_summary(workspace_id).unwrap().running, 1);
         database.recover_acp_sessions().unwrap();
@@ -2398,7 +3120,7 @@ mod tests {
             .open_workspace("/acp", "/acp", "acp", WorkspaceGeneration::new())
             .unwrap();
         assert!(matches!(
-            database.record_acp_activity(&session, "stale", json!({})),
+            database.record_acp_activity(&session, "test", "stale", json!({})),
             Err(CoreError::StaleWorkspaceGeneration)
         ));
         assert_eq!(
@@ -2407,6 +3129,47 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn stale_session_incarnation_cannot_overwrite_snapshot_or_cancel_new_turns() {
+        let database = WorkbenchDatabase::open_in_memory().unwrap();
+        let (workspace_id, workspace_generation) = workspace(&database, "/incarnation");
+        let mut old:crate::acp::SessionSnapshot=serde_json::from_value(json!({"id":"same-id","hostId":"same-pooled-host","workspaceId":workspace_id,"workspaceGeneration":workspace_generation,"adapterId":"fake","remoteSessionId":"remote","capabilities":{},"state":"ready","turnId":null,"permissionPolicy":"deny-all"})).unwrap();
+        database
+            .claim_acp_session(&old.id, workspace_id, workspace_generation, "old")
+            .unwrap();
+        database
+            .record_acp_activity(&old, "old", "session-starting", json!({}))
+            .unwrap();
+        database
+            .claim_acp_session(&old.id, workspace_id, workspace_generation, "new")
+            .unwrap();
+        database
+            .record_acp_activity(&old, "new", "session-starting", json!({}))
+            .unwrap();
+        let queued = database
+            .queue_acp_turn(workspace_id, &old.id, "new-request", "new prompt")
+            .unwrap();
+        old.state = crate::acp::SessionState::Closed;
+        assert!(
+            database
+                .record_acp_activity(&old, "old", "session-ended", json!({}))
+                .is_err()
+        );
+        assert!(database.next_acp_turn(&old.id, "old").is_err());
+        assert_eq!(
+            database.acp_sessions(workspace_id).unwrap()[0].state,
+            crate::acp::SessionState::Ready
+        );
+        assert_eq!(
+            database.acp_turns(workspace_id, &old.id).unwrap()[0].state,
+            "queued"
+        );
+        assert_eq!(
+            database.next_acp_turn(&old.id, "new").unwrap().unwrap().id,
+            queued.id
         );
     }
 
@@ -3110,7 +3873,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
-                 INSERT INTO schema_migrations(version, applied_at) VALUES (4, 0);
+                 INSERT INTO schema_migrations(version, applied_at) VALUES (8, 0);
                  CREATE TABLE future_data (value TEXT NOT NULL);
                  INSERT INTO future_data(value) VALUES ('preserve me');",
             )
@@ -3119,7 +3882,7 @@ mod tests {
 
         assert!(matches!(
             WorkbenchDatabase::open(&path),
-            Err(CoreError::UnsupportedDatabaseVersion(4))
+            Err(CoreError::UnsupportedDatabaseVersion(8))
         ));
         assert_no_corrupt_backup(temp.path());
         let connection = Connection::open(&path).unwrap();

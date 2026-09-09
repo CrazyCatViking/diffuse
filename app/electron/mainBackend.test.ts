@@ -5,6 +5,7 @@ const nativeAddonModuleLoaded = vi.hoisted(() => vi.fn());
 const electronState = vi.hoisted(() => ({
   appHandlers: new Map<string, (...args: any[]) => void>(),
   quit: vi.fn(),
+  channels: new Set<string>(),
 }));
 
 vi.mock('electron', () => ({
@@ -22,7 +23,7 @@ vi.mock('electron', () => ({
     static fromWebContents = vi.fn();
   },
   dialog: { showOpenDialog: vi.fn() },
-  ipcMain: { handle: vi.fn() },
+  ipcMain: { handle: vi.fn((channel: string) => electronState.channels.add(channel)) },
   Menu: { buildFromTemplate: vi.fn(), setApplicationMenu: vi.fn() },
   nativeImage: { createFromDataURL: vi.fn() },
   Notification: class Notification {
@@ -32,13 +33,12 @@ vi.mock('electron', () => ({
   Tray: class Tray {},
 }));
 
-vi.mock('./reviewAgentRunner', () => ({ ReviewAgentRunner: class ReviewAgentRunner {} }));
 vi.mock('./nativeCoreAddon', () => {
   nativeAddonModuleLoaded();
   return { loadNativeAddonFactory: vi.fn() };
 });
 
-import { createReviewAgentCoreRequest, desktopCoreMode, parseLaunchRepository, resolveNativeSyntaxRunnerPath } from './main';
+import { desktopCoreMode, parseLaunchRepository, resolveNativeSyntaxRunnerPath } from './main';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -104,27 +104,10 @@ describe('Electron main backend configuration', () => {
     expect(nativeAddonModuleLoaded).not.toHaveBeenCalled();
   });
 
-  it('keeps a retained review runner request bound to its backend during shutdown', async () => {
-    const request = vi.fn(async () => ({ result: { maxParallelAgents: 1 } }));
-    const retainedRequest = createReviewAgentCoreRequest(requestBackend(request), {
-      workspaceId: 'workspace-1',
-      workspaceGeneration: 'generation-1',
-      requestId: 'initial-request',
-    });
-
-    await expect(retainedRequest('getReviewConfig')).resolves.toEqual({ maxParallelAgents: 1 });
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: 'workspace-1',
-        workspaceGeneration: 'generation-1',
-        requestId: expect.any(String),
-      }),
-      'getReviewConfig',
-      undefined,
-    );
+  it('registers scoped ACP IPC and removes private Node runner channels', () => {
+    const channels = [...electronState.channels];
+    expect(channels).toContain('acp:openAcpSession');
+    expect(channels).toContain('acp-review:startWaves');
+    expect(channels.some((channel) => channel.startsWith('review-agent:'))).toBe(false);
   });
 });
-
-function requestBackend(request: ReturnType<typeof vi.fn>) {
-  return { request } as never;
-}

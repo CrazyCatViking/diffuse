@@ -6,15 +6,15 @@ This directory contains the project documentation that should be readable direct
 
 | Document | Audience | Purpose |
 | --- | --- | --- |
-| [`architecture.md`](architecture.md) | Contributors | Current app/core boundaries, Phase 6 Rust-only ACP first slice, runtime flow, persistence, and build wiring. |
+| [`architecture.md`](architecture.md) | Contributors | Delivered native ACP, main-owned review waves, immutable scopes, Windows/Unix containment, event recovery and verification limits. |
 | [`agent-workbench-design.md`](agent-workbench-design.md) | Contributors | Target single-window Agent Workbench architecture, workspace attention model, Rust/N-API design, and phased implementation plan. |
 | [`phase-0-baselines.md`](phase-0-baselines.md) | Contributors | Phase 0 correctness baseline, reference environment, and repeatable performance capture matrix. |
 | [`amazing-file-search-plan.md`](amazing-file-search-plan.md) | Contributors | Full implementation plan for the unified changed-file search, global palette, and pinned results drawer. |
-| [`design-system.md`](design-system.md) | Contributors | Design tokens, shared UI primitives, feature UI patterns, and frontend implementation rules. |
+| [`design-system.md`](design-system.md) | Contributors | Tokens, shared primitives, Agent session/input/settings and review-wave UI patterns, and frontend rules. |
 | [`refactor-report.md`](refactor-report.md) | Contributors | Historical pre-workbench architecture assessment, risks, and prioritized cleanup plan. |
 | [`lsp.md`](lsp.md) | Users and contributors | Language server configuration, built-in defaults, diagnostics, install actions, and lifecycle. |
-| [`review-spec-v1.md`](review-spec-v1.md) | Contributors and integrations | Legacy `.diffuse/reviews` file layout, JSON formats, and retained runner contract. |
-| [`review-spec-v2.md`](review-spec-v2.md) | Contributors and integrations | Phase 5 hybrid ownership and guarantees, plus schema 3 first-slice ACP session/activity persistence. |
+| [`review-spec-v1.md`](review-spec-v1.md) | Contributors and integrations | Portable and legacy file formats, retired runner history and explicit adapter migration guidance. |
+| [`review-spec-v2.md`](review-spec-v2.md) | Contributors and integrations | Phase 5 guarantees, schema 7 literal-ID compatibility and immutable scopes, main-owned waves, queues/history/replay and recovery. |
 
 The top-level [`README.md`](../README.md) is the GitHub landing page for installation, usage, and project status.
 

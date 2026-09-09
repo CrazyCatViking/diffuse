@@ -8,6 +8,18 @@
     }"
     @keyup.esc="emit('cancel')"
   >
+    <ReviewAgentPicker v-if="entry.kind !== 'draft' || entry.mode === 'chat'" />
+
+    <p v-if="error && entry.kind !== 'thread'" class="review-error" role="alert">{{ error }}</p>
+
+    <div v-for="binding in agentBindings" :key="binding.sessionId" class="thread-actions">
+      <Button variant="ghost" size="sm" @click="openAgent(binding.sessionId)">Agent history / reconnect</Button>
+
+      <Button v-if="review.acpReview.active(binding.sessionId)" variant="danger" size="sm" @click="stopAgent(binding.sessionId)"
+        >Stop agent</Button
+      >
+    </div>
+
     <div v-if="entry.kind === 'thread'" class="review-box-header">
       <div class="thread-heading">
         <span v-if="entry.thread.status === 'resolved'" class="resolved-label">Resolved thread</span>
@@ -33,7 +45,7 @@
     <form v-if="entry.kind === 'draft'" class="comment-composer" @submit.prevent="submitDraft">
       <div class="composer-heading">
         <div class="composer-title-group">
-          <span class="composer-author">{{ entry.mode === 'chat' ? 'Ask AI' : 'Comment draft' }}</span>
+          <span class="composer-author">{{ entry.mode === 'chat' ? 'Ask review agent' : 'Comment draft' }}</span>
 
           <span class="anchor-label">{{ anchorLabel(entry.anchor) }}</span>
         </div>
@@ -44,8 +56,8 @@
       <textarea
         ref="draftTextareaRef"
         :value="draftBody"
-        :placeholder="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
-        :aria-label="entry.mode === 'chat' ? 'Ask AI about this selection' : 'Add a review comment'"
+        :placeholder="entry.mode === 'chat' ? 'Ask the selected agent about this selection' : 'Add a review comment'"
+        :aria-label="entry.mode === 'chat' ? 'Ask the selected agent about this selection' : 'Add a review comment'"
         @input="emit('update:draftBody', ($event.target as HTMLTextAreaElement).value)"
         @keydown.ctrl.enter.prevent="submitDraft"
       />
@@ -57,9 +69,11 @@
           class="primary-action"
           :class="{ ai: entry.mode === 'chat' }"
           type="submit"
-          :disabled="draftBody.trim().length === 0 || agentResponding"
+          :disabled="
+            draftBody.trim().length === 0 || agentResponding || (entry.mode === 'chat' && (!review.agentAdapter || review.acpReview.busy))
+          "
         >
-          {{ entry.mode === 'chat' ? 'Ask AI' : 'Comment' }}
+          {{ entry.mode === 'chat' ? 'Ask agent' : 'Comment' }}
         </button>
       </div>
     </form>
@@ -90,8 +104,13 @@
         />
 
         <div class="reply-actions">
-          <button class="ghost-action" type="button" :disabled="replyBody.trim().length === 0 || agentResponding" @click="submitChat">
-            Ask AI
+          <button
+            class="ghost-action"
+            type="button"
+            :disabled="replyBody.trim().length === 0 || agentResponding || !review.agentAdapter || review.acpReview.busy"
+            @click="submitChat"
+          >
+            Ask agent
           </button>
 
           <button class="primary-action" type="submit" :disabled="replyBody.trim().length === 0 || agentResponding">Send</button>
@@ -105,6 +124,11 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { ReviewAnchor, ReviewChatMessage, ReviewThread } from '../../lib/protocol';
 import { useReviewStore } from '../../stores/review';
+import ReviewAgentPicker from '../review/ReviewAgentPicker.vue';
+import Button from '../Button.vue';
+import { useRouter } from 'vue-router';
+import { useWorkbenchStore } from '../../stores/workbench';
+import { agentRoute } from '../../lib/workspaceRoutes';
 
 export type InlineReviewEntry =
   | {
@@ -148,11 +172,26 @@ const emit = defineEmits<{
 }>();
 
 const review = useReviewStore();
+const router = useRouter();
+const workbench = useWorkbenchStore();
+const chatKey = computed(() =>
+  props.entry.kind === 'thread' ? props.entry.thread.id : props.entry.kind === 'chat' ? props.entry.chatThreadId : props.entry.key,
+);
+const agentBindings = computed(() => review.acpReview.bindings.filter((b) => b.context?.threadIds?.includes(chatKey.value)));
+const openAgent = (id: string) => {
+  if (workbench.activeWorkspaceId) void router.push(agentRoute(workbench.activeWorkspaceId, id));
+};
+async function stopAgent(id: string) {
+  try {
+    await review.stopAgentReview(id);
+  } catch (e) {
+    review.error = String(e);
+  }
+}
 const replyBody = computed({
-  get: () => (props.entry.kind === 'thread' ? (review.replyDrafts[props.entry.thread.id] ?? '') : ''),
+  get: () => review.replyDrafts[chatKey.value] ?? '',
   set: (value: string) => {
-    if (props.entry.kind !== 'thread') return;
-    review.replyDrafts = { ...review.replyDrafts, [props.entry.thread.id]: value };
+    review.replyDrafts = { ...review.replyDrafts, [chatKey.value]: value };
   },
 });
 const draftTextareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -161,12 +200,17 @@ const agentResponding = computed(() => props.agentResponding ?? false);
 
 const submitDraft = () => {
   if (props.entry.kind !== 'draft') return;
+  if (props.entry.mode === 'chat' && (!review.agentAdapter || review.acpReview.busy)) return;
   if (props.draftBody.trim().length === 0 || agentResponding.value) return;
   if (props.entry.mode === 'chat') emit('submitChatDraft');
   else emit('submit');
 };
 
 const submitReply = () => {
+  if (props.entry.kind === 'chat') {
+    void submitChat();
+    return;
+  }
   if (props.entry.kind !== 'thread') return;
   const body = replyBody.value.trim();
   if (!body || agentResponding.value) return;
@@ -175,12 +219,31 @@ const submitReply = () => {
   resizeReplyTextarea();
 };
 
-const submitChat = () => {
-  if (props.entry.kind !== 'thread') return;
+const submitChat = async () => {
+  if (props.entry.kind === 'draft' || !review.agentAdapter || review.acpReview.busy) return;
   const body = replyBody.value.trim();
   if (!body || agentResponding.value) return;
-  emit('chat', { thread: props.entry.thread, body });
-  replyBody.value = '';
+  const key = chatKey.value;
+  const context = props.chatMessages?.[0]?.context;
+  const now = new Date().toISOString();
+  const thread =
+    props.entry.kind === 'thread'
+      ? props.entry.thread
+      : context?.fileId && review.session
+        ? {
+            id: props.entry.chatThreadId,
+            sessionId: review.session.id,
+            fileId: context.fileId,
+            anchor: props.entry.anchor,
+            status: 'open' as const,
+            createdAt: now,
+            updatedAt: now,
+            messages: [],
+          }
+        : undefined;
+  if (!thread) return;
+  const saved = await review.askAgentInThread(thread, body);
+  if (saved && review.replyDrafts[key]?.trim() === body) review.replyDrafts = { ...review.replyDrafts, [key]: '' };
   resizeReplyTextarea();
 };
 

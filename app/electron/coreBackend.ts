@@ -1,3 +1,4 @@
+import type { AcpBridge } from '../src/lib/acpContract';
 import type { CoreMethods } from '../src/lib/coreContract';
 import type { VersionInfo } from '../src/lib/protocol';
 import type {
@@ -33,7 +34,7 @@ export type CoreBackendHealth = {
 
 export type CoreBackendEventListener = (events: readonly WorkbenchEvent[]) => void;
 
-export interface CoreBackend {
+export interface CoreBackend extends AcpBridge {
   getVersion(): Promise<VersionInfo>;
   getWorkbenchSnapshot(): Promise<WorkbenchSnapshot>;
   openWorkspace(path: string): Promise<WorkspaceSnapshot>;

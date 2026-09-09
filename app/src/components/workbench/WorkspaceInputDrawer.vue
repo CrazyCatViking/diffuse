@@ -19,15 +19,25 @@
       <p class="prompt">{{ request.prompt }}</p>
 
       <form v-if="request.status === 'pending'" class="input-form" @submit.prevent="submit">
-        <fieldset v-if="request.choices.length > 0">
+        <AgentInputForm
+          v-if="acpInput?.method === 'elicitation/create'"
+          :key="`${request.id}:${request.revision}`"
+          :schema="acpInput.params.requestedSchema"
+          :disabled="sending"
+          :initial-values="workbench.inputFormDraft(request)"
+          @response="draft = $event"
+          @draft="workbench.saveInputFormDraft(request, acpInput.params.requestedSchema, $event)"
+        />
+
+        <fieldset v-else-if="request.choices.length > 0">
           <legend>Choose a response</legend>
           <label v-for="choice in request.choices" :key="choice" class="choice-row">
             <input v-model="draft" type="radio" name="input-choice" :value="choice" @change="persistDraft" />
-            <span>{{ choice }}</span>
+            <span>{{ optionLabel(choice) }}</span>
           </label>
         </fieldset>
 
-        <label v-else class="response-field">
+        <label v-else-if="metadataLoaded || request.kind === 'authentication'" class="response-field">
           <span>{{ request.kind === 'authentication' ? 'Secret value' : 'Response' }}</span>
           <input
             ref="responseInput"
@@ -38,10 +48,16 @@
           />
         </label>
 
+        <p v-else>Loading request details...</p>
+
         <p v-if="submitError" class="submit-error" role="alert">{{ submitError }}</p>
 
         <div class="input-actions">
-          <Button type="submit" :disabled="sending || !draft">Submit response</Button>
+          <Button type="submit" :disabled="sending || !draft || (!metadataLoaded && !request.choices.length)">Submit response</Button>
+
+          <Button v-if="acpInput?.method === 'elicitation/create'" variant="secondary" :disabled="sending" @click="declineForm"
+            >Decline form</Button
+          >
 
           <Button v-if="request.cancellationSupported" variant="secondary" :disabled="sending" @click="cancel"> Cancel request </Button>
         </div>
@@ -57,6 +73,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch
 import { useRoute } from 'vue-router';
 import { routeParamString } from '../../lib/workspaceRoutes';
 import { useWorkbenchStore } from '../../stores/workbench';
+import { useAcpStore } from '../../stores/acp';
+import { record } from '../../lib/acpContract';
+import AgentInputForm from '../agents/AgentInputForm.vue';
 import Button from '../Button.vue';
 import Badge from '../ui/Badge.vue';
 import EmptyState from '../ui/EmptyState.vue';
@@ -64,6 +83,8 @@ import Panel from '../ui/Panel.vue';
 
 const route = useRoute();
 const workbench = useWorkbenchStore();
+const acp = useAcpStore();
+const metadataLoaded = ref(false);
 const surface = ref<HTMLElement>();
 const responseInput = ref<HTMLInputElement>();
 const draft = ref('');
@@ -73,6 +94,31 @@ const acknowledgedRevision = ref<string>();
 const workspaceId = computed(() => routeParamString(route.params.workspaceId));
 const inputRequestId = computed(() => routeParamString(route.params.inputRequestId));
 const request = computed(() => workbench.inputRequest(inputRequestId.value));
+const acpInput = computed(() =>
+  acp.snapshots[workspaceId.value]?.inputs.find((i) => i.input.id === inputRequestId.value && i.input.revision === request.value?.revision),
+);
+const optionLabel = (choice: string) => {
+  const options = acpInput.value?.params.options;
+  const option = Array.isArray(options) ? options.find((o) => record(o) && o.optionId === choice) : undefined;
+  return record(option) && typeof option.name === 'string'
+    ? `${option.name}${typeof option.kind === 'string' ? ` (${option.kind})` : ''}`
+    : choice;
+};
+watch(
+  [workspaceId, inputRequestId, () => request.value?.revision],
+  async ([id, inputId, revision]) => {
+    metadataLoaded.value = false;
+    try {
+      await acp.refresh(id);
+      if (workspaceId.value === id && inputRequestId.value === inputId && request.value?.revision === revision) metadataLoaded.value = true;
+    } catch (error) {
+      // RPC has no ACP producer; retain its existing legacy input contract only when explicitly unsupported.
+      if (String(error).includes('UNSUPPORTED_METHOD')) metadataLoaded.value = true;
+      else submitError.value = String(error);
+    }
+  },
+  { immediate: true },
+);
 let secretRequestToClear: NonNullable<typeof request.value> | undefined;
 const kindLabel = computed(() => {
   if (request.value?.kind === 'permission') return 'Permission request';
@@ -97,12 +143,12 @@ const terminalDescription = computed(() => {
 });
 
 const persistDraft = () => {
-  if (request.value) workbench.saveInputDraft(request.value, draft.value);
+  if (request.value && acpInput.value?.method !== 'elicitation/create') workbench.saveInputDraft(request.value, draft.value);
 };
 
 const submit = async () => {
   const current = request.value;
-  if (!current || current.status !== 'pending' || !draft.value) return;
+  if (!current || current.status !== 'pending' || !draft.value || (!metadataLoaded.value && !current.choices.length)) return;
   sending.value = true;
   submitError.value = '';
   try {
@@ -133,6 +179,11 @@ const cancel = async () => {
   }
 };
 
+const declineForm = async () => {
+  draft.value = JSON.stringify({ action: 'decline' });
+  await submit();
+};
+
 const acknowledgeExactAttention = () => {
   const current = request.value;
   if (!current || !isVisibleAndFocused()) return;
@@ -158,8 +209,10 @@ const isVisibleAndFocused = () => {
 };
 
 const clearDraft = (current: NonNullable<typeof request.value>) => {
-  draft.value = '';
-  if (responseInput.value) responseInput.value.value = '';
+  if (request.value?.id === current.id && request.value.revision === current.revision) {
+    draft.value = '';
+    if (responseInput.value) responseInput.value.value = '';
+  }
   workbench.clearInputDraft(current);
 };
 
@@ -168,6 +221,8 @@ const handleVisibilityChange = () => acknowledgeExactAttention();
 watch(
   () => request.value,
   async (current, previous) => {
+    if (current && previous && current.id === previous.id && current.revision === previous.revision && current.status === previous.status)
+      return;
     if (previous?.kind === 'authentication' && (!current || current.id !== previous.id || current.revision !== previous.revision)) {
       clearDraft(previous);
     }

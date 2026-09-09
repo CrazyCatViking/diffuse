@@ -36,7 +36,7 @@ describe('workspace navigation dispatcher', () => {
     );
   });
 
-  it('opens settings and preserves unsupported agent identity on the review route', async () => {
+  it('opens settings and routes exact agent session identity', async () => {
     const openSettings = vi.fn();
     const dispatcher = {
       activateWorkspace: vi.fn(async () => undefined),
@@ -49,9 +49,8 @@ describe('workspace navigation dispatcher', () => {
 
     await dispatchWorkspaceNavigation('workspace-a', { kind: 'agent', agentSessionId: 'agent-17' }, dispatcher);
     expect(dispatcher.router.push).toHaveBeenLastCalledWith({
-      name: workspaceRouteNames.overview,
-      params: { workspaceId: 'workspace-a' },
-      query: { agentSessionId: 'agent-17' },
+      name: workspaceRouteNames.agents,
+      params: { workspaceId: 'workspace-a', agentSessionId: 'agent-17' },
     });
   });
 

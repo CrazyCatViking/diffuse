@@ -3,7 +3,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isProxy } from 'vue';
-import type { AttentionItem, InputRequest, WorkspaceSnapshot } from '../lib/workbenchContract';
+import type { AttentionItem, InputRequest, WorkspaceSnapshot, WorkbenchSnapshot } from '../lib/workbenchContract';
 import { createMockDesktopBridge } from '../test/mockDesktopBridge';
 import { useWorkbenchStore } from './workbench';
 
@@ -11,6 +11,53 @@ describe('useWorkbenchStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     window.localStorage.clear();
+  });
+
+  it('merges delayed ACP input despite unrelated UI sequence advances and rejects stale entity revisions/generations', async () => {
+    const bridge = createMockDesktopBridge();
+    window.diffuse = bridge;
+    const first = workspace('workspace-a', '/repo/a');
+    const initial: WorkbenchSnapshot = {
+      workspaces: [first.summary],
+      activeWorkspaceId: 'workspace-a',
+      activeWorkspace: first,
+      ...snapshotState([first.summary]),
+      sequence: 0,
+    };
+    bridge.getWorkbenchSnapshot.mockResolvedValue(initial);
+    const store = useWorkbenchStore();
+    await store.initialize(vi.fn());
+    const delayed = deferred<typeof initial>();
+    bridge.getWorkbenchSnapshot.mockReturnValueOnce(delayed.promise);
+    const loading = store.refreshAgentAttention();
+    bridge.emitWorkbenchEvent({
+      kind: 'workspace/uiStateChanged',
+      sequence: 1,
+      eventId: 'ui',
+      workspaceId: 'workspace-a',
+      workspaceGeneration: first.summary.workspaceGeneration,
+      payload: { workspaceId: 'workspace-a', record: { revision: 1, state: { logicalFocus: 'new-focus' }, updatedAt: 'now' } },
+    });
+    await vi.waitFor(() => expect(store.sequence).toBe(1));
+    const input = inputRequest(1, 'pending');
+    const item = attentionItem(1, 'unread');
+    delayed.resolve({ ...initial, inputRequests: [input], attentionItems: [item] } as typeof initial);
+    await loading;
+    expect(store.inputRequest(input.id)).toEqual(input);
+    expect(store.activeWorkspace?.attention).toMatchObject({ state: 'input-required', inputRequired: 1 });
+    expect(store.uiState('workspace-a').logicalFocus).toBe('new-focus');
+    expect(store.sequence).toBe(1);
+    store.inputRequests[input.id] = { ...input, revision: 2, status: 'accepted' };
+    store.attentionItems[item.id] = { ...item, revision: 2, status: 'resolved' };
+    bridge.getWorkbenchSnapshot.mockResolvedValue({ ...initial, inputRequests: [input], attentionItems: [item] });
+    await store.refreshAgentAttention();
+    expect(store.inputRequest(input.id).status).toBe('accepted');
+    expect(store.activeWorkspace?.attention.inputRequired).toBe(0);
+    store.workspaces = [{ ...first.summary, workspaceGeneration: 'reopened' }];
+    store.inputRequests = {};
+    store.attentionItems = {};
+    await store.refreshAgentAttention();
+    expect(store.inputRequest(input.id)).toBeUndefined();
   });
 
   it('hydrates all summaries and restores the active workspace', async () => {

@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { createAcpApi, isAcpEventBatch, isAcpRequest } from '../src/lib/acpContract';
+import { isReviewWaveRun, isStartReviewWaves, isCancelReviewWaves, rendererUiState } from '../src/lib/acpReviewWaves';
 import { isDeepStrictEqual } from 'node:util';
-import type { DesktopBridge, ReviewAgentChatRequest, ReviewAgentStartRequest } from '../src/lib/desktopBridge';
+import type { DesktopBridge } from '../src/lib/desktopBridge';
 import {
   isAttentionMutationResult,
   isInputMutationResult,
@@ -113,13 +115,19 @@ const saveWorkspaceUiState: DesktopBridge['saveWorkspaceUiState'] = async (refer
     isWorkspaceUiStateMutationResult,
     'workspace UI state mutation result',
   );
-  if (result.outcome === 'applied' && (result.record.revision !== expectedRevision + 1 || !isDeepStrictEqual(result.record.state, state))) {
+  if (
+    result.outcome === 'applied' &&
+    (result.record.revision !== expectedRevision + 1 || !isDeepStrictEqual(rendererUiState(result.record.state), rendererUiState(state)))
+  ) {
     throw new Error('Workspace UI state response revision mismatch');
   }
   if (result.outcome === 'stale' && result.record.revision === expectedRevision) {
     throw new Error('Workspace UI state stale response revision mismatch');
   }
-  if (result.outcome === 'unchanged' && (result.record.revision !== expectedRevision || !isDeepStrictEqual(result.record.state, state))) {
+  if (
+    result.outcome === 'unchanged' &&
+    (result.record.revision !== expectedRevision || !isDeepStrictEqual(rendererUiState(result.record.state), rendererUiState(state)))
+  ) {
     throw new Error('Workspace UI state unchanged response revision mismatch');
   }
   return result;
@@ -158,19 +166,39 @@ const openLspConfig = (configPath?: string) => {
   return ipcRenderer.invoke('lsp:openConfig', { configPath });
 };
 
-const startReviewAgent = (request: ReviewAgentStartRequest) => {
-  return ipcRenderer.invoke('review-agent:start', request);
-};
-
-const stopReviewAgent: DesktopBridge['stopReviewAgent'] = (context) => {
-  return ipcRenderer.invoke('review-agent:stop', context);
-};
-
-const chatWithReviewAgent = (request: ReviewAgentChatRequest) => {
-  return ipcRenderer.invoke('review-agent:chat', request);
-};
-
 const bridge = {
+  startAcpReviewWaves: async (request) => {
+    if (!isStartReviewWaves(request)) throw new Error('Invalid ACP wave start');
+    const result = validate(await ipcRenderer.invoke('acp-review:startWaves', request), isReviewWaveRun, 'review wave');
+    if (
+      result.workspaceId !== request.context.workspaceId ||
+      result.workspaceGeneration !== request.context.workspaceGeneration ||
+      result.reviewSessionId !== request.reviewSessionId ||
+      result.adapterId !== request.adapterId
+    )
+      throw new Error('Review wave response identity mismatch');
+    return result;
+  },
+  getAcpReviewWaves: async (context) => {
+    if (!isAcpRequest('getAcpSnapshot', context)) throw new Error('Invalid ACP wave context');
+    const result: unknown = await ipcRenderer.invoke('acp-review:getWaves', context);
+    if (!Array.isArray(result) || !result.every((run) => isReviewWaveRun(run) && run.workspaceId === context.workspaceId))
+      throw new Error('Invalid review waves');
+    return result;
+  },
+  cancelAcpReviewWaves: async (request) => {
+    if (!isCancelReviewWaves(request)) throw new Error('Invalid ACP wave cancellation');
+    const result = await ipcRenderer.invoke('acp-review:cancelWaves', request);
+    if (result !== null) throw new Error('Invalid wave cancellation result');
+    return null;
+  },
+  ...createAcpApi((method, request) => ipcRenderer.invoke(`acp:${method}`, request)),
+  onAcpEventBatch: (listener) => {
+    const handler = (_event: IpcRendererEvent, batch: unknown) =>
+      listener(isAcpEventBatch(batch) ? batch : { events: [], requiresSnapshot: true });
+    ipcRenderer.on('acp:eventBatch', handler);
+    return () => ipcRenderer.off('acp:eventBatch', handler);
+  },
   pickRepository,
   openLspConfig,
   getVersion,
@@ -189,9 +217,6 @@ const bridge = {
   workspaceRequest,
   onWorkbenchEvent,
   onAttentionNavigation,
-  startReviewAgent,
-  stopReviewAgent,
-  chatWithReviewAgent,
 } satisfies DesktopBridge;
 
 function validate<T>(value: unknown, guard: (candidate: unknown) => candidate is T, label: string): T {

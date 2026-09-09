@@ -20,6 +20,8 @@
       </Row>
 
       <Row justify="end">
+        <Button v-if="repoPath" variant="ai" size="sm" @click="$emit('openAgents')">Agents</Button>
+
         <Button v-if="repoPath" variant="secondary" size="sm" :disabled="loading" @click="$emit('openSearch')">Search</Button>
 
         <Button v-if="repoPath" variant="secondary" size="sm" :disabled="loading" @click="$emit('refresh')">Refresh</Button>
@@ -48,6 +50,7 @@ defineProps<{
 }>();
 
 defineEmits<{
+  openAgents: [];
   openRepository: [];
   openSearch: [];
   refresh: [];
